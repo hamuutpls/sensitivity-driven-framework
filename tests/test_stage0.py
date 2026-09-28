@@ -58,6 +58,21 @@ def test_budget_matched_plan_fits_uniform_size():
     assert len(one_more.protected_layers) == 22  # a generous budget protects everything
 
 
+def test_no_prune_budget_plan_matches_size_with_bits_only():
+    raw = [2705.0] + [6596.0 + i * (8647.0 - 6596.0) / 20 for i in range(21)]
+    scores = normalize(raw)
+    prof = SensitivityProfile(raw, [44_000_000] * 22, [12_000] * 22, 260_000_000)
+    cost = lambda p: predict_cost(p, prof, 128, 32, 16)  # noqa: E731
+    uni = cost(uniform_plan(scores, 4, 0.0))
+    plan = budget_matched_plan(scores, uni.weight_memory_gb, 0.0, 8, 3, cost)
+    c = cost(plan)
+    assert c.weight_memory_gb <= uni.weight_memory_gb and c.sparsity == 0
+    # 8k + 3(22 - k) <= 4 * 22 bits per weight  ->  k = 4 protected layers, the 4 most sensitive
+    assert set(plan.protected_layers) == set(sorted(range(22), key=lambda i: raw[i])[-4:])
+    assert {lp.bit_width for lp in plan.layers if not lp.protected} == {3}
+    assert c.sensitivity_exposure < uni.sensitivity_exposure
+
+
 def test_outlier_layers():
     raw = [2705.0] + [6596.0 + i * (8647.0 - 6596.0) / 20 for i in range(21)]
     assert outlier_layers(raw) == [0]
@@ -158,6 +173,7 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg):
     report = (stage_dir / "report.md").read_text(encoding="utf-8")
     assert "same-size version of the framework" in report and "Size floor" in report
     assert "## Sensitivity of every layer" in report
+    assert "Unused budget: same-size plan without pruning" in report
     assert "Share removed (same-size plan)" in report and "pruning caveat" in report
     assert "Perplexity (held-out half)" in report.split("# Technical details")[1]
     assert report.split("## Summary")[1].split("##")[0].count("\n\n") <= 2  # one paragraph

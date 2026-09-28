@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -32,7 +32,8 @@ log = get_logger(__name__)
 METHOD = "allocation"
 METHOD_BUDGET = "allocation_same_size"
 METHOD_NO_PRUNE = "allocation_same_size_no_prune"
-MAIN_METRICS = ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "peak_memory_gb", "decode_ms_per_token_mean",
+MAIN_METRICS = ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "peak_memory_gb", "prefill_ms_mean",
+                "decode_ms_per_token_mean",
                 "avg_bits_per_weight", "sparsity", "sensitivity_exposure", "build_time_s"]
 
 
@@ -312,6 +313,11 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
                 f"`{METHOD_NO_PRUNE}` row matches the size without pruning to isolate the effect of the "
                 "sensitivity guidance itself.")))
 
+    for name, bp in (("same-size plan", budget), ("same-size plan without pruning", no_prune)):
+        if bp is not None:
+            rep.sections.append((f"Unused budget: {name}", _unused_budget(bp, un_cost.weight_memory_gb,
+                                                                               rep.config["stage0"]["protected_bits"], predict)))
+
     _add_plain_explanation(rep, profile, plan, fw_cost, un_cost,
                            predict(budget) if budget is not None else None, budget,
                            predict(no_prune) if no_prune is not None else None, no_prune, outliers)
@@ -468,6 +474,22 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
     rep.glossary["Embeddings and LM head"] = ("The model's word dictionary: the table that turns words into "
                                               "numbers at the start, and numbers back into words at the end.")
 
+
+
+def _unused_budget(bp: CompressionPlan, budget_gb: float, protected_bits: int,
+                   predict: Callable[[CompressionPlan], PlanCost]) -> str:
+    """Why budget packing stopped: the protected set is always the top-k layers by sensitivity."""
+    left = budget_gb - predict(bp).weight_memory_gb
+    if not bp.compressed_layers:
+        return f"{left:.3f} GB of the budget is unused; every layer is already protected."
+    nxt = max(bp.compressed_layers, key=lambda i: bp.layers[i].sensitivity)
+    grown = replace(bp, layers=tuple(replace(lp, bit_width=protected_bits, pruning_ratio=0.0, protected=True)
+                                     if lp.layer == nxt else lp for lp in bp.layers))
+    need = predict(grown).weight_memory_gb - predict(bp).weight_memory_gb
+    return (f"{left:.3f} GB of the budget is unused. Protecting the next most sensitive layer ({nxt}) would add "
+            f"{need:.3f} GB. The protected set is kept to the top-k layers by sensitivity, so packing stops "
+            "here rather than skipping to a less sensitive layer; in a model whose decoder layers are all the "
+            "same size (TinyLlama), no other layer would fit either.")
 
 
 def _top(k: int) -> str:

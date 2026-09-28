@@ -15,6 +15,13 @@
   guidance itself. Its plan is saved as `compression_plan_budget_matched_no_prune.json`.
 - **Per-layer table** now shows the share removed for the same-size plan and the bits per layer of the
   no-pruning plan.
+- **Prefill latency** is a column in both report tables, next to decode latency.
+- **Unused budget explained.** The same-size plans keep the protected set to the top-k layers by
+  sensitivity, so packing stops at the first layer that doesn't fit (0.011 GB left on TinyLlama). The
+  report now states the leftover and what the next layer would cost. Every TinyLlama decoder layer is the
+  same size, so skipping ahead would not fit another layer either.
+- **Unit test for the no-pruning plan**: it fits the uniform budget, removes nothing, keeps robust layers
+  at 3 bits and protects the 4 most sensitive layers on TinyLlama shapes.
 
 ## 2026-09-28: Leaner code after the ponytail audit
 
