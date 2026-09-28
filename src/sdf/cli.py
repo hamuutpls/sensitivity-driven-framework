@@ -31,7 +31,7 @@ def stage0_main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
 
     from sdf.run import start_run
-    from sdf.stage0 import run_stage0
+    from sdf.stage0.run import run_stage0
 
     cfg = load_config(args.config, _parse_sets(args.set))
     candidate = SEARCH_SPACE.make(cfg.hyperparams)

@@ -6,6 +6,7 @@ report uses them to explain each number.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal
 
@@ -94,6 +95,15 @@ METRICS: dict[str, MetricSpec] = {
         "0 means the fragile layers are untouched; higher means they are squeezed harder. Lower is better "
         "because squeezing fragile layers is what damages accuracy."),
 }
+
+
+def label(metric: str) -> str:
+    return METRICS[metric].label if metric in METRICS else metric
+
+
+def is_number(x: object) -> bool:
+    """A real, finite number (bools and NaN/inf excluded)."""
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
 
 def is_better(metric: str, delta: float) -> bool | None:

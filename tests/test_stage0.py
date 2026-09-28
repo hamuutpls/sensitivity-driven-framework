@@ -5,27 +5,20 @@ import torch
 from openpyxl import load_workbook
 
 from sdf.data import calibration_batches, eval_windows
-from sdf.eval import measure_model, model_size_gb
+from sdf.eval.metrics import measure_model, model_size_gb
 from sdf.run import start_run
 from sdf.search_space import PER_CHANNEL, SEARCH_SPACE
-from sdf.stage0 import (
-    SensitivityProfile,
-    baseline_cost,
-    budget_matched_plan,
-    normalize,
-    outlier_layers,
-    plan_compression,
-    predict_cost,
-    profile_sensitivity,
-    run_stage0,
-    uniform_plan,
-)
+from sdf.stage0.planner import baseline_cost, budget_matched_plan, plan_compression, predict_cost, uniform_plan
+from sdf.stage0.run import run_stage0
+from sdf.stage0.sensitivity import SensitivityProfile, normalize, outlier_layers, profile_sensitivity
 from conftest import fake_texts
 
 
+TOY_SCORES = [0.0, 0.3, 0.5, 1.0]
+
+
 def toy_profile():
-    return SensitivityProfile(scores=[0.0, 0.3, 0.5, 1.0], raw_scores=[1, 2, 3, 4],
-                              layer_numel=[1000] * 4, layer_rows=[10] * 4, other_numel=500)
+    return SensitivityProfile(raw_scores=[1, 2, 3, 4], layer_numel=[1000] * 4, layer_rows=[10] * 4, other_numel=500)
 
 
 def test_normalize():
@@ -41,26 +34,27 @@ def test_outlier_layer_does_not_protect_everything():
     # TinyLlama on WikiText-2: layer 0 is a low outlier, the other 21 layers sit in 6596..8647.
     raw = [2705.0] + [6596.0 + i * (8647.0 - 6596.0) / 20 for i in range(21)]
 
-    minmax = plan_compression(SensitivityProfile(normalize(raw, "minmax"), raw), 0.5, 0.3, 8, 4)
+    minmax = plan_compression(normalize(raw, "minmax"), 0.5, 0.3, 8, 4)
     assert len(minmax.protected_layers) == 21  # the degenerate plan seen on the real model
 
-    plan = plan_compression(SensitivityProfile(normalize(raw), raw), 0.5, 0.3, 8, 4)
+    plan = plan_compression(normalize(raw), 0.5, 0.3, 8, 4)
     assert len(plan.protected_layers) == 11  # threshold 0.5 protects the more sensitive half
     assert 0 in plan.compressed_layers and 21 in plan.protected_layers
-    assert len(plan_compression(SensitivityProfile(normalize(raw), raw), 0.8, 0.3, 8, 4).protected_layers) == 5
+    assert len(plan_compression(normalize(raw), 0.8, 0.3, 8, 4).protected_layers) == 5
 
 
 def test_budget_matched_plan_fits_uniform_size():
     raw = [2705.0] + [6596.0 + i * (8647.0 - 6596.0) / 20 for i in range(21)]
-    prof = SensitivityProfile(normalize(raw), raw, [44_000_000] * 22, [12_000] * 22, 260_000_000)
+    scores = normalize(raw)
+    prof = SensitivityProfile(raw, [44_000_000] * 22, [12_000] * 22, 260_000_000)
     cost = lambda p: predict_cost(p, prof, 128, 32, 16)  # noqa: E731
-    budget = cost(uniform_plan(prof, 4, 0.0)).weight_memory_gb
-    plan = budget_matched_plan(prof, budget, 0.3, 8, 4, cost)
+    budget = cost(uniform_plan(scores, 4, 0.0)).weight_memory_gb
+    plan = budget_matched_plan(scores, budget, 0.3, 8, 4, cost)
     assert cost(plan).weight_memory_gb <= budget
     k = len(plan.protected_layers)
     assert 0 < k < 22
     assert set(plan.protected_layers) == set(sorted(range(22), key=lambda i: raw[i])[-k:])  # the most sensitive
-    one_more = budget_matched_plan(prof, budget * 10, 0.3, 8, 4, cost)
+    one_more = budget_matched_plan(scores, budget * 10, 0.3, 8, 4, cost)
     assert len(one_more.protected_layers) == 22  # a generous budget protects everything
 
 
@@ -71,26 +65,26 @@ def test_outlier_layers():
 
 
 def test_plan_and_uniform():
-    plan = plan_compression(toy_profile(), 0.5, 0.25, protected_bits=8, compressed_bits=4)
+    plan = plan_compression(TOY_SCORES, 0.5, 0.25, protected_bits=8, compressed_bits=4)
     assert plan.protected_layers == [2, 3] and plan.compressed_layers == [0, 1]
     assert [(lp.bit_width, lp.pruning_ratio) for lp in plan.layers] == [(4, 0.25), (4, 0.25), (8, 0.0), (8, 0.0)]
-    uni = uniform_plan(toy_profile(), 4, 0.0)
+    uni = uniform_plan(TOY_SCORES, 4, 0.0)
     assert {lp.bit_width for lp in uni.layers} == {4} and not uni.protected_layers
     with pytest.raises(ValueError):
-        plan_compression(toy_profile(), 0.5, 1.0, 8, 4)
+        plan_compression(TOY_SCORES, 0.5, 1.0, 8, 4)
 
 
 def test_predict_cost():
     prof = toy_profile()
     fp16 = baseline_cost(prof, 16)
     assert fp16.weight_memory_gb == pytest.approx(4500 * 2 / 1e9)
-    uni = predict_cost(uniform_plan(prof, 4, 0.0), prof, group_size=100, group_overhead_bits=32, baseline_bits=16)
+    uni = predict_cost(uniform_plan(TOY_SCORES, 4, 0.0), prof, group_size=100, group_overhead_bits=32, baseline_bits=16)
     # per layer: 1000 * 4 bits + 10 groups * 32 bits = 4320 bits; + 500 * 16 bits outside the layers
     assert uni.weight_memory_gb == pytest.approx((4 * 4320 + 500 * 16) / 8 / 1e9)
     assert uni.sensitivity_exposure == pytest.approx(0.75)
-    per_ch = predict_cost(uniform_plan(prof, 4, 0.0), prof, PER_CHANNEL, 32, 16)
+    per_ch = predict_cost(uniform_plan(TOY_SCORES, 4, 0.0), prof, PER_CHANNEL, 32, 16)
     assert per_ch.per_layer_mb[0] == pytest.approx((4000 + 10 * 32) / 8 / 1e6)
-    fw = predict_cost(plan_compression(prof, 0.5, 0.3, 8, 4), prof, 100, 32, 16)
+    fw = predict_cost(plan_compression(TOY_SCORES, 0.5, 0.3, 8, 4), prof, 100, 32, 16)
     assert fw.sensitivity_exposure < uni.sensitivity_exposure  # sensitive layers are spared
     assert fw.sparsity == pytest.approx(2 * 300 / 4500)
 
@@ -100,7 +94,7 @@ def test_profile_sensitivity_on_tiny_llama(tiny_llama):
     frozen.requires_grad_(False)
     batches = [torch.randint(0, 64, (2, 16), generator=torch.Generator().manual_seed(i)) for i in range(3)]
     prof = profile_sensitivity(tiny_llama, batches, device="cpu")
-    assert prof.num_layers == 4 and min(prof.scores) == 0.0 and max(prof.scores) == 1.0
+    assert prof.num_layers == 4 and all(s > 0 for s in prof.raw_scores)
     assert prof.cost["calibration_tokens"] == 96
     # q, o: 32x32; k, v: 32x16 (2 KV heads); gate, up, down: 32x64
     assert prof.layer_numel == [2 * 1024 + 2 * 512 + 3 * 2048] * 4

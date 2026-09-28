@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sdf.reporting.metrics import METRICS, MetricSpec, is_better
+from sdf.reporting.metrics import METRICS, MetricSpec, is_better, label
 from sdf.utils.cache import atomic_write_text
 
 if TYPE_CHECKING:
@@ -185,7 +185,7 @@ def _technical_part(rep: "StageReporter") -> list[str]:
 
     lines += ["", "## Results", ""]
     metrics = [m for m in rep.main_metrics if any(m in r.metrics for r in rep.rows)]
-    headers = ["Row", "Status"] + [METRICS[m].label if m in METRICS else m for m in metrics] + ["Requirement met"]
+    headers = ["Row", "Status"] + [label(m) for m in metrics] + ["Requirement met"]
     rows = []
     for r in rep.rows:
         met = r.requirement.get("met")

@@ -1,15 +1,13 @@
 """The search space, shared by every searcher and defined in one place.
 
-Adding a hyperparameter is a one-line change: append a Param to SEARCH_SPACE. Every stage reads its
-hyperparameters from a Candidate by name, and searchers enumerate SEARCH_SPACE.params.
+Adding a hyperparameter is a one-line change: append a Param to SEARCH_SPACE. A candidate is a plain dict
+of parameter name -> value, validated by SEARCH_SPACE.validate / make.
 """
 
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass
-from types import MappingProxyType
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 PER_CHANNEL = -1  # GPTQ convention: groupsize -1 means one scale per output channel
 
@@ -29,56 +27,10 @@ class Param:
         if not self.contains(self.default):
             raise ValueError(f"{self.name}: default {self.default!r} outside the space")
 
-    @property
-    def is_categorical(self) -> bool:
-        return self.choices is not None
-
     def contains(self, value: Any) -> bool:
-        if self.is_categorical:
+        if self.choices is not None:
             return value in self.choices
         return isinstance(value, (int, float)) and self.low <= value <= self.high
-
-    def sample(self, rng: random.Random) -> Any:
-        if self.is_categorical:
-            return rng.choice(self.choices)
-        return rng.uniform(self.low, self.high)
-
-
-class Candidate(Mapping[str, Any]):
-    """An immutable, validated assignment of every search-space parameter."""
-
-    def __init__(self, values: Mapping[str, Any]):
-        self._values = MappingProxyType(dict(values))
-
-    def __getitem__(self, key: str) -> Any:
-        return self._values[key]
-
-    def __getattr__(self, key: str) -> Any:
-        try:
-            return self._values[key]
-        except KeyError:
-            raise AttributeError(key) from None
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._values)
-
-    def __len__(self) -> int:
-        return len(self._values)
-
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, Mapping) and dict(self) == dict(other)
-
-    def __hash__(self) -> int:
-        return hash(tuple(sorted(self._values.items())))
-
-    def __repr__(self) -> str:
-        return f"Candidate({dict(self._values)!r})"
-
-    def __reduce__(self):  # mappingproxy can't be pickled or deep-copied; rebuild from a plain dict
-        return (Candidate, (dict(self._values),))
-
-    def to_dict(self) -> dict[str, Any]:
-        return dict(self._values)
 
 
 class SearchSpace:
@@ -89,29 +41,11 @@ class SearchSpace:
         self.params = tuple(params)
         self._by_name = {p.name: p for p in params}
 
-    def __getitem__(self, name: str) -> Param:
-        return self._by_name[name]
-
-    @property
-    def names(self) -> list[str]:
-        return [p.name for p in self.params]
-
-    def for_stage(self, stage: int) -> list[Param]:
-        return [p for p in self.params if p.stage == stage]
-
-    def default(self) -> Candidate:
-        return Candidate({p.name: p.default for p in self.params})
-
-    def sample(self, rng: random.Random) -> Candidate:
-        return Candidate({p.name: p.sample(rng) for p in self.params})
-
-    def make(self, overrides: Mapping[str, Any] | None = None) -> Candidate:
+    def make(self, overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Defaults with `overrides` applied, validated."""
-        values = {p.name: p.default for p in self.params}
-        values.update(overrides or {})
-        return self.validate(values)
+        return self.validate({**{p.name: p.default for p in self.params}, **(overrides or {})})
 
-    def validate(self, values: Mapping[str, Any]) -> Candidate:
+    def validate(self, values: Mapping[str, Any]) -> dict[str, Any]:
         unknown = set(values) - set(self._by_name)
         missing = set(self._by_name) - set(values)
         errors = [f"unknown parameter {n!r}" for n in sorted(unknown)]
@@ -119,11 +53,11 @@ class SearchSpace:
         for name, value in values.items():
             p = self._by_name.get(name)
             if p is not None and not p.contains(value):
-                bounds = p.choices if p.is_categorical else (p.low, p.high)
+                bounds = p.choices if p.choices is not None else (p.low, p.high)
                 errors.append(f"{name}={value!r} not in {bounds}")
         if errors:
             raise ValueError("invalid candidate: " + "; ".join(errors))
-        return Candidate(values)
+        return dict(values)
 
 
 SEARCH_SPACE = SearchSpace(

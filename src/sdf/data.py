@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from typing import Any, Callable, Mapping
+from typing import Any, Mapping
 
 import torch
 
@@ -11,30 +11,23 @@ from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-TextLoader = Callable[[str, str], list[str]]
-
-
-def make_text_loader(sources: Mapping[str, Mapping[str, Any]]) -> TextLoader:
-    """A loader for the Hub datasets described in the config (`data.sources`).
+def load_texts(sources: Mapping[str, Mapping[str, Any]], dataset: str, split: str = "train") -> list[str]:
+    """Texts of `dataset` from the Hub, as described in the config (`data.sources`).
 
     Each source gives `load_dataset` kwargs (path, name, data_files...) plus `splits`, mapping our split names
     ("train" = calibration pool, "test" = evaluation) to the dataset's own split names.
     """
+    if dataset not in sources:
+        raise ValueError(f"unknown dataset {dataset!r}; configured: {sorted(sources)}")
+    spec = dict(sources[dataset])
+    splits = spec.pop("splits", {})
+    if split not in splits:
+        raise ValueError(f"dataset {dataset!r} has no {split!r} split configured (data.sources.{dataset}.splits)")
+    from datasets import load_dataset
 
-    def load_texts(dataset: str, split: str = "train") -> list[str]:
-        if dataset not in sources:
-            raise ValueError(f"unknown dataset {dataset!r}; configured: {sorted(sources)}")
-        spec = dict(sources[dataset])
-        splits = spec.pop("splits", {})
-        if split not in splits:
-            raise ValueError(f"dataset {dataset!r} has no {split!r} split configured (data.sources.{dataset}.splits)")
-        from datasets import load_dataset
-
-        log.info("loading %s/%s from %s", dataset, split, spec.get("path"))
-        ds = load_dataset(**spec, split=splits[split])
-        return list(ds["text"])
-
-    return load_texts
+    log.info("loading %s/%s from %s", dataset, split, spec.get("path"))
+    ds = load_dataset(**spec, split=splits[split])
+    return list(ds["text"])
 
 
 def calibration_batches(

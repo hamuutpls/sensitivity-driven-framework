@@ -18,7 +18,7 @@ Every stage compares, under identical conditions, three variants of each method:
 ## Layout
 
 ```
-configs/tinyllama.yaml   every setting, in one file
+configs/tinyllama.yaml   Colab paths only; every default lives in config.py
 src/sdf/
   config.py              FrameworkConfig: the single config object (YAML + --set overrides)
   search_space.py        the search space (Stage 0 parameters for now); adding a parameter is one line

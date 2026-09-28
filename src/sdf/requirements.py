@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
+from sdf.reporting.metrics import is_number
+
 # requirement field -> metric names it is checked against, in order of preference.
 # All targets are upper bounds (lower is better for every one of these metrics).
 _CHECKS: dict[str, tuple[str, ...]] = {
@@ -40,7 +42,7 @@ class DeploymentRequirement:
             target = getattr(self, target_name)
             if target is None:
                 continue
-            metric = next((m for m in metric_names if _is_number(metrics.get(m))), None)
+            metric = next((m for m in metric_names if is_number(metrics.get(m))), None)
             if metric is None:
                 result.unmeasured.append(target_name)
                 continue
@@ -53,7 +55,3 @@ class DeploymentRequirement:
         elif result.unmeasured:
             result.met = None
         return result
-
-
-def _is_number(x: Any) -> bool:
-    return isinstance(x, (int, float)) and not isinstance(x, bool) and x == x  # x == x rejects NaN

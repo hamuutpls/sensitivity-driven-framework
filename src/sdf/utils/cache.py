@@ -25,30 +25,19 @@ class ArtifactCache:
     def path(self, kind: str, key: Any) -> Path:
         return self.root / kind / f"{config_hash(key)}.json"
 
-    def get(self, kind: str, key: Any) -> Any | None:
-        p = self.path(kind, key)
-        if not p.exists():
-            return None
-        try:
-            entry = json.loads(p.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            log.warning("corrupt cache entry %s ignored", p)
-            return None
-        return entry["value"]
-
-    def put(self, kind: str, key: Any, value: Any) -> None:
-        p = self.path(kind, key)
-        atomic_write_text(p, json.dumps({"key": key, "value": value}, indent=2, default=str))
-
     def get_or_compute(self, kind: str, key: Any, compute: Callable[[], Any]) -> tuple[Any, bool]:
         """Return (value, was_cached)."""
-        value = self.get(kind, key)
-        if value is not None:
-            log.info("cache hit: %s %s", kind, self.path(kind, key).name)
-            return value, True
+        p = self.path(kind, key)
+        if p.exists():
+            try:
+                value = json.loads(p.read_text(encoding="utf-8"))["value"]
+                log.info("cache hit: %s %s", kind, p.name)
+                return value, True
+            except (json.JSONDecodeError, KeyError):
+                log.warning("corrupt cache entry %s ignored", p)
         log.info("cache miss: %s, computing", kind)
         value = compute()
-        self.put(kind, key, value)
+        atomic_write_text(p, json.dumps({"key": key, "value": value}, indent=2, default=str))
         return value, False
 
 

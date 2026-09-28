@@ -2,7 +2,7 @@ import json
 
 from openpyxl import load_workbook
 
-from sdf.reporting import StageReporter
+from sdf.reporting.reporter import StageReporter
 from sdf.requirements import DeploymentRequirement
 
 

@@ -33,12 +33,6 @@ class CompressionPlan:
     sensitive_threshold: float | None
     prune_ratio_aggressive: float
 
-    def __len__(self) -> int:
-        return len(self.layers)
-
-    def __getitem__(self, i: int) -> LayerPlan:
-        return self.layers[i]
-
     @property
     def protected_layers(self) -> list[int]:
         return [lp.layer for lp in self.layers if lp.protected]
@@ -55,15 +49,6 @@ class CompressionPlan:
             "layers": [asdict(lp) for lp in self.layers],
         }
 
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "CompressionPlan":
-        return cls(
-            layers=tuple(LayerPlan(**lp) for lp in d["layers"]),
-            kind=d["kind"],
-            sensitive_threshold=d["sensitive_threshold"],
-            prune_ratio_aggressive=d["prune_ratio_aggressive"],
-        )
-
     def save(self, path: str | Path) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,7 +56,7 @@ class CompressionPlan:
 
 
 def plan_compression(
-    profile: SensitivityProfile,
+    scores: list[float],
     sensitive_threshold: float,
     prune_ratio_aggressive: float,
     protected_bits: int,
@@ -79,7 +64,7 @@ def plan_compression(
 ) -> CompressionPlan:
     _check_ratio(prune_ratio_aggressive)
     layers = []
-    for i, s in enumerate(profile.scores):
+    for i, s in enumerate(scores):
         protected = s >= sensitive_threshold
         layers.append(LayerPlan(
             layer=i,
@@ -91,15 +76,15 @@ def plan_compression(
     return CompressionPlan(tuple(layers), "sensitivity", sensitive_threshold, prune_ratio_aggressive)
 
 
-def uniform_plan(profile: SensitivityProfile, bits: int, prune_ratio: float) -> CompressionPlan:
+def uniform_plan(scores: list[float], bits: int, prune_ratio: float) -> CompressionPlan:
     _check_ratio(prune_ratio)
     layers = tuple(LayerPlan(layer=i, bit_width=bits, pruning_ratio=prune_ratio, protected=False, sensitivity=s)
-                   for i, s in enumerate(profile.scores))
+                   for i, s in enumerate(scores))
     return CompressionPlan(layers, "uniform", None, prune_ratio)
 
 
 def budget_matched_plan(
-    profile: SensitivityProfile,
+    scores: list[float],
     budget_gb: float,
     prune_ratio_aggressive: float,
     protected_bits: int,
@@ -113,7 +98,7 @@ def budget_matched_plan(
     accuracy difference then comes from *where* the bits go, not from spending more of them.
     """
     _check_ratio(prune_ratio_aggressive)
-    ranked = sorted(range(len(profile.scores)), key=lambda i: profile.scores[i], reverse=True)
+    ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
     best = None
     for k in range(len(ranked) + 1):
         protected = set(ranked[:k])
@@ -123,14 +108,14 @@ def budget_matched_plan(
             pruning_ratio=0.0 if i in protected else prune_ratio_aggressive,
             protected=i in protected,
             sensitivity=s,
-        ) for i, s in enumerate(profile.scores))
+        ) for i, s in enumerate(scores))
         plan = CompressionPlan(layers, "budget", None, prune_ratio_aggressive)
         if cost(plan).weight_memory_gb > budget_gb * (1 + 1e-9):
             break
         best = plan
     if best is None:  # even protecting nothing is over budget: return the k = 0 plan, caller flags it
         best = CompressionPlan(tuple(LayerPlan(i, compressed_bits, prune_ratio_aggressive, False, s)
-                                     for i, s in enumerate(profile.scores)), "budget", None, prune_ratio_aggressive)
+                                     for i, s in enumerate(scores)), "budget", None, prune_ratio_aggressive)
     return best
 
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-28: Leaner code after the ponytail audit
+
+About 220 lines were removed with no change to what a run produces:
+
+- **One copy of every default.** The defaults live only in `config.py`. `configs/tinyllama.yaml` now holds
+  only the Colab paths and the hardware profile, so it shows at a glance what a run changes.
+- **Candidates are plain dicts.** The `Candidate` class, the unused sampling helpers and `stage0.score`
+  (a setting with one allowed value) are gone.
+- **Sensitivity is normalised once**, when planning. The saved profile holds only the raw scores, and the
+  planner functions take the normalised score list.
+- **Smaller helpers.** The cache has one `get_or_compute` method, the number and label helpers exist once,
+  `load_texts(sources, dataset, split)` replaces the loader factory, and the package `__init__` files no
+  longer re-export names (import from the modules directly).
+
 ## 2026-09-28: Report layout matches the hand-written version
 
 - **New plain-part order.** The plain part of report.md now follows the layout Mohammad liked:

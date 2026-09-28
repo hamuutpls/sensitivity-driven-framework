@@ -5,8 +5,8 @@ Score for decoder layer l, summed over calibration batches b:
     s_l = sum_b sum_{w in layer l} |g_w(b) * w|
 
 i.e. the first-order Taylor estimate of how much the loss changes if the layer's weights are
-perturbed (gradient x weight saliency). Scores are then min-max normalised to [0, 1], so 1 is the
-most fragile layer and 0 the most robust.
+perturbed (gradient x weight saliency). The profile keeps these raw scores; `normalize` maps them to
+[0, 1] (rank by default) when a plan is made, so 1 is the most fragile layer and 0 the most robust.
 
 The profile depends only on the model and calibration data, not on any searched parameter, so it
 can be computed once and reused by every trial (see SensitivityProfile.save / load).
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -26,8 +26,7 @@ from torch import nn
 
 @dataclass
 class SensitivityProfile:
-    scores: list[float]  # normalised, one per decoder layer, in [0, 1] (see normalize)
-    raw_scores: list[float]  # accumulated |g * w| before normalisation
+    raw_scores: list[float]  # accumulated |g * w|, one per decoder layer (normalise with `normalize`)
     layer_numel: list[int] = field(default_factory=list)  # weights per decoder layer (Linear weights only)
     layer_rows: list[int] = field(default_factory=list)  # output channels per layer (for per-channel scales)
     other_numel: int = 0  # parameters outside the decoder layers + layer norms (kept at baseline precision)
@@ -37,7 +36,7 @@ class SensitivityProfile:
 
     @property
     def num_layers(self) -> int:
-        return len(self.scores)
+        return len(self.raw_scores)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -49,7 +48,8 @@ class SensitivityProfile:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "SensitivityProfile":
-        return cls(**d)
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in known})  # ignores keys from older versions
 
     @classmethod
     def load(cls, path: str | Path) -> "SensitivityProfile":
@@ -142,7 +142,6 @@ def profile_sensitivity(
     model: nn.Module,
     batches: Iterable[torch.Tensor],
     device: torch.device | str | None = None,
-    normalization: str = "rank",
     meta: dict[str, Any] | None = None,
 ) -> SensitivityProfile:
     """Run the calibration batches through `model` and score every decoder layer.
@@ -200,7 +199,6 @@ def profile_sensitivity(
     raw_list = raw.tolist()
     numel, rows, other = layer_shapes(model)
     return SensitivityProfile(
-        scores=normalize(raw_list, normalization),
         raw_scores=raw_list,
         layer_numel=numel,
         layer_rows=rows,

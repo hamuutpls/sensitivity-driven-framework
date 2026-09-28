@@ -1,5 +1,3 @@
-import random
-
 import pytest
 
 from sdf.config import FrameworkConfig, config_hash, load_config
@@ -8,29 +6,24 @@ from sdf.search_space import PER_CHANNEL, SEARCH_SPACE, Param, SearchSpace
 
 
 def test_search_space_has_spec_parameters():
-    assert SEARCH_SPACE.names == ["sensitive_threshold", "prune_ratio_aggressive", "calib_dataset", "calib_samples",
-                                  "gptq_groupsize"]
-    assert [p.name for p in SEARCH_SPACE.for_stage(0)][:2] == ["sensitive_threshold", "prune_ratio_aggressive"]
+    assert [p.name for p in SEARCH_SPACE.params] == ["sensitive_threshold", "prune_ratio_aggressive", "calib_dataset",
+                                                     "calib_samples", "gptq_groupsize"]
 
 
 def test_candidate_validation():
     c = SEARCH_SPACE.make({"gptq_groupsize": PER_CHANNEL, "sensitive_threshold": 0.7})
-    assert c.gptq_groupsize == PER_CHANNEL and c["sensitive_threshold"] == 0.7
+    assert c["gptq_groupsize"] == PER_CHANNEL and c["sensitive_threshold"] == 0.7
     for bad in ({"sensitive_threshold": 0.95}, {"prune_ratio_aggressive": 0.7}, {"gptq_groupsize": 16},
                 {"calib_dataset": "imagenet"}, {"not_a_param": 1}):
         with pytest.raises(ValueError):
             SEARCH_SPACE.make(bad)
-
-
-def test_search_space_sampling_is_valid_and_seeded():
-    a = SEARCH_SPACE.sample(random.Random(3))
-    assert a == SEARCH_SPACE.sample(random.Random(3))
-    SEARCH_SPACE.validate(dict(a))
+    with pytest.raises(ValueError):
+        SEARCH_SPACE.validate({"sensitive_threshold": 0.5})  # missing parameters
 
 
 def test_adding_a_parameter_is_one_line():
     space = SearchSpace(list(SEARCH_SPACE.params) + [Param("new_knob", stage=1, default=2, choices=(1, 2))])
-    assert space.default()["new_knob"] == 2
+    assert space.make()["new_knob"] == 2
 
 
 def test_config_overrides_and_yaml(tmp_path):
@@ -41,7 +34,7 @@ def test_config_overrides_and_yaml(tmp_path):
 
     loaded = load_config("configs/tinyllama.yaml")
     assert loaded.stage0.protected_bits == 8
-    SEARCH_SPACE.make(loaded.hyperparams)  # the YAML defaults are inside the search space
+    SEARCH_SPACE.make(loaded.hyperparams)  # config hyperparams are inside the search space
     assert config_hash(loaded.to_dict()) == config_hash(load_config("configs/tinyllama.yaml").to_dict())
 
 
@@ -61,14 +54,15 @@ def test_dataset_sources_come_from_config(monkeypatch):
     import sys
     import types
 
-    from sdf.data import make_text_loader
+    from sdf.data import load_texts
 
     calls = []
     fake = types.ModuleType("datasets")
     fake.load_dataset = lambda **kw: calls.append(kw) or {"text": ["a", "b"]}
     monkeypatch.setitem(sys.modules, "datasets", fake)
 
-    loader = make_text_loader(load_config("configs/tinyllama.yaml").data.sources)
+    sources = load_config("configs/tinyllama.yaml").data.sources
+    loader = lambda dataset, split: load_texts(sources, dataset, split)  # noqa: E731
     assert loader("wikitext2", "test") == ["a", "b"]
     assert calls[-1] == {"path": "Salesforce/wikitext", "name": "wikitext-2-raw-v1", "split": "test"}
     loader("c4", "train")

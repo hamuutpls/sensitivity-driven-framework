@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
-from sdf.reporting.metrics import METRICS, is_better
+from sdf.reporting.metrics import is_better, is_number, label
 from sdf.requirements import DeploymentRequirement
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.logging import get_logger
@@ -173,7 +173,7 @@ class StageReporter:
                 continue
             original = self._find(row.compare_to, "original") if row.variant == "framework" else None
             for name, value in row.metrics.items():
-                if not _num(value):
+                if not is_number(value):
                     continue
                 d: dict[str, float | None] = {}
                 if fp16 is not None and row is not fp16:
@@ -196,7 +196,7 @@ class StageReporter:
                 if better is None:
                     continue
                 pct = d.get("vs_original_pct")
-                desc = f"{_label(name)} ({_fmt_signed(abs_d)}{'' if pct is None else f', {pct:+.1f}%'})"
+                desc = f"{label(name)} ({abs_d:+.4g}{'' if pct is None else f', {pct:+.1f}%'})"
                 (wins if better else losses).append(desc)
             if not wins and not losses:
                 lines.append(f"**{fw.method}**: no original-method row to compare against.")
@@ -270,23 +270,10 @@ class StageReporter:
         return {"report": self.report_path, "xlsx": self.xlsx_path, "json": self.json_path}
 
 
-def _num(x: Any) -> bool:
-    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
-
-
 def _delta(value: float, ref: Any, prefix: str) -> dict[str, float | None]:
-    if not _num(ref):
+    if not is_number(ref):
         return {}
     return {f"{prefix}_abs": value - ref, f"{prefix}_pct": (value - ref) / ref * 100 if ref != 0 else None}
-
-
-def _label(name: str) -> str:
-    spec = METRICS.get(name)
-    return spec.label if spec else name
-
-
-def _fmt_signed(x: float) -> str:
-    return f"{x:+.4g}"
 
 
 def _json_default(o: Any) -> Any:

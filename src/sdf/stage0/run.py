@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import dataclasses
+import functools
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -10,11 +10,10 @@ from typing import Any, Callable
 
 import torch
 
-from sdf.data import calibration_batches, eval_windows, make_text_loader
-from sdf.eval import measure_model
-from sdf.reporting import StageReporter
+from sdf.data import calibration_batches, eval_windows, load_texts
+from sdf.eval.metrics import measure_model
+from sdf.reporting.reporter import StageReporter
 from sdf.run import RunContext
-from sdf.search_space import Candidate
 from sdf.stage0.planner import (
     CompressionPlan,
     budget_matched_plan,
@@ -65,10 +64,10 @@ class _ModelHandle:
         return self._model.to(device=self.device, dtype=getattr(torch, dtype))
 
 
-def profile_key(ctx: RunContext, cand: Candidate) -> dict[str, Any]:
+def profile_key(ctx: RunContext, cand: dict[str, Any]) -> dict[str, Any]:
     cfg = ctx.cfg
-    return {"model": cfg.model.name, "profile_dtype": cfg.stage0.profile_dtype, "score": cfg.stage0.score,
-            "calib_dataset": cand.calib_dataset, "calib_samples": cand.calib_samples,
+    return {"model": cfg.model.name, "profile_dtype": cfg.stage0.profile_dtype, 
+            "calib_dataset": cand["calib_dataset"], "calib_samples": cand["calib_samples"],
             "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size, "seed": cfg.run.seed}
 
 
@@ -86,7 +85,7 @@ def _cost_metrics(cost: PlanCost) -> dict[str, float]:
 
 def run_stage0(
     ctx: RunContext,
-    candidate: Candidate,
+    candidate: dict[str, Any],
     model=None,
     tokenizer=None,
     text_loader: Callable[[str, str], list[str]] | None = None,
@@ -95,12 +94,12 @@ def run_stage0(
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
     device = resolve_device(cfg.model.device)
     handle = _ModelHandle(ctx, device, model, tokenizer)
-    text_loader = text_loader or make_text_loader(cfg.data.sources)
+    text_loader = text_loader or functools.partial(load_texts, cfg.data.sources)
 
     # --- sensitivity profile (depends only on model + calibration, so cached across trials) -------------
     def compute_profile() -> dict[str, Any]:
-        batches = calibration_batches(text_loader(candidate.calib_dataset, "train"), handle.tokenizer,
-                                      candidate.calib_samples, cfg.calibration.seq_len,
+        batches = calibration_batches(text_loader(candidate["calib_dataset"], "train"), handle.tokenizer,
+                                      candidate["calib_samples"], cfg.calibration.seq_len,
                                       cfg.calibration.batch_size, cfg.run.seed)
         prof = profile_sensitivity(handle.model(s0.profile_dtype), batches, device=device,
                                    meta=profile_key(ctx, candidate))
@@ -108,24 +107,24 @@ def run_stage0(
 
     prof_dict, prof_cached = ctx.cache.get_or_compute("sensitivity_profile", profile_key(ctx, candidate),
                                                       compute_profile)
-    # Normalisation is cheap and not part of the cache key: re-derive the scores from the cached raw scores.
-    profile = dataclasses.replace(SensitivityProfile.from_dict(prof_dict),
-                                  scores=normalize(prof_dict["raw_scores"], s0.normalization))
+    profile = SensitivityProfile.from_dict(prof_dict)
+    # The only place scores are normalised: cheap, so not cached, and changing the method reuses the profile.
+    scores = normalize(profile.raw_scores, s0.normalization)
 
     rep = StageReporter(
         stage=0, run_dir=ctx.run_dir, title="Sensitivity profiling and compression planning",
-        config={"hyperparams": candidate.to_dict(), "stage0": asdict(s0), "calibration": asdict(cfg.calibration),
+        config={"hyperparams": dict(candidate), "stage0": asdict(s0), "calibration": asdict(cfg.calibration),
                 "eval": asdict(cfg.eval), "model": asdict(cfg.model), "run": asdict(cfg.run)},
         environment=environment_info(),
-        conditions={"model": cfg.model.name, "calibration": f"{candidate.calib_dataset}, "
-                    f"{candidate.calib_samples} x {cfg.calibration.seq_len} tokens", "seed": cfg.run.seed,
+        conditions={"model": cfg.model.name, "calibration": f"{candidate['calib_dataset']}, "
+                    f"{candidate['calib_samples']} x {cfg.calibration.seq_len} tokens", "seed": cfg.run.seed,
                     "evaluation data": f"wikitext-2 test, {cfg.eval.seq_len}-token windows, validation/held-out halves",
                     "device": str(device), "backend": "HF Transformers",
-                    "group size for memory prediction": candidate.gptq_groupsize},
+                    "group size for memory prediction": candidate["gptq_groupsize"]},
         requirement=cfg.requirement,
         main_metrics=MAIN_METRICS,
     )
-    predict = lambda plan: predict_cost(plan, profile, candidate.gptq_groupsize,  # noqa: E731
+    predict = lambda plan: predict_cost(plan, profile, candidate["gptq_groupsize"],  # noqa: E731
                                         s0.group_overhead_bits, s0.baseline_bits)
 
     # --- FP16 baseline: measured once per (model, eval settings, hardware) and cached ----------------------
@@ -146,7 +145,7 @@ def run_stage0(
             rep.add_raw("baseline", "fp16", fp16["raw"])
 
     # --- original method: uniform allocation, no Stage 0 guidance ------------------------------------------
-    uniform = uniform_plan(profile, s0.uniform_bits, s0.uniform_prune_ratio)
+    uniform = uniform_plan(scores, s0.uniform_bits, s0.uniform_prune_ratio)
     with rep.method(METHOD, "original",
                     description=f"uniform {s0.uniform_bits}-bit, prune {s0.uniform_prune_ratio} on every layer") as row:
         row.metrics.update(_cost_metrics(predict(uniform)))
@@ -156,10 +155,10 @@ def run_stage0(
     # --- framework: sensitivity-driven plan ------------------------------------------------------------------
     plan = None
     with rep.method(METHOD, "framework",
-                    description=f"sensitivity plan (threshold {candidate.sensitive_threshold:.3g}, "
-                                f"prune {candidate.prune_ratio_aggressive:.3g} on robust layers)") as row:
+                    description=f"sensitivity plan (threshold {candidate['sensitive_threshold']:.3g}, "
+                                f"prune {candidate['prune_ratio_aggressive']:.3g} on robust layers)") as row:
         t0 = time.perf_counter()
-        plan = plan_compression(profile, candidate.sensitive_threshold, candidate.prune_ratio_aggressive,
+        plan = plan_compression(scores, candidate["sensitive_threshold"], candidate["prune_ratio_aggressive"],
                                 s0.protected_bits, s0.compressed_bits)
         planning_s = time.perf_counter() - t0
         row.metrics.update(_cost_metrics(predict(plan)))
@@ -181,7 +180,7 @@ def run_stage0(
                     description="sensitivity plan protecting as many top layers as fit in the uniform plan's "
                                 "predicted memory") as row:
         t0 = time.perf_counter()
-        budget = budget_matched_plan(profile, predict(uniform).weight_memory_gb, candidate.prune_ratio_aggressive,
+        budget = budget_matched_plan(scores, predict(uniform).weight_memory_gb, candidate["prune_ratio_aggressive"],
                                      s0.protected_bits, s0.compressed_bits, predict)
         row.metrics.update(_cost_metrics(predict(budget)))
         row.metrics["protected_layers"] = len(budget.protected_layers)
@@ -205,7 +204,7 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
                         predict: Callable[[CompressionPlan], PlanCost], baseline_bits: int) -> None:
     fw_cost, un_cost = predict(plan), predict(uniform)
     outliers = outlier_layers(profile.raw_scores)
-    budget_layers = budget.layers if budget is not None else [None] * len(plan)
+    budget_layers = budget.layers if budget is not None else [None] * len(plan.layers)
     for lp, ul, bl, raw, numel, fw_mb, un_mb in zip(plan.layers, uniform.layers, budget_layers,
                                                     profile.raw_scores, profile.layer_numel,
                                                     fw_cost.per_layer_mb, un_cost.per_layer_mb):
@@ -220,12 +219,13 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
             "uniform_bits": ul.bit_width, "uniform_prune_ratio": ul.pruning_ratio, "uniform_predicted_mb": un_mb,
         })
 
-    n = len(plan)
-    ranked = sorted(range(n), key=lambda i: profile.scores[i], reverse=True)
+    n = len(plan.layers)
+    scores = [lp.sensitivity for lp in plan.layers]
+    ranked = sorted(range(n), key=lambda i: scores[i], reverse=True)
     rep.sections.append(("Sensitivity profile and plan", "\n".join([
         f"Score: {profile.method}, {rep.config['stage0']['normalization']}-normalised to [0, 1] over {n} decoder layers.",
-        f"Most sensitive layers: {', '.join(f'{i} ({profile.scores[i]:.2f})' for i in ranked[:3])}. "
-        f"Least sensitive: {', '.join(f'{i} ({profile.scores[i]:.2f})' for i in ranked[-3:])}.",
+        f"Most sensitive layers: {', '.join(f'{i} ({scores[i]:.2f})' for i in ranked[:3])}. "
+        f"Least sensitive: {', '.join(f'{i} ({scores[i]:.2f})' for i in ranked[-3:])}.",
         f"Protected ({len(plan.protected_layers)}/{n}): {plan.protected_layers or 'none'}.",
         f"Profiling cost: {profile.cost.get('calibration_batches')} batches, "
         f"{profile.cost.get('calibration_tokens')} tokens, {profile.cost.get('wall_clock_s', 0):.1f}s, "
@@ -248,7 +248,7 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
         side = "below" if profile.raw_scores[i] < min(others) else "above" if profile.raw_scores[i] > max(others) \
             else "far from"
         fate = ("protected" if i in plan.protected_layers else
-                f"compressed and pruned at {plan[i].pruning_ratio:.0%}")
+                f"compressed and pruned at {plan.layers[i].pruning_ratio:.0%}")
         rep.anomalies.append(
             f"Layer {i} is an outlier: raw sensitivity {profile.raw_scores[i]:.4g}, {side} every other layer "
             f"({min(others):.4g}–{max(others):.4g}). The plan has it {fate}. Check this layer's quality "
@@ -286,7 +286,7 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
     """The plain-language part of the Stage 0 report, for readers with no AI background."""
     s0 = rep.config["stage0"]
     hp = rep.config["hyperparams"]
-    n, n_prot = len(plan), len(plan.protected_layers)
+    n, n_prot = len(plan.layers), len(plan.protected_layers)
     rep.plain_intro = (
         "Compressing a language model is like shrinking a photo: done carefully, you save a lot of space and "
         "barely notice the difference; done carelessly, the picture turns to mush. The catch is that not every "

@@ -1,4 +1,4 @@
-"""The single configuration object. Stage logic reads every setting from here or from a Candidate."""
+"""The single configuration object. Stage logic reads every setting from here or from the candidate dict."""
 
 from __future__ import annotations
 
@@ -66,7 +66,6 @@ class EvalConfig:
 
 @dataclass
 class Stage0Config:
-    score: str = "grad_x_weight"
     # rank | minmax. Rank is robust to outlier layers; see sdf.stage0.sensitivity.normalize.
     normalization: str = "rank"
     profile_dtype: str = "float32"  # fp16 gradients overflow; profile in fp32 (or bfloat16 on GPU)
@@ -147,15 +146,3 @@ def _field_type(cls, name: str):
 
     return typing.get_type_hints(cls)[name]
 
-
-__all__ = [
-    "CalibrationConfig",
-    "DataConfig",
-    "EvalConfig",
-    "FrameworkConfig",
-    "ModelConfig",
-    "RunConfig",
-    "Stage0Config",
-    "config_hash",
-    "load_config",
-]

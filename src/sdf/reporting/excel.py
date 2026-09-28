@@ -11,7 +11,7 @@ from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from sdf.reporting.metrics import METRICS
+from sdf.reporting.metrics import METRICS, label as metric_label
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -138,14 +138,13 @@ def _charts(ws, rep: "StageReporter") -> None:
         points = [(r.key, r.metrics[m]) for r in ok if isinstance(r.metrics.get(m), (int, float))]
         if not points:
             continue
-        label = METRICS[m].label if m in METRICS else m
         ws.cell(row=row0, column=1, value="Row").font = BOLD
-        ws.cell(row=row0, column=2, value=label).font = BOLD
+        ws.cell(row=row0, column=2, value=metric_label(m)).font = BOLD
         for i, (key, value) in enumerate(points, start=1):
             ws.cell(row=row0 + i, column=1, value=key)
             ws.cell(row=row0 + i, column=2, value=value)
         chart = BarChart()
-        chart.title = label
+        chart.title = metric_label(m)
         chart.legend = None
         chart.height, chart.width = 7, 14
         chart.add_data(Reference(ws, min_col=2, min_row=row0, max_row=row0 + len(points)), titles_from_data=True)
