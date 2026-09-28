@@ -52,6 +52,9 @@ Stage 0 compares:
   prefill and decode latency).
 - **original**: a uniform allocation (every layer 4-bit, no pruning), i.e. what a method uses with no guidance.
 - **framework**: the sensitivity plan.
+- **framework, same size**: the sensitivity plan limited to the uniform plan's predicted memory (it protects
+  as many of the most sensitive layers as fit). This is the fair quality comparison, since the threshold plan
+  is usually bigger than uniform.
 
 For the two plans it reports predicted weight memory, average bits per weight, sparsity and *sensitivity
 exposure*, which measures how much compression lands on sensitive layers (lower is better). Accuracy and

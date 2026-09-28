@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sdf.search_space import PER_CHANNEL
 from sdf.stage0.sensitivity import SensitivityProfile
@@ -29,7 +29,7 @@ class LayerPlan:
 @dataclass(frozen=True)
 class CompressionPlan:
     layers: tuple[LayerPlan, ...]
-    kind: str  # "sensitivity" | "uniform"
+    kind: str  # "sensitivity" | "budget" | "uniform"
     sensitive_threshold: float | None
     prune_ratio_aggressive: float
 
@@ -98,6 +98,42 @@ def uniform_plan(profile: SensitivityProfile, bits: int, prune_ratio: float) -> 
     return CompressionPlan(layers, "uniform", None, prune_ratio)
 
 
+def budget_matched_plan(
+    profile: SensitivityProfile,
+    budget_gb: float,
+    prune_ratio_aggressive: float,
+    protected_bits: int,
+    compressed_bits: int,
+    cost: "Callable[[CompressionPlan], PlanCost]",
+) -> CompressionPlan:
+    """The sensitivity plan that fits in `budget_gb` (normally the uniform plan's predicted size).
+
+    Protects the k most sensitive layers, with k as large as the budget allows; every other layer is
+    compressed and pruned as usual. This makes the framework-vs-original comparison size-for-size fair: any
+    accuracy difference then comes from *where* the bits go, not from spending more of them.
+    """
+    _check_ratio(prune_ratio_aggressive)
+    ranked = sorted(range(len(profile.scores)), key=lambda i: profile.scores[i], reverse=True)
+    best = None
+    for k in range(len(ranked) + 1):
+        protected = set(ranked[:k])
+        layers = tuple(LayerPlan(
+            layer=i,
+            bit_width=protected_bits if i in protected else compressed_bits,
+            pruning_ratio=0.0 if i in protected else prune_ratio_aggressive,
+            protected=i in protected,
+            sensitivity=s,
+        ) for i, s in enumerate(profile.scores))
+        plan = CompressionPlan(layers, "budget", None, prune_ratio_aggressive)
+        if cost(plan).weight_memory_gb > budget_gb * (1 + 1e-9):
+            break
+        best = plan
+    if best is None:  # even protecting nothing is over budget: return the k = 0 plan, caller flags it
+        best = CompressionPlan(tuple(LayerPlan(i, compressed_bits, prune_ratio_aggressive, False, s)
+                                     for i, s in enumerate(profile.scores)), "budget", None, prune_ratio_aggressive)
+    return best
+
+
 @dataclass(frozen=True)
 class PlanCost:
     """Predicted cost of a plan, before any compression is actually run."""
@@ -107,6 +143,7 @@ class PlanCost:
     sparsity: float  # share of all parameters pruned
     sensitivity_exposure: float  # sum_l s_l * (1 - eff_bits_l / baseline) / sum_l s_l
     per_layer_mb: tuple[float, ...]
+    fixed_memory_gb: float = 0.0  # parts kept at baseline precision in every plan (embeddings, LM head, norms)
 
 
 def predict_cost(
@@ -148,6 +185,7 @@ def predict_cost(
         sparsity=total_pruned / total_numel,
         sensitivity_exposure=exposure_num / sens_total if sens_total > 0 else 0.0,
         per_layer_mb=tuple(b / 8 / 1e6 for b in per_layer_bits),
+        fixed_memory_gb=profile.other_numel * baseline_bits / 8 / 1e9,
     )
 
 
@@ -159,6 +197,7 @@ def baseline_cost(profile: SensitivityProfile, baseline_bits: int) -> PlanCost:
         sparsity=0.0,
         sensitivity_exposure=0.0,
         per_layer_mb=tuple(n * baseline_bits / 8 / 1e6 for n in profile.layer_numel),
+        fixed_memory_gb=profile.other_numel * baseline_bits / 8 / 1e9,
     )
 
 

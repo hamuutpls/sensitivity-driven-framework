@@ -61,8 +61,7 @@ def _plain_verdicts(rep: "StageReporter") -> list[str]:
 
     out = []
     for fw in (r for r in rep.rows if r.variant == "framework" and r.status == "ok"):
-        orig = next((r for r in rep.rows if r.variant == "original" and r.method == fw.method
-                     and r.status == "ok"), None)
+        orig = rep.find_original(fw)
         if orig is None:
             out.append(f"There is no working {VARIANT_PLAIN['original'][0].lower()} result for {fw.method}, "
                        "so the framework could not be compared against it.")
@@ -77,19 +76,19 @@ def _plain_verdicts(rep: "StageReporter") -> list[str]:
             if better is not None:
                 (wins if better else losses).append(spec.plain or spec.label)
         if wins and not losses:
-            head = "The sensitivity-guided framework beat the standard method on every measure compared"
+            head = "beat the standard method on every measure compared"
         elif losses and not wins:
-            head = "The standard method beat the sensitivity-guided framework on every measure compared"
+            head = "lost to the standard method on every measure compared"
         elif wins:
-            head = "It is a trade-off: the framework did better on some measures and worse on others"
+            head = "is a trade-off against the standard method: better on some measures, worse on others"
         else:
-            head = "The two came out the same on the measures compared"
+            head = "came out the same as the standard method on the measures compared"
         detail = []
         if wins:
-            detail.append("the framework was better on " + ", ".join(wins))
+            detail.append("better on " + ", ".join(wins))
         if losses:
             detail.append("worse on " + ", ".join(losses))
-        out.append(head + (" (" + "; ".join(detail) + ")." if detail else "."))
+        out.append(f"**{fw.plain_name}** {head}" + (" (" + "; ".join(detail) + ")." if detail else "."))
     return out
 
 
@@ -133,10 +132,10 @@ def _plain_part(rep: "StageReporter") -> list[str]:
         lines += [f"### {(spec.plain or spec.label)[:1].upper() + (spec.plain or spec.label)[1:]}", "",
                   spec.meaning, ""]
         for r in rows:
-            name = VARIANT_PLAIN[r.variant][0]
+            name = r.plain_name
             text = f"- {name}: **{_value(r.metrics[m], spec)}**"
             refs = []
-            orig = by_variant.get("original")
+            orig = rep.find_original(r) if r.variant == "framework" else None
             fp16 = by_variant.get("fp16")
             if r.variant == "framework" and orig is not None and isinstance(orig.metrics.get(m), (int, float)):
                 refs.append(_compare(r.metrics[m], orig.metrics[m], m, "standard method"))
@@ -146,7 +145,7 @@ def _plain_part(rep: "StageReporter") -> list[str]:
             if refs:
                 text += " (" + "; ".join(refs) + ")"
             lines.append(text)
-        not_measured = [VARIANT_PLAIN[r.variant][0] for r in ok if m not in r.metrics]
+        not_measured = [r.plain_name for r in ok if m not in r.metrics]
         if not_measured:
             lines.append(f"- Not measured at this stage for: {', '.join(not_measured)}.")
         lines.append("")
@@ -161,7 +160,7 @@ def _plain_part(rep: "StageReporter") -> list[str]:
         for r in ok:
             req = _requirement_plain(r)
             if req:
-                lines.append(f"- {VARIANT_PLAIN[r.variant][0]} {req}.")
+                lines.append(f"- {r.plain_name} {req}.")
     lines.append("")
 
     lines += ["## Words used in this report", ""]

@@ -120,6 +120,24 @@ def normalize(scores: list[float], method: str = "rank") -> list[float]:
     return [r / (n - 1) for r in ranks]
 
 
+def outlier_layers(raw_scores: list[float], cutoff: float = 3.5) -> list[int]:
+    """Layers whose raw score is far from the rest: robust z-score |s - median| / (1.4826 * MAD) > cutoff.
+
+    Median and MAD (median absolute deviation) are used instead of mean and std so the outlier itself
+    doesn't hide itself by inflating the spread. 3.5 is the usual cutoff (Iglewicz and Hoaglin).
+    """
+    n = len(raw_scores)
+    if n < 3:
+        return []
+    ordered = sorted(raw_scores)
+    median = ordered[n // 2] if n % 2 else (ordered[n // 2 - 1] + ordered[n // 2]) / 2
+    dev = sorted(abs(s - median) for s in raw_scores)
+    mad = dev[n // 2] if n % 2 else (dev[n // 2 - 1] + dev[n // 2]) / 2
+    if mad == 0:
+        return [i for i, s in enumerate(raw_scores) if s != median]
+    return [i for i, s in enumerate(raw_scores) if abs(s - median) / (1.4826 * mad) > cutoff]
+
+
 def profile_sensitivity(
     model: nn.Module,
     batches: Iterable[torch.Tensor],

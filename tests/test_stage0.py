@@ -11,7 +11,9 @@ from sdf.search_space import PER_CHANNEL, SEARCH_SPACE
 from sdf.stage0 import (
     SensitivityProfile,
     baseline_cost,
+    budget_matched_plan,
     normalize,
+    outlier_layers,
     plan_compression,
     predict_cost,
     profile_sensitivity,
@@ -46,6 +48,26 @@ def test_outlier_layer_does_not_protect_everything():
     assert len(plan.protected_layers) == 11  # threshold 0.5 protects the more sensitive half
     assert 0 in plan.compressed_layers and 21 in plan.protected_layers
     assert len(plan_compression(SensitivityProfile(normalize(raw), raw), 0.8, 0.3, 8, 4).protected_layers) == 5
+
+
+def test_budget_matched_plan_fits_uniform_size():
+    raw = [2705.0] + [6596.0 + i * (8647.0 - 6596.0) / 20 for i in range(21)]
+    prof = SensitivityProfile(normalize(raw), raw, [44_000_000] * 22, [12_000] * 22, 260_000_000)
+    cost = lambda p: predict_cost(p, prof, 128, 32, 16)  # noqa: E731
+    budget = cost(uniform_plan(prof, 4, 0.0)).weight_memory_gb
+    plan = budget_matched_plan(prof, budget, 0.3, 8, 4, cost)
+    assert cost(plan).weight_memory_gb <= budget
+    k = len(plan.protected_layers)
+    assert 0 < k < 22
+    assert set(plan.protected_layers) == set(sorted(range(22), key=lambda i: raw[i])[-k:])  # the most sensitive
+    one_more = budget_matched_plan(prof, budget * 10, 0.3, 8, 4, cost)
+    assert len(one_more.protected_layers) == 22  # a generous budget protects everything
+
+
+def test_outlier_layers():
+    raw = [2705.0] + [6596.0 + i * (8647.0 - 6596.0) / 20 for i in range(21)]
+    assert outlier_layers(raw) == [0]
+    assert outlier_layers([1.0, 1.1, 0.9, 1.05, 0.95]) == []
 
 
 def test_plan_and_uniform():
@@ -113,7 +135,12 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg):
         assert (stage_dir / name).exists(), name
     data = json.loads((stage_dir / "results.json").read_text())
     rows = {f"{r['method']}/{r['variant']}": r for r in data["rows"]}
-    assert set(rows) == {"baseline/fp16", "allocation/original", "allocation/framework"}
+    assert set(rows) == {"baseline/fp16", "allocation/original", "allocation/framework",
+                         "allocation_same_size/framework"}
+    same = rows["allocation_same_size/framework"]
+    assert same["metrics"]["predicted_weight_memory_gb"] <= rows["allocation/original"]["metrics"][
+        "predicted_weight_memory_gb"] * (1 + 1e-9)
+    assert "vs_original_abs" in same["deltas"]["predicted_weight_memory_gb"]  # compared to the uniform plan
     assert all(r["status"] == "ok" for r in rows.values())
     assert rows["baseline/fp16"]["metrics"]["ppl_val"] > 1
     fw = rows["allocation/framework"]
@@ -130,3 +157,5 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg):
     data2 = json.loads((stage_dir / "results.json").read_text())
     assert data2["rows"][0]["info"]["cached"] is True
     assert data2["rows"][2]["info"]["profile_cached"] is True
+    report = (stage_dir / "report.md").read_text(encoding="utf-8")
+    assert "same-size version of the framework" in report and "Size floor" in report

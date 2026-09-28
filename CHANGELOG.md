@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-28: Fair same-size comparison, size floor, outlier flag
+
+- **Same-size framework plan.** The threshold plan (0.947 GB predicted on TinyLlama) is about 22% bigger
+  than uniform 4-bit (0.777 GB), so comparing its quality against uniform isn't fair. Stage 0 now adds a
+  second framework row, `allocation_same_size/framework`, compared against the same uniform plan. It
+  protects as many of the most sensitive layers as fit in the uniform plan's predicted memory, which works
+  out to 5 of 22 layers at 0.775 GB. Its plan is saved as `compression_plan_budget_matched.json`.
+- **Size floor reported.** Embeddings, the LM head and norms stay at 16 bits in every plan. The report now
+  states this floor (0.26 GB on TinyLlama) in both the plain and the technical part.
+- **Outlier layers flagged.** A layer whose raw sensitivity is far from the rest is flagged in the report
+  and in the Per-layer sheet, together with what the plan does to it. Outliers are found by a robust
+  z-score (median / MAD, above 3.5), which catches TinyLlama's layer 0. They are flagged, not
+  auto-protected.
+
 ## 2026-09-28: Plain-language reports
 
 - **Two-part report.md.** Every report now opens with a part written for readers with no AI background:

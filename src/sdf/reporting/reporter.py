@@ -72,6 +72,15 @@ class ComparisonRow:
     def key(self) -> str:
         return f"{self.method}/{self.variant}"
 
+    @property
+    def compare_to(self) -> str:
+        """Method whose "original" row this row is compared against (itself unless info["compare_to"])."""
+        return self.info.get("compare_to", self.method)
+
+    @property
+    def plain_name(self) -> str:
+        return self.info.get("label") or VARIANT_PLAIN[self.variant][0]
+
 
 class StageReporter:
     def __init__(
@@ -144,6 +153,9 @@ class StageReporter:
 
     # ------------------------------------------------------------------ analysis
 
+    def find_original(self, row: ComparisonRow) -> ComparisonRow | None:
+        return self._find(row.compare_to, "original")
+
     def _find(self, method: str | None, variant: str) -> ComparisonRow | None:
         for r in self.rows:
             if r.variant == variant and r.status == "ok" and (method is None or r.method == method):
@@ -156,7 +168,7 @@ class StageReporter:
             row.deltas = {}
             if row.status != "ok":
                 continue
-            original = self._find(row.method, "original") if row.variant == "framework" else None
+            original = self._find(row.compare_to, "original") if row.variant == "framework" else None
             for name, value in row.metrics.items():
                 if not _num(value):
                     continue

@@ -17,19 +17,21 @@ from sdf.run import RunContext
 from sdf.search_space import Candidate
 from sdf.stage0.planner import (
     CompressionPlan,
+    budget_matched_plan,
     PlanCost,
     baseline_cost,
     plan_compression,
     predict_cost,
     uniform_plan,
 )
-from sdf.stage0.sensitivity import SensitivityProfile, normalize, profile_sensitivity
+from sdf.stage0.sensitivity import SensitivityProfile, normalize, outlier_layers, profile_sensitivity
 from sdf.utils.env import environment_info, resolve_device
 from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
 
 METHOD = "allocation"
+METHOD_BUDGET = "allocation_same_size"
 MAIN_METRICS = ["ppl_val", "predicted_weight_memory_gb", "avg_bits_per_weight", "sensitivity_exposure", "build_time_s"]
 
 
@@ -166,26 +168,52 @@ def run_stage0(
         row.metrics["build_time_s"] = profile.cost["wall_clock_s"] + planning_s
         row.info.update(profile_cached=prof_cached, profiling_cost=profile.cost)
 
+    # --- framework at the same size as the original method --------------------------------------------------
+    # The threshold plan usually spends more bits than uniform, so its accuracy edge would be partly bought
+    # with memory. This plan protects as many of the most sensitive layers as fit in the uniform plan's size,
+    # making the comparison size-for-size fair.
+    budget = None
+    with rep.method(METHOD_BUDGET, "framework", compare_to=METHOD,
+                    label="Sensitivity-guided framework, same size as the standard method",
+                    description="sensitivity plan protecting as many top layers as fit in the uniform plan's "
+                                "predicted memory") as row:
+        t0 = time.perf_counter()
+        budget = budget_matched_plan(profile, predict(uniform).weight_memory_gb, candidate.prune_ratio_aggressive,
+                                     s0.protected_bits, s0.compressed_bits, predict)
+        row.metrics.update(_cost_metrics(predict(budget)))
+        row.metrics["protected_layers"] = len(budget.protected_layers)
+        row.metrics["build_time_s"] = profile.cost["wall_clock_s"] + time.perf_counter() - t0
+        row.info["budget_gb"] = predict(uniform).weight_memory_gb
+
     if plan is None:
         rep.finalize()
         raise RuntimeError(f"Stage 0 planning failed; see {rep.report_path}")
 
-    _add_stage0_details(rep, profile, plan, uniform, predict, s0.baseline_bits)
+    _add_stage0_details(rep, profile, plan, uniform, budget, predict, s0.baseline_bits)
+    if budget is not None:
+        budget.save(rep.dir / "compression_plan_budget_matched.json")
     plan.save(rep.dir / "compression_plan.json")
     profile.save(rep.dir / "sensitivity_profile.json")
     return Stage0Result(plan=plan, profile=profile, outputs=rep.finalize())
 
 
 def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: CompressionPlan,
-                        uniform: CompressionPlan, predict: Callable[[CompressionPlan], PlanCost],
-                        baseline_bits: int) -> None:
+                        uniform: CompressionPlan, budget: CompressionPlan | None,
+                        predict: Callable[[CompressionPlan], PlanCost], baseline_bits: int) -> None:
     fw_cost, un_cost = predict(plan), predict(uniform)
-    for lp, ul, raw, numel, fw_mb, un_mb in zip(plan.layers, uniform.layers, profile.raw_scores,
-                                                profile.layer_numel, fw_cost.per_layer_mb, un_cost.per_layer_mb):
+    outliers = outlier_layers(profile.raw_scores)
+    budget_layers = budget.layers if budget is not None else [None] * len(plan)
+    for lp, ul, bl, raw, numel, fw_mb, un_mb in zip(plan.layers, uniform.layers, budget_layers,
+                                                    profile.raw_scores, profile.layer_numel,
+                                                    fw_cost.per_layer_mb, un_cost.per_layer_mb):
         rep.per_layer.append({
-            "layer": lp.layer, "sensitivity": lp.sensitivity, "raw_score": raw, "weights": numel,
+            "layer": lp.layer, "sensitivity": lp.sensitivity, "raw_score": raw, "outlier": lp.layer in outliers,
+            "weights": numel,
             "framework_protected": lp.protected, "framework_bits": lp.bit_width,
             "framework_prune_ratio": lp.pruning_ratio, "framework_predicted_mb": fw_mb,
+            "same_size_protected": None if bl is None else bl.protected,
+            "same_size_bits": None if bl is None else bl.bit_width,
+            "same_size_prune_ratio": None if bl is None else bl.pruning_ratio,
             "uniform_bits": ul.bit_width, "uniform_prune_ratio": ul.pruning_ratio, "uniform_predicted_mb": un_mb,
         })
 
@@ -205,6 +233,28 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
         "the two allocations are measured once Stage 1 applies them.",
     ])))
 
+    fixed = fw_cost.fixed_memory_gb
+    rep.sections.append(("Size floor", (
+        f"Embeddings, the LM head and norms ({profile.other_numel:,} parameters) stay at {baseline_bits} bits in "
+        f"every plan: {fixed:.3f} GB, {fixed / un_cost.weight_memory_gb:.0%} of the uniform plan's predicted "
+        "size. No layer allocation can go below this floor; compressing the embeddings / LM head is the only "
+        "way past it.")))
+
+    for i in outliers:
+        others = [r for j, r in enumerate(profile.raw_scores) if j != i]
+        side = "below" if profile.raw_scores[i] < min(others) else "above" if profile.raw_scores[i] > max(others) \
+            else "far from"
+        fate = ("protected" if i in plan.protected_layers else
+                f"compressed and pruned at {plan[i].pruning_ratio:.0%}")
+        rep.anomalies.append(
+            f"Layer {i} is an outlier: raw sensitivity {profile.raw_scores[i]:.4g}, {side} every other layer "
+            f"({min(others):.4g}–{max(others):.4g}). The plan has it {fate}. Check this layer's quality "
+            "separately before trusting the plan for it.")
+
+    if budget is not None and not budget.protected_layers:
+        rep.anomalies.append("The same-size plan could not protect any layer within the uniform plan's memory; "
+                             "raise prune_ratio_aggressive to free room for protection.")
+
     # sanity checks
     if len(plan.protected_layers) == n:
         rep.anomalies.append("Every layer is protected: the plan compresses nothing beyond 8-bit. "
@@ -217,7 +267,8 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
     if fw_cost.weight_memory_gb >= baseline_cost(profile, baseline_bits).weight_memory_gb:
         rep.anomalies.append("The framework plan is predicted to use no less memory than FP16.")
 
-    _add_plain_explanation(rep, profile, plan, fw_cost, un_cost)
+    _add_plain_explanation(rep, profile, plan, fw_cost, un_cost,
+                           predict(budget) if budget is not None else None, budget, outliers)
 
     rep.next_steps += [
         "Run Stage 1 (GPTQ) with both allocations to measure their perplexity and latency.",
@@ -227,7 +278,8 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
 
 
 def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan: CompressionPlan,
-                           fw_cost: PlanCost, un_cost: PlanCost) -> None:
+                           fw_cost: PlanCost, un_cost: PlanCost, budget_cost: PlanCost | None,
+                           budget: CompressionPlan | None, outliers: list[int]) -> None:
     """The plain-language part of the Stage 0 report, for readers with no AI background."""
     s0 = rep.config["stage0"]
     hp = rep.config["hyperparams"]
@@ -285,6 +337,33 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         why.append(f"It also does not shield the fragile layers better than the standard method ({exp_fw:.2f} "
                    f"against {exp_un:.2f}, lower is safer), so this plan has no expected accuracy advantage. "
                    "Try a lower threshold or less pruning.")
+    if mem_fw > mem_un:
+        why.append("Because the framework's plan is bigger, comparing its accuracy with the standard method "
+                   "would not be fair: some of any gain would come simply from using more memory.")
+    if budget is not None and budget_cost is not None:
+        why.append(f"That is why the report also includes a same-size version of the framework. It gets exactly "
+                   f"the standard method's memory budget ({budget_cost.weight_memory_gb:.3g} GB against "
+                   f"{mem_un:.3g} GB) and spends it on protecting the {len(budget.protected_layers)} most "
+                   f"sensitive layers, paid for by trimming the others. Its fragile-parts score is "
+                   f"{budget_cost.sensitivity_exposure:.2f} against {exp_un:.2f} for the standard method. This "
+                   "is the fair head-to-head: same size, different choice of where to spend the bits.")
+    why.append(f"Some parts of the model (the word dictionary at its input and output, called embeddings and the "
+               f"LM head) stay uncompressed in every plan. They alone take {fw_cost.fixed_memory_gb:.2f} GB, "
+               f"about {fw_cost.fixed_memory_gb / mem_un:.0%} of the standard method's size, so no plan here "
+               "can get the model smaller than that.")
+    median = sorted(profile.raw_scores)[len(profile.raw_scores) // 2]
+    for i in outliers:
+        verb = "protects" if i in plan.protected_layers else "squeezes and trims"
+        level = "low" if profile.raw_scores[i] < median else "high"
+        why.append(f"Warning: layer {i} behaves very differently from all the others (its sensitivity score is "
+                   f"unusually {level}). "
+                   f"The plan {verb} it based on that score. Unusual layers, especially the first, can "
+                   "matter more than the score suggests, so this layer should be checked before relying on "
+                   "the plan.")
     why.append("Whether the trade pays off (similar accuracy at a similar or smaller size) is only proven once "
-               "Stage 1 applies both plans and measures their actual accuracy.")
+               "Stage 1 applies the plans and measures their actual accuracy.")
     rep.plain_why = why
+    rep.glossary["Embeddings and LM head"] = ("The model's word dictionary: the table that turns words into "
+                                              "numbers at the start, and numbers back into words at the end.")
+    rep.glossary["Same-size plan"] = ("A version of the framework's plan limited to exactly the memory the "
+                                      "standard method uses, so the two can be compared fairly.")
