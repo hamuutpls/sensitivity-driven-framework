@@ -37,8 +37,14 @@ For each decoder layer *l* the score is the gradient × weight saliency summed o
 
     s_l = Σ_batches Σ_{w ∈ layer l} |∂L/∂w · w|
 
-The scores are min-max normalised to [0, 1]. A layer at or above `sensitive_threshold` is **protected**
-(8-bit, no pruning). Every other layer is **compressed** (4-bit, pruned at `prune_ratio_aggressive`).
+The scores are rank-normalised to [0, 1]: a layer's position in the sorted order, divided by (n − 1). A layer
+at or above `sensitive_threshold` is **protected** (8-bit, no pruning). Every other layer is **compressed**
+(4-bit, pruned at `prune_ratio_aggressive`). A threshold *t* therefore protects about the top (1 − *t*) share
+of layers.
+
+Rank is used instead of min-max because one outlier layer skews min-max. On TinyLlama, layer 0 scores 2705
+against 6596–8647 for the other layers, so min-max put layers 1–21 between 0.66 and 1.0 and threshold 0.5
+protected 21 of 22. Min-max is still available as `stage0.normalization: minmax`.
 
 Stage 0 compares:
 

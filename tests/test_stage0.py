@@ -27,8 +27,25 @@ def toy_profile():
 
 
 def test_normalize():
-    assert normalize([2.0, 4.0, 3.0]) == [0.0, 1.0, 0.5]
-    assert normalize([5.0, 5.0]) == [0.0, 0.0]
+    assert normalize([2.0, 4.0, 3.0], "minmax") == [0.0, 1.0, 0.5]
+    assert normalize([2.0, 9.0, 3.0]) == [0.0, 1.0, 0.5]  # rank ignores magnitudes
+    assert normalize([1.0, 2.0, 2.0, 3.0]) == [0.0, 0.5, 0.5, 1.0]  # ties share their average rank
+    assert normalize([5.0, 5.0]) == [0.0, 0.0] and normalize([5.0, 5.0], "minmax") == [0.0, 0.0]
+    with pytest.raises(ValueError):
+        normalize([1.0, 2.0], "zscore")
+
+
+def test_outlier_layer_does_not_protect_everything():
+    # TinyLlama on WikiText-2: layer 0 is a low outlier, the other 21 layers sit in 6596..8647.
+    raw = [2705.0] + [6596.0 + i * (8647.0 - 6596.0) / 20 for i in range(21)]
+
+    minmax = plan_compression(SensitivityProfile(normalize(raw, "minmax"), raw), 0.5, 0.3, 8, 4)
+    assert len(minmax.protected_layers) == 21  # the degenerate plan seen on the real model
+
+    plan = plan_compression(SensitivityProfile(normalize(raw), raw), 0.5, 0.3, 8, 4)
+    assert len(plan.protected_layers) == 11  # threshold 0.5 protects the more sensitive half
+    assert 0 in plan.compressed_layers and 21 in plan.protected_layers
+    assert len(plan_compression(SensitivityProfile(normalize(raw), raw), 0.8, 0.3, 8, 4).protected_layers) == 5
 
 
 def test_plan_and_uniform():

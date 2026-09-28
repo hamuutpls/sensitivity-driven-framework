@@ -42,6 +42,7 @@ eval:
 
 stage0:
   score: grad_x_weight
+  normalization: rank   # rank (robust to outlier layers) | minmax
   profile_dtype: float32
   protected_bits: 8
   compressed_bits: 4

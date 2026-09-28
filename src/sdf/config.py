@@ -67,6 +67,8 @@ class EvalConfig:
 @dataclass
 class Stage0Config:
     score: str = "grad_x_weight"
+    # rank | minmax. Rank is robust to outlier layers; see sdf.stage0.sensitivity.normalize.
+    normalization: str = "rank"
     profile_dtype: str = "float32"  # fp16 gradients overflow; profile in fp32 (or bfloat16 on GPU)
     protected_bits: int = 8
     compressed_bits: int = 4
@@ -118,7 +120,7 @@ def load_config(path: str | Path | None = None, overrides: Mapping[str, Any] | N
     if path is not None:
         import yaml
 
-        cfg = FrameworkConfig.from_dict(yaml.safe_load(Path(path).read_text()) or {})
+        cfg = FrameworkConfig.from_dict(yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {})
     return cfg.with_overrides(overrides or {})
 
 

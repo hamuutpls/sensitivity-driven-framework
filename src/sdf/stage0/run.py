@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -22,7 +23,7 @@ from sdf.stage0.planner import (
     predict_cost,
     uniform_plan,
 )
-from sdf.stage0.sensitivity import SensitivityProfile, profile_sensitivity
+from sdf.stage0.sensitivity import SensitivityProfile, normalize, profile_sensitivity
 from sdf.utils.env import environment_info, resolve_device
 from sdf.utils.logging import get_logger
 
@@ -105,7 +106,9 @@ def run_stage0(
 
     prof_dict, prof_cached = ctx.cache.get_or_compute("sensitivity_profile", profile_key(ctx, candidate),
                                                       compute_profile)
-    profile = SensitivityProfile.from_dict(prof_dict)
+    # Normalisation is cheap and not part of the cache key: re-derive the scores from the cached raw scores.
+    profile = dataclasses.replace(SensitivityProfile.from_dict(prof_dict),
+                                  scores=normalize(prof_dict["raw_scores"], s0.normalization))
 
     rep = StageReporter(
         stage=0, run_dir=ctx.run_dir, title="Sensitivity profiling and compression planning",
@@ -189,7 +192,7 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
     n = len(plan)
     ranked = sorted(range(n), key=lambda i: profile.scores[i], reverse=True)
     rep.sections.append(("Sensitivity profile and plan", "\n".join([
-        f"Score: {profile.method}, min-max normalised to [0, 1] over {n} decoder layers.",
+        f"Score: {profile.method}, {rep.config['stage0']['normalization']}-normalised to [0, 1] over {n} decoder layers.",
         f"Most sensitive layers: {', '.join(f'{i} ({profile.scores[i]:.2f})' for i in ranked[:3])}. "
         f"Least sensitive: {', '.join(f'{i} ({profile.scores[i]:.2f})' for i in ranked[-3:])}.",
         f"Protected ({len(plan.protected_layers)}/{n}): {plan.protected_layers or 'none'}.",

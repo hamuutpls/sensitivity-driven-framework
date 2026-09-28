@@ -26,7 +26,7 @@ from torch import nn
 
 @dataclass
 class SensitivityProfile:
-    scores: list[float]  # normalised, one per decoder layer, in [0, 1]
+    scores: list[float]  # normalised, one per decoder layer, in [0, 1] (see normalize)
     raw_scores: list[float]  # accumulated |g * w| before normalisation
     layer_numel: list[int] = field(default_factory=list)  # weights per decoder layer (Linear weights only)
     layer_rows: list[int] = field(default_factory=list)  # output channels per layer (for per-channel scales)
@@ -45,7 +45,7 @@ class SensitivityProfile:
     def save(self, path: str | Path) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), indent=2))
+        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "SensitivityProfile":
@@ -53,7 +53,7 @@ class SensitivityProfile:
 
     @classmethod
     def load(cls, path: str | Path) -> "SensitivityProfile":
-        return cls.from_dict(json.loads(Path(path).read_text()))
+        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 def find_decoder_layers(model: nn.Module) -> nn.ModuleList:
@@ -86,18 +86,45 @@ def layer_shapes(model: nn.Module) -> tuple[list[int], list[int], int]:
     return numel, rows, other
 
 
-def normalize(scores: list[float]) -> list[float]:
-    """Min-max normalise to [0, 1]. If all scores are equal every layer gets 0."""
+NORMALIZATIONS = ("rank", "minmax")
+
+
+def normalize(scores: list[float], method: str = "rank") -> list[float]:
+    """Map raw scores to [0, 1]. If all scores are equal there is no signal and every layer gets 0.
+
+    rank (default): position in the sorted order, rank / (n - 1), ties averaged. One outlier layer cannot
+        squeeze the rest together, and `sensitive_threshold` t protects roughly the top (1 - t) share of
+        layers, so the threshold means the same thing on every model and calibration set.
+    minmax: (s - min) / (max - min). Keeps relative magnitudes, but a single low (or high) outlier pushes
+        every other layer to one end. On TinyLlama, layer 0 scores 2705 against 6596-8647 for the rest, so
+        threshold 0.5 protected 21 of 22 layers.
+    """
+    if method not in NORMALIZATIONS:
+        raise ValueError(f"unknown normalization {method!r}; choose from {NORMALIZATIONS}")
+    n = len(scores)
     lo, hi = min(scores), max(scores)
-    if hi - lo <= 0:
+    if hi - lo <= 0 or n == 1:
         return [0.0 for _ in scores]
-    return [(s - lo) / (hi - lo) for s in scores]
+    if method == "minmax":
+        return [(s - lo) / (hi - lo) for s in scores]
+    order = sorted(range(n), key=lambda i: scores[i])
+    ranks = [0.0] * n
+    i = 0
+    while i < n:  # average the ranks of tied scores
+        j = i
+        while j + 1 < n and scores[order[j + 1]] == scores[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            ranks[order[k]] = (i + j) / 2
+        i = j + 1
+    return [r / (n - 1) for r in ranks]
 
 
 def profile_sensitivity(
     model: nn.Module,
     batches: Iterable[torch.Tensor],
     device: torch.device | str | None = None,
+    normalization: str = "rank",
     meta: dict[str, Any] | None = None,
 ) -> SensitivityProfile:
     """Run the calibration batches through `model` and score every decoder layer.
@@ -155,7 +182,7 @@ def profile_sensitivity(
     raw_list = raw.tolist()
     numel, rows, other = layer_shapes(model)
     return SensitivityProfile(
-        scores=normalize(raw_list),
+        scores=normalize(raw_list, normalization),
         raw_scores=raw_list,
         layer_numel=numel,
         layer_rows=rows,

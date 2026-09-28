@@ -30,7 +30,7 @@ class ArtifactCache:
         if not p.exists():
             return None
         try:
-            entry = json.loads(p.read_text())
+            entry = json.loads(p.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             log.warning("corrupt cache entry %s ignored", p)
             return None
@@ -58,7 +58,7 @@ def atomic_write_text(path: str | Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:  # not the platform default (cp1252 on Windows)
             f.write(text)
         os.replace(tmp, path)
     except BaseException:

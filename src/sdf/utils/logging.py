@@ -23,7 +23,7 @@ def setup_logging(level: str = "INFO", log_file: str | Path | None = None) -> No
         log_file.parent.mkdir(parents=True, exist_ok=True)
         if not any(isinstance(h, logging.FileHandler) and Path(h.baseFilename) == log_file.resolve()
                    for h in root.handlers):
-            fh = logging.FileHandler(log_file)
+            fh = logging.FileHandler(log_file, encoding="utf-8")
             fh.setFormatter(formatter)
             root.addHandler(fh)
 

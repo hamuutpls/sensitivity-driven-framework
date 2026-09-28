@@ -52,3 +52,10 @@ def test_results_json_is_written_after_each_row(tmp_path):
     with rep.method("baseline", "fp16") as r:
         r.metrics["ppl_val"] = 10.0
     assert len(json.loads(rep.json_path.read_text())["rows"]) == 1
+
+
+def test_text_outputs_are_utf8(tmp_path):
+    from sdf.utils.cache import atomic_write_text
+
+    atomic_write_text(tmp_path / "r.md", "Stage 0 — Δ ≥ 0.5")
+    assert (tmp_path / "r.md").read_bytes().decode("utf-8") == "Stage 0 — Δ ≥ 0.5"

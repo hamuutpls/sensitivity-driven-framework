@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-28: Fixes from the first real run (RTX 5070 Ti)
+
+- **Degenerate plan fixed.** Sensitivity scores are now rank-normalised by default
+  (`stage0.normalization: rank`). With min-max, TinyLlama's layer 0 (raw score 2705 against 6596–8647 for
+  the other layers) squeezed layers 1–21 into 0.66–1.0, so threshold 0.5 protected 21 of 22 layers. That
+  plan averaged 8.97 bits against 5.65 for uniform. With rank, `sensitive_threshold` *t* protects about the
+  top (1 − *t*) share of layers, whatever the score distribution. Normalisation is applied when planning,
+  so cached profiles are reused.
+- **Windows encoding fixed.** Every text file is now written and read as UTF-8: reports, JSON, config and
+  `run.log`. Before this, Windows wrote cp1252, which garbled "—" and "Δ" in report.md.
+
 ## 2026-09-28: Dataset IDs moved to the config
 
 - **Fix.** WikiText-2 now loads from `Salesforce/wikitext`. Current `datasets` versions no longer resolve
