@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-28: Dataset IDs moved to the config
+
+- **Fix.** WikiText-2 now loads from `Salesforce/wikitext`. Current `datasets` versions no longer resolve
+  the bare `wikitext` id, so Stage 0 failed before profiling.
+- **Config.** All Hub dataset ids and splits now live in the config (`data.sources`), so a moved dataset is
+  a config change rather than a code change.
+
 ## 2026-09-28: Stage 0 aligned with the thesis spec
 
 - **Config.** Added a single `FrameworkConfig` (`configs/tinyllama.yaml` plus `--set key=value` overrides).

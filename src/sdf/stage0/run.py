@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 import torch
 
-from sdf.data import calibration_batches, eval_windows, load_texts
+from sdf.data import calibration_batches, eval_windows, make_text_loader
 from sdf.eval import measure_model
 from sdf.reporting import StageReporter
 from sdf.run import RunContext
@@ -86,12 +86,13 @@ def run_stage0(
     candidate: Candidate,
     model=None,
     tokenizer=None,
-    text_loader: Callable[[str, str], list[str]] = load_texts,
+    text_loader: Callable[[str, str], list[str]] | None = None,
     measure_fp16: bool = True,
 ) -> Stage0Result:
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
     device = resolve_device(cfg.model.device)
     handle = _ModelHandle(ctx, device, model, tokenizer)
+    text_loader = text_loader or make_text_loader(cfg.data.sources)
 
     # --- sensitivity profile (depends only on model + calibration, so cached across trials) -------------
     def compute_profile() -> dict[str, Any]:

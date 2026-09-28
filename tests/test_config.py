@@ -55,3 +55,23 @@ def test_requirement_check():
     partial = req.check({"model_size_gb": 0.5})
     assert partial.met is None
 
+
+
+def test_dataset_sources_come_from_config(monkeypatch):
+    import sys
+    import types
+
+    from sdf.data import make_text_loader
+
+    calls = []
+    fake = types.ModuleType("datasets")
+    fake.load_dataset = lambda **kw: calls.append(kw) or {"text": ["a", "b"]}
+    monkeypatch.setitem(sys.modules, "datasets", fake)
+
+    loader = make_text_loader(load_config("configs/tinyllama.yaml").data.sources)
+    assert loader("wikitext2", "test") == ["a", "b"]
+    assert calls[-1] == {"path": "Salesforce/wikitext", "name": "wikitext-2-raw-v1", "split": "test"}
+    loader("c4", "train")
+    assert calls[-1]["split"] == "validation"
+    with pytest.raises(ValueError):
+        loader("c4", "test")

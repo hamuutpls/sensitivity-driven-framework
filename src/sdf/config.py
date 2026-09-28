@@ -29,6 +29,22 @@ class ModelConfig:
     device: str = "auto"  # auto | cpu | cuda | cuda:N
 
 
+def _default_sources() -> dict[str, dict[str, Any]]:
+    return {
+        "wikitext2": {"path": "Salesforce/wikitext", "name": "wikitext-2-raw-v1",
+                      "splits": {"train": "train", "test": "test"}},
+        "c4": {"path": "allenai/c4", "data_files": {"validation": "en/c4-validation.00000-of-00008.json.gz"},
+               "splits": {"train": "validation"}},
+        "pile10k": {"path": "NeelNanda/pile-10k", "splits": {"train": "train"}},
+    }
+
+
+@dataclass
+class DataConfig:
+    # Hugging Face Hub datasets: name -> load_dataset kwargs + "splits" ("train" = calibration pool, "test" = eval).
+    sources: dict[str, dict[str, Any]] = field(default_factory=_default_sources)
+
+
 @dataclass
 class CalibrationConfig:
     # dataset and sample count are search-space parameters (calib_dataset, calib_samples)
@@ -66,6 +82,7 @@ class Stage0Config:
 class FrameworkConfig:
     run: RunConfig = field(default_factory=RunConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    data: DataConfig = field(default_factory=DataConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
     stage0: Stage0Config = field(default_factory=Stage0Config)
@@ -131,6 +148,7 @@ def _field_type(cls, name: str):
 
 __all__ = [
     "CalibrationConfig",
+    "DataConfig",
     "EvalConfig",
     "FrameworkConfig",
     "ModelConfig",

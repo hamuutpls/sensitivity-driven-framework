@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from typing import Callable
+from typing import Any, Callable, Mapping
 
 import torch
 
@@ -11,26 +11,30 @@ from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-# (dataset, split) -> load_dataset kwargs
-_SOURCES = {
-    ("wikitext2", "train"): dict(path="wikitext", name="wikitext-2-raw-v1", split="train"),
-    ("wikitext2", "test"): dict(path="wikitext", name="wikitext-2-raw-v1", split="test"),
-    ("c4", "train"): dict(path="allenai/c4", data_files={"validation": "en/c4-validation.00000-of-00008.json.gz"},
-                          split="validation"),
-    ("pile10k", "train"): dict(path="NeelNanda/pile-10k", split="train"),
-}
-
 TextLoader = Callable[[str, str], list[str]]
 
 
-def load_texts(dataset: str, split: str = "train") -> list[str]:
-    """Raw documents from the Hugging Face Hub. `split="train"` is the calibration pool."""
-    if (dataset, split) not in _SOURCES:
-        raise ValueError(f"unknown dataset/split {dataset}/{split}; available: {sorted(_SOURCES)}")
-    from datasets import load_dataset
+def make_text_loader(sources: Mapping[str, Mapping[str, Any]]) -> TextLoader:
+    """A loader for the Hub datasets described in the config (`data.sources`).
 
-    ds = load_dataset(**_SOURCES[(dataset, split)])
-    return list(ds["text"])
+    Each source gives `load_dataset` kwargs (path, name, data_files...) plus `splits`, mapping our split names
+    ("train" = calibration pool, "test" = evaluation) to the dataset's own split names.
+    """
+
+    def load_texts(dataset: str, split: str = "train") -> list[str]:
+        if dataset not in sources:
+            raise ValueError(f"unknown dataset {dataset!r}; configured: {sorted(sources)}")
+        spec = dict(sources[dataset])
+        splits = spec.pop("splits", {})
+        if split not in splits:
+            raise ValueError(f"dataset {dataset!r} has no {split!r} split configured (data.sources.{dataset}.splits)")
+        from datasets import load_dataset
+
+        log.info("loading %s/%s from %s", dataset, split, spec.get("path"))
+        ds = load_dataset(**spec, split=splits[split])
+        return list(ds["text"])
+
+    return load_texts
 
 
 def calibration_batches(

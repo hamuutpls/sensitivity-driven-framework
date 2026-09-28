@@ -12,6 +12,21 @@ model:
   dtype: float16
   device: auto
 
+# Hugging Face Hub datasets. "splits" maps train (calibration pool) / test (evaluation) to the dataset's splits.
+data:
+  sources:
+    wikitext2:
+      path: Salesforce/wikitext
+      name: wikitext-2-raw-v1
+      splits: {train: train, test: test}
+    c4:
+      path: allenai/c4
+      data_files: {validation: en/c4-validation.00000-of-00008.json.gz}
+      splits: {train: validation}
+    pile10k:
+      path: NeelNanda/pile-10k
+      splits: {train: train}
+
 calibration:
   seq_len: 512
   batch_size: 1
