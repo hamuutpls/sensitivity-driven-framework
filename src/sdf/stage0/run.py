@@ -217,8 +217,74 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
     if fw_cost.weight_memory_gb >= baseline_cost(profile, baseline_bits).weight_memory_gb:
         rep.anomalies.append("The framework plan is predicted to use no less memory than FP16.")
 
+    _add_plain_explanation(rep, profile, plan, fw_cost, un_cost)
+
     rep.next_steps += [
         "Run Stage 1 (GPTQ) with both allocations to measure their perplexity and latency.",
         "If sensitivity exposure is high, raise sensitive_threshold or lower prune_ratio_aggressive.",
     ]
 
+
+
+def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan: CompressionPlan,
+                           fw_cost: PlanCost, un_cost: PlanCost) -> None:
+    """The plain-language part of the Stage 0 report, for readers with no AI background."""
+    s0 = rep.config["stage0"]
+    hp = rep.config["hyperparams"]
+    n, n_prot = len(plan), len(plan.protected_layers)
+    rep.plain_intro = (
+        "Compressing a language model is like shrinking a photo: done carefully, you save a lot of space and "
+        "barely notice the difference; done carelessly, the picture turns to mush. The catch is that not every "
+        "part of the model is equally delicate. Some layers can be squeezed hard with no visible effect, while "
+        "others fall apart at the slightest change.\n\n"
+        "Stage 0 finds out which is which. It feeds the model some ordinary text "
+        f"({hp['calib_samples']} short passages) and measures, for each of its {n} layers, how much the "
+        "model's predictions would suffer if that layer were changed. This is the layer's *sensitivity*. "
+        "It then writes a compression plan: the most sensitive layers are **protected** (kept at "
+        f"{s0['protected_bits']} bits per number and never trimmed), and the rest are **compressed** "
+        f"({s0['compressed_bits']} bits per number, with {hp['prune_ratio_aggressive']:.0%} of their numbers "
+        "removed).\n\n"
+        "Nothing is actually compressed yet. Stage 0 only makes the plan and predicts how big the model would "
+        "be. Later stages carry out the plan and measure the real accuracy and speed.")
+
+    rep.glossary.update({
+        "Sensitivity": "How much the model's predictions would suffer if a layer were changed. It is measured "
+                       "by checking how strongly each layer's numbers influence the model's mistakes on "
+                       "ordinary text. Here it is shown on a 0-to-1 scale, where 1 is the most sensitive layer "
+                       "and 0 the least.",
+        "Protected layer": f"A sensitive layer that the plan keeps at {s0['protected_bits']} bits and does not "
+                           "trim.",
+        "Pruning": "Deleting the numbers that matter least, like cutting unimportant words from an essay.",
+        "Threshold": f"The cut-off for protecting a layer. With {hp['sensitive_threshold']:.2f}, roughly the "
+                     f"most sensitive {1 - hp['sensitive_threshold']:.0%} of layers are protected.",
+        "Calibration text": "A small sample of ordinary text used only to measure sensitivity. It is kept "
+                            "separate from the text used to test accuracy.",
+        "Perplexity": "A standard score for how well a model predicts real text. Lower is better.",
+    })
+
+    exp_fw, exp_un = fw_cost.sensitivity_exposure, un_cost.sensitivity_exposure
+    mem_fw, mem_un = fw_cost.weight_memory_gb, un_cost.weight_memory_gb
+    why = [
+        f"The framework protected {n_prot} of the {n} layers, the most sensitive ones, and compressed the "
+        f"other {n - n_prot}. The standard method compresses all {n} layers equally to "
+        f"{s0['uniform_bits']} bits.",
+    ]
+    if mem_fw > mem_un:
+        why.append(f"Keeping the sensitive layers at higher precision costs space, so the framework's model is "
+                   f"predicted to be larger ({mem_fw:.3g} GB against {mem_un:.3g} GB for the standard "
+                   "method).")
+    else:
+        why.append(f"Trimming the robust layers more than pays for the protected ones, so the framework's "
+                   f"model is predicted to be smaller ({mem_fw:.3g} GB against {mem_un:.3g} GB).")
+    if exp_fw < exp_un:
+        why.append(f"In return, far less of the compression lands on the fragile layers (a score of "
+                   f"{exp_fw:.2f} against {exp_un:.2f}, where lower is safer). Damage to the fragile layers "
+                   "is what hurts accuracy, so the framework's model is expected to stay closer to the "
+                   "original.")
+    else:
+        why.append(f"It also does not shield the fragile layers better than the standard method ({exp_fw:.2f} "
+                   f"against {exp_un:.2f}, lower is safer), so this plan has no expected accuracy advantage. "
+                   "Try a lower threshold or less pruning.")
+    why.append("Whether the trade pays off (similar accuracy at a similar or smaller size) is only proven once "
+               "Stage 1 applies both plans and measures their actual accuracy.")
+    rep.plain_why = why

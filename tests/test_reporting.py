@@ -59,3 +59,26 @@ def test_text_outputs_are_utf8(tmp_path):
 
     atomic_write_text(tmp_path / "r.md", "Stage 0 — Δ ≥ 0.5")
     assert (tmp_path / "r.md").read_bytes().decode("utf-8") == "Stage 0 — Δ ≥ 0.5"
+
+
+def test_report_has_plain_language_part(tmp_path):
+    rep = make_reporter(tmp_path)
+    rep.plain_intro = "This stage squeezes the model."
+    rep.plain_why.append("It kept the fragile parts intact.")
+    with rep.method("baseline", "fp16") as r:
+        r.metrics.update(ppl_val=10.0, model_size_gb=2.0)
+    with rep.method("gptq", "original") as r:
+        r.metrics.update(ppl_val=12.0, model_size_gb=0.6)
+    with rep.method("gptq", "framework") as r:
+        r.metrics.update(ppl_val=11.0, model_size_gb=0.7)
+    md = rep.finalize()["report"].read_text(encoding="utf-8")
+
+    plain, technical = md.split("# Technical details")
+    for heading in ("## The short version", "## What this stage does", "## What was compared",
+                    "## What the numbers mean", "## Why the framework won or lost", "## Words used in this report"):
+        assert heading in plain
+    assert "It is a trade-off" in plain
+    assert "Perplexity measures how well the model predicts" in plain  # metric explained
+    assert "8% less than the standard method, which is better" in plain  # 11 vs 12 perplexity
+    assert "It kept the fragile parts intact." in plain
+    assert "## Results" in technical and "`gptq/framework`" in technical  # technical tables kept

@@ -32,6 +32,30 @@ log = get_logger(__name__)
 # framework: Stage 0 plan + the method.
 VARIANTS = ("fp16", "original", "framework")
 
+# Plain-language names and explanations of the three variants, for readers with no AI background.
+VARIANT_PLAIN = {
+    "fp16": ("Uncompressed model", "the model exactly as published, with nothing removed or simplified. It is "
+             "the reference point: the best accuracy we can hope for, and the most memory."),
+    "original": ("Standard method", "the compression technique applied the usual way, treating every part of "
+                 "the model the same."),
+    "framework": ("Sensitivity-guided framework", "our approach: first measure which parts of the model are "
+                  "fragile, then compress the robust parts hard and leave the fragile parts mostly intact."),
+}
+
+# Terms every report uses. Stages add their own with `glossary`.
+BASE_GLOSSARY = {
+    "Language model": "A program that has learned from large amounts of text to predict the next word. "
+                      "Chat assistants are built on these. The one used here is TinyLlama, a small open model "
+                      "with about 1.1 billion numbers inside it.",
+    "Compression": "Making the model smaller and faster by storing its numbers with less detail or removing "
+                   "some of them, ideally without making its answers worse.",
+    "Layer": "The model is a stack of similar building blocks called layers; text passes through them one "
+             "after another (TinyLlama has 22).",
+    "Bits": "Computers store numbers as strings of 0s and 1s (bits). More bits per number keeps more detail "
+            "but takes more space. The uncompressed model uses 16 bits per number.",
+    "FP16": "\"16-bit floating point\", the standard precise format the model is published in.",
+}
+
 
 @dataclass
 class ComparisonRow:
@@ -77,7 +101,11 @@ class StageReporter:
         self._auto_findings: list[str] = []
         self.anomalies: list[str] = []
         self.next_steps: list[str] = []
-        self.sections: list[tuple[str, str]] = []  # extra (heading, markdown) sections
+        self.sections: list[tuple[str, str]] = []  # extra technical (heading, markdown) sections
+        # Plain-language parts of report.md, for readers with no AI background. Stages fill these in.
+        self.plain_intro: str = ""  # what this stage does and why, in everyday words
+        self.plain_why: list[str] = []  # why the framework won or lost, in everyday words
+        self.glossary: dict[str, str] = dict(BASE_GLOSSARY)
         self.started = time.strftime("%Y-%m-%d %H:%M:%S")
 
     # ------------------------------------------------------------------ collecting
@@ -189,6 +217,7 @@ class StageReporter:
             "anomalies": self.anomalies,
             "next_steps": self.next_steps,
             "sections": [{"heading": h, "body": b} for h, b in self.sections],
+            "plain": {"intro": self.plain_intro, "why": self.plain_why, "glossary": self.glossary},
         }
 
     @property

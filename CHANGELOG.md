@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-09-28: Plain-language reports
+
+- **Two-part report.md.** Every report now opens with a part written for readers with no AI background:
+  - the short version (did the framework win);
+  - what the stage does;
+  - what was compared;
+  - what each number means, with the three versions side by side and a "which is better/worse" reading;
+  - why the framework won or lost;
+  - a glossary.
+
+  The technical tables follow unchanged under "Technical details".
+- **Built into the shared reporter.** This lives in `StageReporter`, so every stage gets it. Each metric in
+  the registry carries a plain name and explanation, and a stage supplies its own intro, "why" and glossary
+  terms.
+
 ## 2026-09-28: Fixes from the first real run (RTX 5070 Ti)
 
 - **Degenerate plan fixed.** Sensitivity scores are now rank-normalised by default
