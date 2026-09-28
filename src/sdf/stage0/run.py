@@ -175,6 +175,9 @@ def run_stage0(
     budget = None
     with rep.method(METHOD_BUDGET, "framework", compare_to=METHOD,
                     label="Sensitivity-guided framework, same size as the standard method",
+                    plain_desc="the same approach, but limited to exactly the memory the standard method uses. "
+                               "It protects as many of the most sensitive layers as fit in that budget, so the "
+                               "two can be compared fairly, size for size.",
                     description="sensitivity plan protecting as many top layers as fit in the uniform plan's "
                                 "predicted memory") as row:
         t0 = time.perf_counter()
@@ -311,16 +314,11 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
                      f"most sensitive {1 - hp['sensitive_threshold']:.0%} of layers are protected.",
         "Calibration text": "A small sample of ordinary text used only to measure sensitivity. It is kept "
                             "separate from the text used to test accuracy.",
-        "Perplexity": "A standard score for how well a model predicts real text. Lower is better.",
     })
 
     exp_fw, exp_un = fw_cost.sensitivity_exposure, un_cost.sensitivity_exposure
     mem_fw, mem_un = fw_cost.weight_memory_gb, un_cost.weight_memory_gb
-    why = [
-        f"The framework protected {n_prot} of the {n} layers, the most sensitive ones, and compressed the "
-        f"other {n - n_prot}. The standard method compresses all {n} layers equally to "
-        f"{s0['uniform_bits']} bits.",
-    ]
+    why: list[str] = []
     if mem_fw > mem_un:
         why.append(f"Keeping the sensitive layers at higher precision costs space, so the framework's model is "
                    f"predicted to be larger ({mem_fw:.3g} GB against {mem_un:.3g} GB for the standard "
@@ -343,8 +341,8 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
     if budget is not None and budget_cost is not None:
         why.append(f"That is why the report also includes a same-size version of the framework. It gets exactly "
                    f"the standard method's memory budget ({budget_cost.weight_memory_gb:.3g} GB against "
-                   f"{mem_un:.3g} GB) and spends it on protecting the {len(budget.protected_layers)} most "
-                   f"sensitive layers, paid for by trimming the others. Its fragile-parts score is "
+                   f"{mem_un:.3g} GB) and spends it on protecting {_top(len(budget.protected_layers))}, "
+                   f"paid for by trimming the others. Its fragile-parts score is "
                    f"{budget_cost.sensitivity_exposure:.2f} against {exp_un:.2f} for the standard method. This "
                    "is the fair head-to-head: same size, different choice of where to spend the bits.")
     why.append(f"Some parts of the model (the word dictionary at its input and output, called embeddings and the "
@@ -363,7 +361,44 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
     why.append("Whether the trade pays off (similar accuracy at a similar or smaller size) is only proven once "
                "Stage 1 applies the plans and measures their actual accuracy.")
     rep.plain_why = why
+
+    fp16_row = next((r for r in rep.rows if r.variant == "fp16" and r.status == "ok"), None)
+    mem_full = fp16_row.metrics.get("predicted_weight_memory_gb") if fp16_row else None
+    summary = (
+        f"Stage 0 measured how sensitive each of the model's {n} layers is, using {hp['calib_samples']} short "
+        "passages of ordinary text, and planned how to compress it. "
+        f"The sensitivity-guided plan protects {_top(n_prot)} and compresses the other "
+        f"{n - n_prot}. It is predicted to need {mem_fw:.2f} GB, against {mem_un:.2f} GB for the standard method "
+        f"(every layer at {s0['uniform_bits']} bits)"
+        + (f" and {mem_full:.2f} GB for the uncompressed model. " if mem_full else ". "))
+    if budget is not None and budget_cost is not None:
+        summary += (
+            f"Because {'that plan is bigger than' if mem_fw > mem_un else 'plans of different sizes are hard to compare with'} "
+            f"the standard method, a same-size version was also made: at {budget_cost.weight_memory_gb:.2f} GB it "
+            f"protects {_top(len(budget.protected_layers))} and puts "
+            f"{'less' if budget_cost.sensitivity_exposure < exp_un else 'no less'} of the compression on fragile "
+            f"layers than the standard method ({budget_cost.sensitivity_exposure:.2f} against {exp_un:.2f}, "
+            "lower is better). ")
+    if outliers:
+        summary += (f"Layer{'s' if len(outliers) > 1 else ''} {', '.join(map(str, outliers))} behave"
+                    f"{'' if len(outliers) > 1 else 's'} unusually and should be checked. ")
+    summary += "Nothing has been compressed yet: the real accuracy and speed of these plans are measured in Stage 1."
+    rep.plain_summary = summary
+
+    rep.plain_layer_columns = (
+        "Sensitivity of every layer",
+        "Sensitivity runs from 0 (least sensitive layer) to 1 (most sensitive). The raw score is the measurement "
+        "before it is put on that scale. \"Protected\" layers keep high precision; the others are compressed "
+        "and have the listed share of their numbers removed.",
+        [("layer", "Layer"), ("sensitivity", "Sensitivity (0 to 1)"), ("raw_score", "Raw score"),
+         ("framework_protected", "Protected (framework plan)"),
+         ("same_size_protected", "Protected (same-size plan)"),
+         ("framework_prune_ratio", "Share removed (framework plan)"), ("outlier", "Unusual layer")],
+    )
     rep.glossary["Embeddings and LM head"] = ("The model's word dictionary: the table that turns words into "
                                               "numbers at the start, and numbers back into words at the end.")
-    rep.glossary["Same-size plan"] = ("A version of the framework's plan limited to exactly the memory the "
-                                      "standard method uses, so the two can be compared fairly.")
+
+
+
+def _top(k: int) -> str:
+    return "no layers" if k == 0 else "the most sensitive layer" if k == 1 else f"the {k} most sensitive layers"

@@ -112,8 +112,11 @@ class StageReporter:
         self.next_steps: list[str] = []
         self.sections: list[tuple[str, str]] = []  # extra technical (heading, markdown) sections
         # Plain-language parts of report.md, for readers with no AI background. Stages fill these in.
+        self.plain_summary: str = ""  # one paragraph: what was done, what came out, what it means
         self.plain_intro: str = ""  # what this stage does and why, in everyday words
-        self.plain_why: list[str] = []  # why the framework won or lost, in everyday words
+        self.plain_why: list[str] = []  # findings: why the framework won or lost, caveats, in everyday words
+        # Optional plain per-layer table: (heading, intro sentence, [(per_layer key, column header), ...]).
+        self.plain_layer_columns: tuple[str, str, list[tuple[str, str]]] | None = None
         self.glossary: dict[str, str] = dict(BASE_GLOSSARY)
         self.started = time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -229,7 +232,8 @@ class StageReporter:
             "anomalies": self.anomalies,
             "next_steps": self.next_steps,
             "sections": [{"heading": h, "body": b} for h, b in self.sections],
-            "plain": {"intro": self.plain_intro, "why": self.plain_why, "glossary": self.glossary},
+            "plain": {"summary": self.plain_summary, "intro": self.plain_intro, "findings": self.plain_why,
+                      "glossary": self.glossary},
         }
 
     @property

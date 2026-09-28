@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-09-28: Report layout matches the hand-written version
+
+- **New plain-part order.** The plain part of report.md now follows the layout Mohammad liked:
+  1. a one-paragraph summary;
+  2. key terms, covering the versions compared, every measure and stage-specific words;
+  3. one results table with every version, units and "lower is better" in the headers;
+  4. a sensitivity table for every layer;
+  5. findings.
+
+  The Stage 0 findings cover the same-size plan, the 16-bit size floor and outlier layers. The background
+  explanation comes after the findings, and the technical detail follows unchanged.
+
 ## 2026-09-28: Fair same-size comparison, size floor, outlier flag
 
 - **Same-size framework plan.** The threshold plan (0.947 GB predicted on TinyLlama) is about 22% bigger

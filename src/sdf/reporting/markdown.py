@@ -42,19 +42,6 @@ def _value(v: Any, spec: MetricSpec | None) -> str:
     return f"{text} {unit}".strip()
 
 
-def _compare(v: float, ref: float, metric: str, ref_name: str) -> str | None:
-    """'22% more than the standard method, which is worse' style sentence fragment."""
-    if ref == 0:  # a percentage of zero means nothing
-        return f"the same as the {ref_name}" if v == 0 else None
-    pct = (v - ref) / abs(ref) * 100
-    if abs(pct) < 0.5:
-        return f"about the same as the {ref_name}"
-    direction = "more" if pct > 0 else "less"
-    better = is_better(metric, v - ref)
-    verdict = "" if better is None else (", which is better" if better else ", which is worse")
-    return f"{abs(pct):.0f}% {direction} than the {ref_name}{verdict}"
-
-
 def _plain_verdicts(rep: "StageReporter") -> list[str]:
     """One plain sentence per method: did the framework beat the standard method, and on what."""
     from sdf.reporting.reporter import VARIANT_PLAIN
@@ -101,57 +88,63 @@ def _requirement_plain(r: "ComparisonRow") -> str | None:
     return None
 
 
+def _cap(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
 def _plain_part(rep: "StageReporter") -> list[str]:
+    """Plain-language part: summary, key terms, one results table, per-layer table, findings."""
     from sdf.reporting.reporter import VARIANT_PLAIN
 
-    lines = ["## The short version", ""]
-    lines += [f"- {v}" for v in _plain_verdicts(rep)] or ["- No comparison could be made (see failures below)."]
-    failed = [r for r in rep.rows if r.status != "ok"]
-    if failed:
-        lines.append(f"- {len(failed)} run(s) failed and are listed under *Anomalies and failures*.")
-    lines.append("")
-
-    if rep.plain_intro:
-        lines += ["## What this stage does", "", rep.plain_intro, ""]
-
-    lines += ["## What was compared", "",
-              "Every version below was tested under exactly the same conditions (same data, same computer, "
-              "same settings), so differences come from the method alone.", ""]
-    present = [v for v in VARIANT_PLAIN if any(r.variant == v for r in rep.rows)]
-    lines += [f"- **{VARIANT_PLAIN[v][0]}**: {VARIANT_PLAIN[v][1]}" for v in present]
-    lines.append("")
-
-    lines += ["## What the numbers mean", ""]
     ok = [r for r in rep.rows if r.status == "ok"]
-    by_variant = {v: next((r for r in ok if r.variant == v), None) for v in VARIANT_PLAIN}
-    for m in rep.main_metrics:
-        spec = METRICS.get(m)
-        rows = [r for r in ok if isinstance(r.metrics.get(m), (int, float))]
-        if spec is None or not rows:
-            continue
-        lines += [f"### {(spec.plain or spec.label)[:1].upper() + (spec.plain or spec.label)[1:]}", "",
-                  spec.meaning, ""]
-        for r in rows:
-            name = r.plain_name
-            text = f"- {name}: **{_value(r.metrics[m], spec)}**"
-            refs = []
-            orig = rep.find_original(r) if r.variant == "framework" else None
-            fp16 = by_variant.get("fp16")
-            if r.variant == "framework" and orig is not None and isinstance(orig.metrics.get(m), (int, float)):
-                refs.append(_compare(r.metrics[m], orig.metrics[m], m, "standard method"))
-            if r.variant != "fp16" and fp16 is not None and isinstance(fp16.metrics.get(m), (int, float)):
-                refs.append(_compare(r.metrics[m], fp16.metrics[m], m, "uncompressed model"))
-            refs = [x for x in refs if x]
-            if refs:
-                text += " (" + "; ".join(refs) + ")"
-            lines.append(text)
-        not_measured = [r.plain_name for r in ok if m not in r.metrics]
-        if not_measured:
-            lines.append(f"- Not measured at this stage for: {', '.join(not_measured)}.")
-        lines.append("")
+    verdicts = _plain_verdicts(rep)
 
-    lines += ["## Why the framework won or lost", ""]
-    lines += [f"- {w}" for w in rep.plain_why] or ["- See the numbers above."]
+    # 1. one-paragraph summary
+    summary = rep.plain_summary or " ".join(v.replace("**", "") for v in verdicts)
+    lines = ["## Summary", "", summary or "No comparison could be made; see the failures below.", ""]
+
+    # 2. key terms: the versions compared, the measures, then stage-specific words
+    lines += ["## Key terms", ""]
+    seen = set()
+    for r in rep.rows:
+        if r.plain_name in seen:
+            continue
+        seen.add(r.plain_name)
+        lines.append(f"- **{r.plain_name}**: {_cap(r.info.get('plain_desc') or VARIANT_PLAIN[r.variant][1])}")
+    metrics = [m for m in rep.main_metrics if m in METRICS and any(m in r.metrics for r in ok)]
+    for m in metrics:
+        spec = METRICS[m]
+        lines.append(f"- **{_cap(spec.plain or spec.label)}**: {spec.meaning}")
+    lines += [f"- **{term}**: {text}" for term, text in rep.glossary.items()]
+    lines.append("")
+
+    # 3. every version in one table, units in the headers
+    lines += ["## Results", "",
+              "All versions were tested under exactly the same conditions (same data, same computer, same "
+              "settings), so differences come from the method alone. A dash means the measure is not available "
+              "at this stage.", ""]
+    headers = ["Version"]
+    for m in metrics:
+        spec = METRICS[m]
+        bits = [spec.unit] if spec.unit else []
+        if spec.better:
+            bits.append(f"{spec.better} is better")
+        headers.append(_cap(spec.plain or spec.label) + (f" ({', '.join(bits)})" if bits else ""))
+    table = [[r.plain_name] + [_value(r.metrics.get(m), None) if m in r.metrics else "–" for m in metrics]
+             for r in ok]
+    lines += [_table(headers, table), ""]
+
+    # 4. per-layer table, when the stage provides one
+    if rep.plain_layer_columns and rep.per_layer:
+        heading, intro, cols = rep.plain_layer_columns
+        lines += [f"## {heading}", "", intro, ""]
+        lines += [_table([h for _, h in cols],
+                         [[_layer_cell(row.get(k)) for k, _ in cols] for row in rep.per_layer]), ""]
+
+    # 5. findings
+    lines += ["## Findings", ""]
+    lines += [f"- {v}" for v in verdicts]
+    lines += [f"- {w}" for w in rep.plain_why]
     targets = {k: v for k, v in rep.to_dict()["requirement"].items() if k != "hardware_profile"}
     if not any(v is not None for v in targets.values()):
         lines.append("- No deployment targets (maximum size, speed or error) were set for this run, so none "
@@ -161,12 +154,23 @@ def _plain_part(rep: "StageReporter") -> list[str]:
             req = _requirement_plain(r)
             if req:
                 lines.append(f"- {r.plain_name} {req}.")
+    failed = [r for r in rep.rows if r.status != "ok"]
+    if failed:
+        lines.append(f"- {len(failed)} run(s) failed: {', '.join(r.plain_name for r in failed)}. The error "
+                     "messages are under *Anomalies and failures* below.")
     lines.append("")
 
-    lines += ["## Words used in this report", ""]
-    lines += [f"- **{term}**: {text}" for term, text in rep.glossary.items()]
-    lines.append("")
+    if rep.plain_intro:
+        lines += ["## Background: how this stage works", "", rep.plain_intro, ""]
     return lines
+
+
+def _layer_cell(v: Any) -> str:
+    if isinstance(v, bool):
+        return "yes" if v else ""
+    if isinstance(v, float):
+        return f"{v:.2f}" if abs(v) < 100 else f"{v:,.0f}"
+    return _fmt(v)
 
 
 def _technical_part(rep: "StageReporter") -> list[str]:

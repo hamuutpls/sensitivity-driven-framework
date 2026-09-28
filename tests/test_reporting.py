@@ -74,11 +74,13 @@ def test_report_has_plain_language_part(tmp_path):
     md = rep.finalize()["report"].read_text(encoding="utf-8")
 
     plain, technical = md.split("# Technical details")
-    for heading in ("## The short version", "## What this stage does", "## What was compared",
-                    "## What the numbers mean", "## Why the framework won or lost", "## Words used in this report"):
+    for heading in ("## Summary", "## Key terms", "## Results", "## Findings",
+                    "## Background: how this stage works"):
         assert heading in plain
+    assert plain.index("## Summary") < plain.index("## Key terms") < plain.index("## Results") \
+        < plain.index("## Findings")
     assert "is a trade-off against the standard method" in plain
-    assert "Perplexity measures how well the model predicts" in plain  # metric explained
-    assert "8% less than the standard method, which is better" in plain  # 11 vs 12 perplexity
+    assert "Perplexity measures how well the model predicts" in plain  # metric defined
+    assert "| Version | Prediction error on test text (validation half) (lower is better) |" in plain
     assert "It kept the fragile parts intact." in plain
     assert "## Results" in technical and "`gptq/framework`" in technical  # technical tables kept
