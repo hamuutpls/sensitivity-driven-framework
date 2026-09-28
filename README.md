@@ -21,14 +21,13 @@ Every stage compares, under identical conditions, three variants of each method:
 configs/tinyllama.yaml   every setting, in one file
 src/sdf/
   config.py              FrameworkConfig: the single config object (YAML + --set overrides)
-  search_space.py        the shared search space; adding a parameter is one line
+  search_space.py        the search space (Stage 0 parameters for now); adding a parameter is one line
   requirements.py        DeploymentRequirement and its met / shortfall check
   run.py                 run directory, config snapshot, logging, seeding, cache
   data.py                calibration windows; WikiText-2 test split into validation / held-out halves
   eval/metrics.py        perplexity (both halves), model size, peak memory, prefill / decode latency
   reporting/             StageReporter: report.md, stage_<N>_comparison.xlsx, results.json for every stage
   stage0/                sensitivity profile, planner + memory prediction, end-to-end Stage 0 run
-  trial_log.py           per-searcher JSONL trial log
   utils/                 logging, seeding, environment capture, artifact cache
 ```
 

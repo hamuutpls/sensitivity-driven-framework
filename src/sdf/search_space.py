@@ -133,7 +133,6 @@ SEARCH_SPACE = SearchSpace(
         Param("calib_dataset", stage=0, default="wikitext2", choices=("wikitext2", "c4", "pile10k")),
         Param("calib_samples", stage=0, default=64, choices=(16, 32, 64, 128)),
         Param("gptq_groupsize", stage=1, default=128, choices=(32, 64, 128, PER_CHANNEL)),
-        Param("smoothquant_alpha", stage=2, default=0.5, low=0.5, high=0.95),
-        Param("quarot_k_bits", stage=3, default=4, choices=(2, 4, 8)),
+        # Stage 2/3 parameters (smoothquant_alpha, quarot_k_bits) get added here with those stages.
     ]
 )

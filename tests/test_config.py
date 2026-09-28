@@ -5,12 +5,11 @@ import pytest
 from sdf.config import FrameworkConfig, config_hash, load_config
 from sdf.requirements import DeploymentRequirement
 from sdf.search_space import PER_CHANNEL, SEARCH_SPACE, Param, SearchSpace
-from sdf.trial_log import Objectives, TrialLog, TrialRecord
 
 
 def test_search_space_has_spec_parameters():
     assert SEARCH_SPACE.names == ["sensitive_threshold", "prune_ratio_aggressive", "calib_dataset", "calib_samples",
-                                  "gptq_groupsize", "smoothquant_alpha", "quarot_k_bits"]
+                                  "gptq_groupsize"]
     assert [p.name for p in SEARCH_SPACE.for_stage(0)][:2] == ["sensitive_threshold", "prune_ratio_aggressive"]
 
 
@@ -56,13 +55,3 @@ def test_requirement_check():
     partial = req.check({"model_size_gb": 0.5})
     assert partial.met is None
 
-
-def test_trial_log_roundtrip(tmp_path):
-    log = TrialLog(tmp_path / "mobo.jsonl")
-    cand = SEARCH_SPACE.make({"gptq_groupsize": 64})
-    log.append(TrialRecord(0, "mobo", cand, Objectives(12.3, 0.7, 20.0, 95.0), ppl_heldout=12.9,
-                           requirement={"met": False, "shortfall": {"target_ppl": 0.3}}))
-    log.append(TrialRecord(1, "mobo", cand, status="failed", error="OOM"))
-    recs = log.records()
-    assert len(log) == 2 and recs[0].candidate == cand and recs[0].objectives.ppl_val == 12.3
-    assert recs[1].objectives is None and recs[1].status == "failed"

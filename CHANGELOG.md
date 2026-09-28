@@ -5,9 +5,11 @@
 - **Config.** Added a single `FrameworkConfig` (`configs/tinyllama.yaml` plus `--set key=value` overrides).
   Stage logic no longer hardcodes anything: bit-widths, the uniform baseline, eval settings and output
   paths all come from the config.
-- **Search space.** It now uses the spec's parameter names (`sensitive_threshold`, `prune_ratio_aggressive`,
-  `gptq_groupsize`, `smoothquant_alpha`, `quarot_k_bits`, `calib_dataset`, `calib_samples`) and is defined
-  in one place (`search_space.py`), so adding a parameter is one line.
+- **Search space.** It now uses the spec's parameter names and is defined in one place
+  (`search_space.py`), so adding a parameter is one line. The scope is Stage 0 only, so it holds
+  `sensitive_threshold`, `prune_ratio_aggressive`, `calib_dataset` and `calib_samples`, plus
+  `gptq_groupsize`, which Stage 0 uses to predict memory. The Stage 2 and 3 parameters are added with
+  those stages.
 - **Reporting.** Added `StageReporter`, the shared reporting module. Every stage writes `report.md`,
   `stage_<N>_comparison.xlsx` and `results.json` with one schema. The reporter:
   - computes deltas against FP16 and against the original method;
@@ -26,8 +28,7 @@
   flag, and the seed is logged. Logging is timestamped and goes to stderr and to `<run_dir>/run.log`.
 - **Crash-safe output.** Writes are atomic and `results.json` is rewritten after every row, so a Colab
   disconnect keeps completed work.
-- **Trial log.** It now records the spec's objectives (validation perplexity, memory, latency, build
-  time), plus the held-out perplexity (never optimised) and the requirement shortfall.
+- **Trial log removed.** It belongs to the search layer, which is out of scope for now.
 
 ## 2026-09-28: Initial Stage 0
 

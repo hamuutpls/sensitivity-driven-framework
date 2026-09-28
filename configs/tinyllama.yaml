@@ -48,6 +48,4 @@ hyperparams:
   prune_ratio_aggressive: 0.3
   calib_dataset: wikitext2
   calib_samples: 64
-  gptq_groupsize: 128
-  smoothquant_alpha: 0.5
-  quarot_k_bits: 4
+  gptq_groupsize: 128   # Stage 1 parameter; Stage 0 uses it to predict memory
