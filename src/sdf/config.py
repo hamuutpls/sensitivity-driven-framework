@@ -71,6 +71,9 @@ class Stage0Config:
     profile_dtype: str = "float32"  # fp16 gradients overflow; profile in fp32 (or bfloat16 on GPU)
     protected_bits: int = 8
     compressed_bits: int = 4
+    # Same-size plan without pruning: robust layers drop to this many bits instead, so the size match comes
+    # from bits alone and the effect of the sensitivity guidance is not mixed with the effect of pruning.
+    no_prune_compressed_bits: int = 3
     # "Original method" for Stage 0 = the uniform allocation a standard method uses without guidance.
     uniform_bits: int = 4
     uniform_prune_ratio: float = 0.0

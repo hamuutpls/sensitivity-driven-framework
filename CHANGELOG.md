@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-09-28: Report gaps from the first local run
+
+- **Every core metric in both report tables.** Held-out perplexity, peak GPU memory and per-token decode
+  latency were only in results.json; they are now columns in the plain and technical tables, along with
+  sparsity.
+- **Pruning caveat for the same-size plan.** On TinyLlama the same-size plan protects 5 layers and prunes
+  the other 17 by 30%, while uniform prunes nothing, so the size match is bought with pruning. Sensitivity
+  exposure scores 4 bits with 30% pruned as 2.8 effective bits, which likely understates the damage. The
+  report now says so in both parts.
+- **Same-size plan without pruning** (`allocation_same_size_no_prune`). Robust layers drop to
+  `stage0.no_prune_compressed_bits` (3) instead of being pruned, and as many top layers as fit are
+  protected at 8 bits within the uniform plan's memory. This isolates the effect of the sensitivity
+  guidance itself. Its plan is saved as `compression_plan_budget_matched_no_prune.json`.
+- **Per-layer table** now shows the share removed for the same-size plan and the bits per layer of the
+  no-pruning plan.
+
 ## 2026-09-28: Leaner code after the ponytail audit
 
 About 220 lines were removed with no change to what a run produces:

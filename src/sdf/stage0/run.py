@@ -31,7 +31,9 @@ log = get_logger(__name__)
 
 METHOD = "allocation"
 METHOD_BUDGET = "allocation_same_size"
-MAIN_METRICS = ["ppl_val", "predicted_weight_memory_gb", "avg_bits_per_weight", "sensitivity_exposure", "build_time_s"]
+METHOD_NO_PRUNE = "allocation_same_size_no_prune"
+MAIN_METRICS = ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "peak_memory_gb", "decode_ms_per_token_mean",
+                "avg_bits_per_weight", "sparsity", "sensitivity_exposure", "build_time_s"]
 
 
 @dataclass
@@ -187,13 +189,35 @@ def run_stage0(
         row.metrics["build_time_s"] = profile.cost["wall_clock_s"] + time.perf_counter() - t0
         row.info["budget_gb"] = predict(uniform).weight_memory_gb
 
+    # --- same size, no pruning ---------------------------------------------------------------------------------
+    # The same-size plan pays for its protected layers by pruning the rest, which uniform does not do, so its
+    # comparison mixes two effects. Here the robust layers pay with fewer bits instead and nothing is pruned.
+    no_prune = None
+    with rep.method(METHOD_NO_PRUNE, "framework", compare_to=METHOD,
+                    label="Sensitivity-guided framework, same size, nothing removed",
+                    plain_desc=f"the same-size approach without removing any numbers: the less sensitive layers "
+                               f"drop to {s0.no_prune_compressed_bits} bits per number instead, to pay for "
+                               "protecting the sensitive ones. This separates the effect of choosing where to "
+                               "spend the bits from the effect of removing numbers.",
+                    description=f"sensitivity plan in the uniform plan's predicted memory, no pruning, robust "
+                                f"layers at {s0.no_prune_compressed_bits} bits") as row:
+        t0 = time.perf_counter()
+        no_prune = budget_matched_plan(scores, predict(uniform).weight_memory_gb, 0.0, s0.protected_bits,
+                                       s0.no_prune_compressed_bits, predict)
+        row.metrics.update(_cost_metrics(predict(no_prune)))
+        row.metrics["protected_layers"] = len(no_prune.protected_layers)
+        row.metrics["build_time_s"] = profile.cost["wall_clock_s"] + time.perf_counter() - t0
+        row.info["budget_gb"] = predict(uniform).weight_memory_gb
+
     if plan is None:
         rep.finalize()
         raise RuntimeError(f"Stage 0 planning failed; see {rep.report_path}")
 
-    _add_stage0_details(rep, profile, plan, uniform, budget, predict, s0.baseline_bits)
+    _add_stage0_details(rep, profile, plan, uniform, budget, no_prune, predict, s0.baseline_bits)
     if budget is not None:
         budget.save(rep.dir / "compression_plan_budget_matched.json")
+    if no_prune is not None:
+        no_prune.save(rep.dir / "compression_plan_budget_matched_no_prune.json")
     plan.save(rep.dir / "compression_plan.json")
     profile.save(rep.dir / "sensitivity_profile.json")
     return Stage0Result(plan=plan, profile=profile, outputs=rep.finalize())
@@ -201,11 +225,13 @@ def run_stage0(
 
 def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: CompressionPlan,
                         uniform: CompressionPlan, budget: CompressionPlan | None,
+                        no_prune: CompressionPlan | None,
                         predict: Callable[[CompressionPlan], PlanCost], baseline_bits: int) -> None:
     fw_cost, un_cost = predict(plan), predict(uniform)
     outliers = outlier_layers(profile.raw_scores)
     budget_layers = budget.layers if budget is not None else [None] * len(plan.layers)
-    for lp, ul, bl, raw, numel, fw_mb, un_mb in zip(plan.layers, uniform.layers, budget_layers,
+    no_prune_layers = no_prune.layers if no_prune is not None else [None] * len(plan.layers)
+    for lp, ul, bl, nl, raw, numel, fw_mb, un_mb in zip(plan.layers, uniform.layers, budget_layers, no_prune_layers,
                                                     profile.raw_scores, profile.layer_numel,
                                                     fw_cost.per_layer_mb, un_cost.per_layer_mb):
         rep.per_layer.append({
@@ -216,6 +242,8 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
             "same_size_protected": None if bl is None else bl.protected,
             "same_size_bits": None if bl is None else bl.bit_width,
             "same_size_prune_ratio": None if bl is None else bl.pruning_ratio,
+            "no_prune_protected": None if nl is None else nl.protected,
+            "no_prune_bits": None if nl is None else nl.bit_width,
             "uniform_bits": ul.bit_width, "uniform_prune_ratio": ul.pruning_ratio, "uniform_predicted_mb": un_mb,
         })
 
@@ -270,8 +298,23 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
     if fw_cost.weight_memory_gb >= baseline_cost(profile, baseline_bits).weight_memory_gb:
         rep.anomalies.append("The framework plan is predicted to use no less memory than FP16.")
 
+    if budget is not None:
+        pruned = budget.compressed_layers
+        ratio = budget.prune_ratio_aggressive
+        if pruned and ratio > 0 and uniform.prune_ratio_aggressive == 0:
+            bits = budget.layers[pruned[0]].bit_width
+            rep.sections.append(("Same-size plan: pruning caveat", (
+                f"The same-size plan protects layers {budget.protected_layers or 'none'} at full protected precision "
+                f"and prunes the other {len(pruned)} layers by {ratio:.0%}, while the uniform plan prunes nothing: "
+                "the size match is bought with pruning. Sensitivity exposure treats pruning as a linear loss of "
+                f"bits ({bits} x {1 - ratio:.2g} = {bits * (1 - ratio):.3g} effective bits), which likely understates "
+                "the damage of removing weights outright, so its exposure advantage is optimistic. The "
+                f"`{METHOD_NO_PRUNE}` row matches the size without pruning to isolate the effect of the "
+                "sensitivity guidance itself.")))
+
     _add_plain_explanation(rep, profile, plan, fw_cost, un_cost,
-                           predict(budget) if budget is not None else None, budget, outliers)
+                           predict(budget) if budget is not None else None, budget,
+                           predict(no_prune) if no_prune is not None else None, no_prune, outliers)
 
     rep.next_steps += [
         "Run Stage 1 (GPTQ) with both allocations to measure their perplexity and latency.",
@@ -282,7 +325,8 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
 
 def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan: CompressionPlan,
                            fw_cost: PlanCost, un_cost: PlanCost, budget_cost: PlanCost | None,
-                           budget: CompressionPlan | None, outliers: list[int]) -> None:
+                           budget: CompressionPlan | None, np_cost: PlanCost | None,
+                           no_prune: CompressionPlan | None, outliers: list[int]) -> None:
     """The plain-language part of the Stage 0 report, for readers with no AI background."""
     s0 = rep.config["stage0"]
     hp = rep.config["hyperparams"]
@@ -345,6 +389,23 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
                    f"paid for by trimming the others. Its fragile-parts score is "
                    f"{budget_cost.sensitivity_exposure:.2f} against {exp_un:.2f} for the standard method. This "
                    "is the fair head-to-head: same size, different choice of where to spend the bits.")
+        if budget.compressed_layers and budget.prune_ratio_aggressive > 0 and un_cost.sparsity == 0:
+            bits = s0["compressed_bits"]
+            ratio = budget.prune_ratio_aggressive
+            why.append(f"There is a catch. The same-size plan saves its space by removing {ratio:.0%} of the numbers "
+                       f"in the other {len(budget.compressed_layers)} layers, while the standard method removes "
+                       "nothing. The fragile-parts score counts removing numbers as if it were just a milder "
+                       f"form of rounding ({bits} bits with {ratio:.0%} removed is scored like "
+                       f"{bits * (1 - ratio):.3g} bits). In practice, deleting numbers outright probably does more "
+                       "harm than that, so this score likely makes the same-size plan look safer than it is.")
+    if no_prune is not None and np_cost is not None:
+        why.append(f"To check the guidance on its own, the report also includes a same-size version that removes "
+                   f"nothing. It pays for protecting {_top(len(no_prune.protected_layers))} by storing the other "
+                   f"layers with {s0['no_prune_compressed_bits']} bits instead of {s0['uniform_bits']}. It needs "
+                   f"{np_cost.weight_memory_gb:.3g} GB and its fragile-parts score is "
+                   f"{np_cost.sensitivity_exposure:.2f} against {exp_un:.2f} for the standard method. If it "
+                   "matches or beats the standard method once Stage 1 measures accuracy, the gain comes from "
+                   "choosing where to spend the bits, not from removing numbers.")
     why.append(f"Some parts of the model (the word dictionary at its input and output, called embeddings and the "
                f"LM head) stay uncompressed in every plan. They alone take {fw_cost.fixed_memory_gb:.2f} GB, "
                f"about {fw_cost.fixed_memory_gb / mem_un:.0%} of the standard method's size, so no plan here "
@@ -379,6 +440,12 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
             f"{'less' if budget_cost.sensitivity_exposure < exp_un else 'no less'} of the compression on fragile "
             f"layers than the standard method ({budget_cost.sensitivity_exposure:.2f} against {exp_un:.2f}, "
             "lower is better). ")
+        if budget.prune_ratio_aggressive > 0 and un_cost.sparsity == 0:
+            summary += ("It makes room by removing numbers from the other layers, which the "
+                        "standard method does not do, so a version that removes nothing was added as well "
+                        + (f"({_top(len(no_prune.protected_layers))} protected, the rest at "
+                           f"{s0['no_prune_compressed_bits']} bits, fragile-parts score "
+                           f"{np_cost.sensitivity_exposure:.2f}). " if no_prune is not None and np_cost else ". "))
     if outliers:
         summary += (f"Layer{'s' if len(outliers) > 1 else ''} {', '.join(map(str, outliers))} behave"
                     f"{'' if len(outliers) > 1 else 's'} unusually and should be checked. ")
@@ -389,11 +456,14 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         "Sensitivity of every layer",
         "Sensitivity runs from 0 (least sensitive layer) to 1 (most sensitive). The raw score is the measurement "
         "before it is put on that scale. \"Protected\" layers keep high precision; the others are compressed "
-        "and have the listed share of their numbers removed.",
+        "and have the listed share of their numbers removed. The last column gives the bits per number in the "
+        "same-size plan that removes nothing.",
         [("layer", "Layer"), ("sensitivity", "Sensitivity (0 to 1)"), ("raw_score", "Raw score"),
          ("framework_protected", "Protected (framework plan)"),
+         ("framework_prune_ratio", "Share removed (framework plan)"),
          ("same_size_protected", "Protected (same-size plan)"),
-         ("framework_prune_ratio", "Share removed (framework plan)"), ("outlier", "Unusual layer")],
+         ("same_size_prune_ratio", "Share removed (same-size plan)"),
+         ("no_prune_bits", "Bits (same-size, nothing removed)"), ("outlier", "Unusual layer")],
     )
     rep.glossary["Embeddings and LM head"] = ("The model's word dictionary: the table that turns words into "
                                               "numbers at the start, and numbers back into words at the end.")
