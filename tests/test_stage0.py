@@ -1,26 +1,29 @@
+import json
+
 import pytest
 import torch
-from transformers import LlamaConfig, LlamaForCausalLM
+from openpyxl import load_workbook
 
-from sdf.config import CalibrationConfig, CandidateConfig
-from sdf.calibration import make_batches
+from sdf.data import calibration_batches, eval_windows
+from sdf.eval import measure_model, model_size_gb
+from sdf.run import start_run
+from sdf.search_space import PER_CHANNEL, SEARCH_SPACE
 from sdf.stage0 import (
-    COMPRESSED_BITS,
-    PROTECTED_BITS,
-    CompressionPlan,
     SensitivityProfile,
+    baseline_cost,
     normalize,
     plan_compression,
+    predict_cost,
     profile_sensitivity,
     run_stage0,
+    uniform_plan,
 )
+from conftest import fake_texts
 
 
-def tiny_llama(num_layers=4):
-    torch.manual_seed(0)
-    cfg = LlamaConfig(vocab_size=64, hidden_size=32, intermediate_size=64, num_hidden_layers=num_layers,
-                      num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=64)
-    return LlamaForCausalLM(cfg)
+def toy_profile():
+    return SensitivityProfile(scores=[0.0, 0.3, 0.5, 1.0], raw_scores=[1, 2, 3, 4],
+                              layer_numel=[1000] * 4, layer_rows=[10] * 4, other_numel=500)
 
 
 def test_normalize():
@@ -28,68 +31,85 @@ def test_normalize():
     assert normalize([5.0, 5.0]) == [0.0, 0.0]
 
 
-def test_plan_protects_layers_at_or_above_threshold():
-    profile = SensitivityProfile(scores=[0.0, 0.3, 0.5, 1.0], raw_scores=[1, 2, 3, 4])
-    plan = plan_compression(profile, sensitivity_threshold=0.5, pruning_ratio=0.25)
-
-    assert plan.protected_layers == [2, 3]
-    assert plan.compressed_layers == [0, 1]
-    for lp in plan.layers:
-        if lp.protected:
-            assert (lp.bit_width, lp.pruning_ratio) == (PROTECTED_BITS, 0.0)
-        else:
-            assert (lp.bit_width, lp.pruning_ratio) == (COMPRESSED_BITS, 0.25)
-    assert CompressionPlan.from_dict(plan.to_dict()) == plan
-
-
-def test_run_stage0_report():
-    profile = SensitivityProfile(scores=[0.0, 0.3, 0.5, 1.0], raw_scores=[1, 2, 3, 4], cost={"calibration_batches": 2})
-    _, report = run_stage0(profile, CandidateConfig(sensitivity_threshold=0.4, pruning_ratio=0.3))
-
-    assert report["protected"]["count"] == 2
-    assert report["compressed"]["percent"] == 50.0
-    assert report["bit_width_distribution"] == {"4": 2, "8": 2}
-    assert report["pruning_ratio_distribution"] == {"0.0": 2, "0.3": 2}
-    assert report["profiling_cost"] == {"calibration_batches": 2}
-
-
-def test_plan_rejects_bad_pruning_ratio():
-    profile = SensitivityProfile(scores=[0.0, 1.0], raw_scores=[0, 1])
+def test_plan_and_uniform():
+    plan = plan_compression(toy_profile(), 0.5, 0.25, protected_bits=8, compressed_bits=4)
+    assert plan.protected_layers == [2, 3] and plan.compressed_layers == [0, 1]
+    assert [(lp.bit_width, lp.pruning_ratio) for lp in plan.layers] == [(4, 0.25), (4, 0.25), (8, 0.0), (8, 0.0)]
+    uni = uniform_plan(toy_profile(), 4, 0.0)
+    assert {lp.bit_width for lp in uni.layers} == {4} and not uni.protected_layers
     with pytest.raises(ValueError):
-        plan_compression(profile, 0.5, 1.0)
+        plan_compression(toy_profile(), 0.5, 1.0, 8, 4)
 
 
-def test_profile_sensitivity_on_tiny_llama(tmp_path):
-    model = tiny_llama(num_layers=4)
-    frozen = model.model.embed_tokens.weight
+def test_predict_cost():
+    prof = toy_profile()
+    fp16 = baseline_cost(prof, 16)
+    assert fp16.weight_memory_gb == pytest.approx(4500 * 2 / 1e9)
+    uni = predict_cost(uniform_plan(prof, 4, 0.0), prof, group_size=100, group_overhead_bits=32, baseline_bits=16)
+    # per layer: 1000 * 4 bits + 10 groups * 32 bits = 4320 bits; + 500 * 16 bits outside the layers
+    assert uni.weight_memory_gb == pytest.approx((4 * 4320 + 500 * 16) / 8 / 1e9)
+    assert uni.sensitivity_exposure == pytest.approx(0.75)
+    per_ch = predict_cost(uniform_plan(prof, 4, 0.0), prof, PER_CHANNEL, 32, 16)
+    assert per_ch.per_layer_mb[0] == pytest.approx((4000 + 10 * 32) / 8 / 1e6)
+    fw = predict_cost(plan_compression(prof, 0.5, 0.3, 8, 4), prof, 100, 32, 16)
+    assert fw.sensitivity_exposure < uni.sensitivity_exposure  # sensitive layers are spared
+    assert fw.sparsity == pytest.approx(2 * 300 / 4500)
+
+
+def test_profile_sensitivity_on_tiny_llama(tiny_llama):
+    frozen = tiny_llama.model.embed_tokens.weight
     frozen.requires_grad_(False)
     batches = [torch.randint(0, 64, (2, 16), generator=torch.Generator().manual_seed(i)) for i in range(3)]
-
-    profile = profile_sensitivity(model, batches, device="cpu", meta={"model": "tiny"})
-
-    assert profile.num_layers == 4
-    assert min(profile.scores) == 0.0 and max(profile.scores) == 1.0
-    assert all(r > 0 for r in profile.raw_scores)
-    assert profile.cost["calibration_batches"] == 3
-    assert profile.cost["calibration_tokens"] == 3 * 2 * 16
-    # gradients cleared and requires_grad flags restored
-    assert all(p.grad is None for p in model.parameters())
+    prof = profile_sensitivity(tiny_llama, batches, device="cpu")
+    assert prof.num_layers == 4 and min(prof.scores) == 0.0 and max(prof.scores) == 1.0
+    assert prof.cost["calibration_tokens"] == 96
+    # q, o: 32x32; k, v: 32x16 (2 KV heads); gate, up, down: 32x64
+    assert prof.layer_numel == [2 * 1024 + 2 * 512 + 3 * 2048] * 4
+    assert all(p.grad is None for p in tiny_llama.parameters())
     assert frozen.requires_grad is False
-    assert model.model.layers[0].self_attn.q_proj.weight.requires_grad is True
-
-    profile.save(tmp_path / "profile.json")
-    assert SensitivityProfile.load(tmp_path / "profile.json") == profile
+    assert SensitivityProfile.from_dict(prof.to_dict()) == prof
 
 
-class _CharTokenizer:
-    def __call__(self, text, add_special_tokens=False):
-        return {"input_ids": [ord(c) % 64 for c in text]}
+def test_data_windows(tokenizer):
+    a = calibration_batches(fake_texts("x", "train"), tokenizer, n_samples=6, seq_len=8, batch_size=4, seed=1)
+    b = calibration_batches(fake_texts("x", "train"), tokenizer, n_samples=6, seq_len=8, batch_size=4, seed=1)
+    assert [t.shape for t in a] == [(4, 8), (2, 8)] and all(torch.equal(x, y) for x, y in zip(a, b))
+    val, held = eval_windows(fake_texts("x", "test"), tokenizer, seq_len=16, max_windows=5)
+    assert val.shape == (2, 16) and held.shape == (3, 16)
 
 
-def test_make_batches_shapes_and_determinism():
-    cfg = CalibrationConfig(n_batches=3, batch_size=2, seq_len=8, seed=1)
-    texts = ["hello world " * 20, "another document " * 20]
-    a = make_batches(texts, _CharTokenizer(), cfg)
-    b = make_batches(texts, _CharTokenizer(), cfg)
-    assert len(a) == 3 and all(t.shape == (2, 8) for t in a)
-    assert all(torch.equal(x, y) for x, y in zip(a, b))
+def test_measure_model(tiny_llama, tokenizer, small_cfg):
+    val, held = eval_windows(fake_texts("x", "test"), tokenizer, 16, 4)
+    metrics, raw = measure_model(tiny_llama, val, held, small_cfg.eval, torch.device("cpu"))
+    assert metrics["ppl_val"] > 1 and metrics["model_size_gb"] == pytest.approx(model_size_gb(tiny_llama))
+    assert sum(r["measurement"] == "latency" for r in raw) == small_cfg.eval.latency_repeats
+
+
+def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg):
+    ctx = start_run(small_cfg)
+    cand = SEARCH_SPACE.make({"calib_samples": 16, "sensitive_threshold": 0.5})
+    res = run_stage0(ctx, cand, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts)
+
+    stage_dir = ctx.run_dir / "stage_0"
+    for name in ("report.md", "stage_0_comparison.xlsx", "results.json", "compression_plan.json",
+                 "sensitivity_profile.json"):
+        assert (stage_dir / name).exists(), name
+    data = json.loads((stage_dir / "results.json").read_text())
+    rows = {f"{r['method']}/{r['variant']}": r for r in data["rows"]}
+    assert set(rows) == {"baseline/fp16", "allocation/original", "allocation/framework"}
+    assert all(r["status"] == "ok" for r in rows.values())
+    assert rows["baseline/fp16"]["metrics"]["ppl_val"] > 1
+    fw = rows["allocation/framework"]
+    assert fw["metrics"]["protected_layers"] == len(res.plan.protected_layers)
+    assert "vs_original_abs" in fw["deltas"]["sensitivity_exposure"]
+    assert len(data["per_layer"]) == 4
+    wb = load_workbook(stage_dir / "stage_0_comparison.xlsx")
+    assert wb["Per-layer"].max_row == 5
+
+    # second trial with other Stage 0 hyperparameters: profile and FP16 baseline come from cache
+    res2 = run_stage0(ctx, SEARCH_SPACE.make({"calib_samples": 16, "sensitive_threshold": 0.9}),
+                      model=None, tokenizer=tokenizer, text_loader=fake_texts)
+    assert res2.profile == res.profile
+    data2 = json.loads((stage_dir / "results.json").read_text())
+    assert data2["rows"][0]["info"]["cached"] is True
+    assert data2["rows"][2]["info"]["profile_cached"] is True

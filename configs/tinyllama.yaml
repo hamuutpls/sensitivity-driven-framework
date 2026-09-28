@@ -1,0 +1,53 @@
+# TinyLlama-1.1B on Colab. Every setting the pipeline reads lives here (or in the search space defaults).
+run:
+  output_root: /content/drive/MyDrive/thesis_compression/results
+  cache_dir: /content/drive/MyDrive/thesis_compression/cache
+  run_id: null          # null -> timestamp + config hash; set it to resume a run
+  seed: 0
+  deterministic: true
+  log_level: INFO
+
+model:
+  name: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+  dtype: float16
+  device: auto
+
+calibration:
+  seq_len: 512
+  batch_size: 1
+
+eval:
+  dataset: wikitext2
+  seq_len: 512
+  max_windows: null
+  latency_prompt_len: 128
+  latency_decode_tokens: 64
+  latency_warmup: 3
+  latency_repeats: 10
+
+stage0:
+  score: grad_x_weight
+  profile_dtype: float32
+  protected_bits: 8
+  compressed_bits: 4
+  uniform_bits: 4
+  uniform_prune_ratio: 0.0
+  group_overhead_bits: 32
+  baseline_bits: 16
+
+requirement:
+  target_latency_ms: null
+  target_memory_gb: null
+  target_ppl: null
+  kv_budget_gb: null
+  hardware_profile: colab-T4
+
+# Defaults for a single run; the search layer overrides these. Names match sdf/search_space.py.
+hyperparams:
+  sensitive_threshold: 0.5
+  prune_ratio_aggressive: 0.3
+  calib_dataset: wikitext2
+  calib_samples: 64
+  gptq_groupsize: 128
+  smoothquant_alpha: 0.5
+  quarot_k_bits: 4

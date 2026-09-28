@@ -28,6 +28,9 @@ from torch import nn
 class SensitivityProfile:
     scores: list[float]  # normalised, one per decoder layer, in [0, 1]
     raw_scores: list[float]  # accumulated |g * w| before normalisation
+    layer_numel: list[int] = field(default_factory=list)  # weights per decoder layer (Linear weights only)
+    layer_rows: list[int] = field(default_factory=list)  # output channels per layer (for per-channel scales)
+    other_numel: int = 0  # parameters outside the decoder layers + layer norms (kept at baseline precision)
     method: str = "grad_x_weight"
     cost: dict[str, Any] = field(default_factory=dict)  # batches, tokens, wall_clock_s, peak_memory_gb
     meta: dict[str, Any] = field(default_factory=dict)  # model name, calibration settings
@@ -45,8 +48,12 @@ class SensitivityProfile:
         path.write_text(json.dumps(self.to_dict(), indent=2))
 
     @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "SensitivityProfile":
+        return cls(**d)
+
+    @classmethod
     def load(cls, path: str | Path) -> "SensitivityProfile":
-        return cls(**json.loads(Path(path).read_text()))
+        return cls.from_dict(json.loads(Path(path).read_text()))
 
 
 def find_decoder_layers(model: nn.Module) -> nn.ModuleList:
@@ -59,6 +66,24 @@ def find_decoder_layers(model: nn.Module) -> nn.ModuleList:
     if not candidates:
         raise ValueError("could not find decoder layers in model")
     return max(candidates, key=len)
+
+
+def layer_shapes(model: nn.Module) -> tuple[list[int], list[int], int]:
+    """(weights per layer, output channels per layer, parameters outside those Linear weights).
+
+    Only the Linear weights of decoder layers are compressed; embeddings, norms and the LM head stay at
+    baseline precision. Tied parameters are counted once.
+    """
+    layers = find_decoder_layers(model)
+    numel, rows, compressible = [], [], set()
+    for layer in layers:
+        linears = [m for m in layer.modules() if isinstance(m, nn.Linear)]
+        numel.append(sum(m.weight.numel() for m in linears))
+        rows.append(sum(m.out_features for m in linears))
+        compressible.update(id(m.weight) for m in linears)
+    unique = {id(p): p for p in model.parameters()}
+    other = sum(p.numel() for pid, p in unique.items() if pid not in compressible)
+    return numel, rows, other
 
 
 def normalize(scores: list[float]) -> list[float]:
@@ -118,6 +143,8 @@ def profile_sensitivity(
 
     if n_batches == 0:
         raise ValueError("no calibration batches given")
+    if not torch.isfinite(raw).all():
+        raise FloatingPointError("non-finite sensitivity scores; profile in float32 (stage0.profile_dtype)")
 
     cost: dict[str, Any] = {
         "calibration_batches": n_batches,
@@ -126,9 +153,13 @@ def profile_sensitivity(
         "peak_memory_gb": (torch.cuda.max_memory_allocated(device) / 1e9) if device.type == "cuda" else None,
     }
     raw_list = raw.tolist()
+    numel, rows, other = layer_shapes(model)
     return SensitivityProfile(
         scores=normalize(raw_list),
         raw_scores=raw_list,
+        layer_numel=numel,
+        layer_rows=rows,
+        other_numel=other,
         cost=cost,
         meta=dict(meta or {}),
     )

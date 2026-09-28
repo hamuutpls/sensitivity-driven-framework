@@ -1,4 +1,4 @@
-"""Trial log: one JSON line per trial, shared by all searchers and pooled at the end."""
+"""Trial log: one JSON line per search trial. Each searcher writes its own log; they are compared, not pooled."""
 
 from __future__ import annotations
 
@@ -8,57 +8,56 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
-from sdf.config import CandidateConfig
+from sdf.search_space import SEARCH_SPACE, Candidate, SearchSpace
 
 
 @dataclass(frozen=True)
 class Objectives:
-    """The three search objectives: memory down, latency down, accuracy up."""
+    """What the searchers optimise. The held-out perplexity is recorded on TrialRecord, never optimised."""
 
+    ppl_val: float  # accuracy, as validation-half perplexity (lower is better)
     memory_gb: float
-    latency_ms_per_token: float
-    accuracy: float
+    latency_ms: float  # decode latency per token
+    build_time_s: float
 
 
 @dataclass
 class TrialRecord:
     trial_id: int
     searcher: str  # "mobo" | "mfbo" | "nsga3"
-    config: CandidateConfig
-    objectives: Objectives | None = None
-    cost: dict[str, float] = field(default_factory=dict)  # e.g. wall_clock_s, peak_memory_gb
+    candidate: Candidate
+    objectives: Objectives | None = None  # None while running or if the trial failed
+    ppl_heldout: float | None = None
+    requirement: dict[str, Any] = field(default_factory=dict)  # RequirementCheck.to_dict(): met + shortfall
     fidelity: str | None = None  # MFBO rung; None = full pipeline
-    reports: dict[str, Any] = field(default_factory=dict)  # stage0..stage3 reports, full metrics
+    status: str = "ok"  # ok | failed
+    error: str | None = None
     timestamp: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
-        d["config"] = self.config.to_dict()
+        d["candidate"] = self.candidate.to_dict()
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "TrialRecord":
+    def from_dict(cls, d: dict[str, Any], space: SearchSpace = SEARCH_SPACE) -> "TrialRecord":
         d = dict(d)
-        d["config"] = CandidateConfig.from_dict(d["config"])
+        d["candidate"] = space.validate(d["candidate"])
         if d.get("objectives") is not None:
             d["objectives"] = Objectives(**d["objectives"])
         return cls(**d)
 
 
 class TrialLog:
-    """Append-only JSONL log of trials."""
+    """Append-only JSONL log; each append is flushed, so a disconnect loses at most the trial in progress."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
 
-    def clear(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text("")
-
     def append(self, record: TrialRecord) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a") as f:
-            f.write(json.dumps(record.to_dict()) + "\n")
+            f.write(json.dumps(record.to_dict(), default=str) + "\n")
 
     def __iter__(self) -> Iterator[TrialRecord]:
         if not self.path.exists():

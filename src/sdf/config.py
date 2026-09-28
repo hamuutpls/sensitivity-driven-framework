@@ -1,104 +1,141 @@
-"""Configuration objects: the 5-D search space, one candidate, deployment targets, experiment settings."""
+"""The single configuration object. Stage logic reads every setting from here or from a Candidate."""
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from typing import Any, Union
+import copy
+import hashlib
+import json
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from pathlib import Path
+from typing import Any, Mapping
 
-GroupSize = Union[int, str]  # 32, 64, 128 or "per-channel"
-
-PER_CHANNEL = "per-channel"
-
-
-@dataclass(frozen=True)
-class SearchSpace:
-    """Bounds of the 5-D search space shared by every searcher."""
-
-    sensitivity_threshold: tuple[float, float] = (0.1, 0.9)
-    pruning_ratio: tuple[float, float] = (0.0, 0.6)
-    group_sizes: tuple[GroupSize, ...] = (32, 64, 128, PER_CHANNEL)
-    migration_strength: tuple[float, float] = (0.5, 0.95)
-    cache_bits: tuple[int, ...] = (2, 4, 8)
-
-    def validate(self, cfg: "CandidateConfig") -> None:
-        """Raise ValueError if `cfg` lies outside this space."""
-        errors = []
-        if not _in_range(cfg.sensitivity_threshold, self.sensitivity_threshold):
-            errors.append(f"sensitivity_threshold={cfg.sensitivity_threshold} not in {self.sensitivity_threshold}")
-        if not _in_range(cfg.pruning_ratio, self.pruning_ratio):
-            errors.append(f"pruning_ratio={cfg.pruning_ratio} not in {self.pruning_ratio}")
-        if cfg.group_size not in self.group_sizes:
-            errors.append(f"group_size={cfg.group_size!r} not in {self.group_sizes}")
-        if not _in_range(cfg.migration_strength, self.migration_strength):
-            errors.append(f"migration_strength={cfg.migration_strength} not in {self.migration_strength}")
-        if cfg.cache_bits not in self.cache_bits:
-            errors.append(f"cache_bits={cfg.cache_bits} not in {self.cache_bits}")
-        if errors:
-            raise ValueError("candidate outside search space: " + "; ".join(errors))
+from sdf.requirements import DeploymentRequirement
 
 
-DEFAULT_SEARCH_SPACE = SearchSpace()
+@dataclass
+class RunConfig:
+    output_root: str = "thesis_compression/results"  # on Colab: /content/drive/MyDrive/thesis_compression/results
+    run_id: str | None = None  # None -> timestamp + config hash
+    cache_dir: str | None = None  # None -> <output_root>/../cache
+    seed: int = 0
+    deterministic: bool = True  # torch.use_deterministic_algorithms (warn-only)
+    log_level: str = "INFO"
 
 
-@dataclass(frozen=True)
-class CandidateConfig:
-    """One point in the search space, i.e. what a searcher proposes for a trial.
+@dataclass
+class ModelConfig:
+    name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    dtype: str = "float16"  # dtype of the FP16 baseline and of evaluation
+    device: str = "auto"  # auto | cpu | cuda | cuda:N
 
-    Stage 0 consumes sensitivity_threshold and pruning_ratio (the robust-layer pruning ratio),
-    Stage 1 group_size, Stage 2 migration_strength and Stage 3 cache_bits.
-    """
 
-    sensitivity_threshold: float
-    pruning_ratio: float
-    group_size: GroupSize = 128
-    migration_strength: float = 0.5
-    cache_bits: int = 8
+@dataclass
+class CalibrationConfig:
+    # dataset and sample count are search-space parameters (calib_dataset, calib_samples)
+    seq_len: int = 512
+    batch_size: int = 1
+
+
+@dataclass
+class EvalConfig:
+    dataset: str = "wikitext2"  # wikitext-2 raw *test* split
+    seq_len: int = 512
+    max_windows: int | None = None  # cap on non-overlapping windows (None = whole test split)
+    # First half of the windows = validation (the search optimises it); second half = held-out (reported only).
+    latency_prompt_len: int = 128
+    latency_decode_tokens: int = 64
+    latency_warmup: int = 3
+    latency_repeats: int = 10
+
+
+@dataclass
+class Stage0Config:
+    score: str = "grad_x_weight"
+    profile_dtype: str = "float32"  # fp16 gradients overflow; profile in fp32 (or bfloat16 on GPU)
+    protected_bits: int = 8
+    compressed_bits: int = 4
+    # "Original method" for Stage 0 = the uniform allocation a standard method uses without guidance.
+    uniform_bits: int = 4
+    uniform_prune_ratio: float = 0.0
+    # Per quantisation group GPTQ stores a scale and a zero point; bits each, for the memory prediction.
+    group_overhead_bits: int = 32
+    baseline_bits: int = 16  # bits/weight of the FP16 model and of unquantised tensors (embeddings, norms, lm_head)
+
+
+@dataclass
+class FrameworkConfig:
+    run: RunConfig = field(default_factory=RunConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
+    eval: EvalConfig = field(default_factory=EvalConfig)
+    stage0: Stage0Config = field(default_factory=Stage0Config)
+    requirement: DeploymentRequirement = field(default_factory=DeploymentRequirement)
+    # Default hyperparameters for single (non-search) runs; keys are SEARCH_SPACE names.
+    hyperparams: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "CandidateConfig":
-        return cls(**d)
+    def from_dict(cls, d: Mapping[str, Any]) -> "FrameworkConfig":
+        return _build(cls, d)
+
+    def with_overrides(self, overrides: Mapping[str, Any]) -> "FrameworkConfig":
+        """Apply dotted-key overrides, e.g. {"eval.seq_len": 256, "hyperparams.sensitive_threshold": 0.7}."""
+        d = copy.deepcopy(self.to_dict())
+        for key, value in overrides.items():
+            node = d
+            *parents, leaf = key.split(".")
+            for part in parents:
+                if part not in node:
+                    raise KeyError(f"unknown config key {key!r}")
+                node = node[part]
+            if leaf not in node and parents != ["hyperparams"]:
+                raise KeyError(f"unknown config key {key!r}")
+            node[leaf] = value
+        return FrameworkConfig.from_dict(d)
 
 
-@dataclass(frozen=True)
-class DeploymentTargets:
-    """Targets the final Pareto config is checked against. None means no target."""
+def load_config(path: str | Path | None = None, overrides: Mapping[str, Any] | None = None) -> FrameworkConfig:
+    cfg = FrameworkConfig()
+    if path is not None:
+        import yaml
 
-    latency_ms_per_token: float | None = None
-    memory_gb: float | None = None
-    accuracy: float | None = None
-    kv_memory_budget_gb: float | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        cfg = FrameworkConfig.from_dict(yaml.safe_load(Path(path).read_text()) or {})
+    return cfg.with_overrides(overrides or {})
 
 
-@dataclass(frozen=True)
-class CalibrationConfig:
-    """Calibration data used by Stage 0 profiling."""
-
-    dataset: str = "wikitext2"  # wikitext2 | c4 | pile10k
-    n_batches: int = 16
-    batch_size: int = 1
-    seq_len: int = 512
-    seed: int = 0
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+def config_hash(*parts: Any, length: int = 12) -> str:
+    """Stable hash of JSON-serialisable parts (dataclasses allowed); used for run ids and cache keys."""
+    payload = json.dumps([asdict(p) if is_dataclass(p) else p for p in parts], sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:length]
 
 
-@dataclass(frozen=True)
-class ExperimentConfig:
-    model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-    calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
-    targets: DeploymentTargets = field(default_factory=DeploymentTargets)
-    search_space: SearchSpace = field(default_factory=SearchSpace)
-    device: str = "auto"  # auto | cpu | cuda
-    dtype: str = "float32"  # float32 | bfloat16 | float16
+def _build(cls, d: Mapping[str, Any]):
+    known = {f.name: f for f in fields(cls)}
+    unknown = set(d) - set(known)
+    if unknown:
+        raise KeyError(f"unknown config keys for {cls.__name__}: {sorted(unknown)}")
+    kwargs = {}
+    for name, value in d.items():
+        ftype = _field_type(cls, name)
+        kwargs[name] = _build(ftype, value) if is_dataclass(ftype) and isinstance(value, Mapping) else value
+    return cls(**kwargs)
 
 
-def _in_range(x: float, bounds: tuple[float, float]) -> bool:
-    lo, hi = bounds
-    return lo <= x <= hi
+def _field_type(cls, name: str):
+    import typing
+
+    return typing.get_type_hints(cls)[name]
+
+
+__all__ = [
+    "CalibrationConfig",
+    "EvalConfig",
+    "FrameworkConfig",
+    "ModelConfig",
+    "RunConfig",
+    "Stage0Config",
+    "config_hash",
+    "load_config",
+]
