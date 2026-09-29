@@ -1,9 +1,9 @@
-# Colab run of TinyLlama-1.1B. Only what differs from the defaults goes here; every default, with its
+# Local run of TinyLlama-1.1B. Only what differs from the defaults goes here; every default, with its
 # explanation, lives in src/sdf/config.py (search-space defaults in src/sdf/search_space.py).
 # Override anything else here or on the command line: --set stage0.normalization=minmax
+# Relative paths are resolved from the folder you run the command in (normally the repo root).
 run:
-  output_root: /content/drive/MyDrive/thesis_compression/results
-  cache_dir: /content/drive/MyDrive/thesis_compression/cache
-
+  output_root: thesis_compression/results
+  cache_dir: thesis_compression/cache
 requirement:
-  hardware_profile: colab-T4
+  hardware_profile: RTX-5070-Ti

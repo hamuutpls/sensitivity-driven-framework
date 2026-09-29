@@ -14,7 +14,7 @@ from sdf.requirements import DeploymentRequirement
 
 @dataclass
 class RunConfig:
-    output_root: str = "thesis_compression/results"  # on Colab: /content/drive/MyDrive/thesis_compression/results
+    output_root: str = "thesis_compression/results"  # local folder, relative to the working directory
     run_id: str | None = None  # None -> timestamp + config hash
     cache_dir: str | None = None  # None -> <output_root>/../cache
     seed: int = 0

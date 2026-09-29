@@ -32,7 +32,7 @@ comparison report. The command-line tools below do the same with `--set` overrid
 
 ```
 main.py                  every tunable parameter, edit and run
-configs/tinyllama.yaml   Colab paths only; every default lives in config.py
+configs/tinyllama.yaml   local output paths; every default lives in config.py
 src/sdf/
   config.py              FrameworkConfig: the single config object (YAML + --set overrides)
   search_space.py        the search space (Stage 0 parameters for now); adding a parameter is one line
@@ -96,7 +96,7 @@ sdf-stage0-sweep --profile results/<run>/stage_0/sensitivity_profile.json # plan
 pip install -e ".[dev]"
 pytest
 
-# Colab: outputs go to Drive (see run.output_root in the config)
+# outputs go to ./thesis_compression/ in the folder you run from (see run.output_root)
 sdf-stage0 --config configs/tinyllama.yaml
 sdf-stage0 --config configs/tinyllama.yaml --set hyperparams.sensitive_threshold=0.7 --set run.run_id=my-run
 ```

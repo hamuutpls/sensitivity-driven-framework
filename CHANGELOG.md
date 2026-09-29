@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-29: Local output folders
+
+- Results and the cache now go to `thesis_compression/results` and `thesis_compression/cache` under the
+  folder you run from, in `main.py` and `configs/tinyllama.yaml`, instead of Google Drive paths. The
+  folder is git-ignored. The hardware profile in the config is now `RTX-5070-Ti`.
+
 ## 2026-09-29: Tunable parameters in main.py
 
 - **`main.py`** lists every tunable parameter at the top of one file: the run settings, the five

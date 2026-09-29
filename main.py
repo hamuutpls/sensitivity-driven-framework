@@ -11,8 +11,8 @@ MODE = "single"  # "single": one Stage 0 run with the settings in section 2
 #                  "sweep":  try every combination of the values in section 4 and write one comparison report
 
 MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-OUTPUT_ROOT = "thesis_compression/results"  # results/<run_id>/stage_0/ (on Colab: /content/drive/MyDrive/...)
-CACHE_DIR = None  # None -> next to OUTPUT_ROOT; sensitivity profiles and the FP16 baseline are reused from here
+OUTPUT_ROOT = "thesis_compression/results"  # local folder, relative to where you run; results/<run_id>/stage_0/
+CACHE_DIR = "thesis_compression/cache"  # sensitivity profiles and the FP16 baseline are reused from here
 RUN_ID = None  # None -> timestamp + config hash; reuse a name to resume a run
 SEED = 0
 MEASURE_FP16 = True  # measure the uncompressed model's perplexity, memory and latency (cached after the first run)
