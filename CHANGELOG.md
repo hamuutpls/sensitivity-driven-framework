@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-29: Default sensitivity score is now single-layer compression
+
+- `stage0.score` defaults to `layer_quant`. On TinyLlama (WikiText-2, 64 passages) gradient × weight ranked
+  layer 0 least sensitive, so the plan compressed and pruned it, yet skipping layer 0 raises perplexity from
+  14.1 to about 1,190. Its ranking also did not agree with the measured one-layer compression damage (rank
+  agreement −0.01). `layer_quant` measures the damage protection prevents directly. Old runs are unaffected:
+  the score is part of the profile cache key.
+
 ## 2026-09-29: Layer-removal and one-layer-compression sensitivity scores
 
 - **`stage0.score`** (`SENSITIVITY_SCORE` in main.py) chooses how sensitivity is measured:

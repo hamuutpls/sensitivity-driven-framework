@@ -2,10 +2,10 @@
 
 Three scores are available (`stage0.score`):
 
-- grad_x_weight (default, `profile_sensitivity`): one backward pass per batch, see below.
+- grad_x_weight (`profile_sensitivity`): one backward pass per batch, see below.
 - layer_removal (`profile_by_ablation`): skip layer l entirely and measure how much the perplexity on the
   calibration text rises. Direct, but removing a layer is far harsher than compressing it.
-- layer_quant (`profile_by_ablation`): compress only layer l (round-to-nearest at the compressed bit width
+- layer_quant (default, `profile_by_ablation`): compress only layer l (round-to-nearest at the compressed bit width
   and group size) and measure the perplexity rise. Closest to what the plan actually does to a layer.
 
 The two ablation scores need one forward pass over the calibration text per layer, plus one baseline.
