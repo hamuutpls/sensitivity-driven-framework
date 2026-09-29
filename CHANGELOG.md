@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-09-29: System and subsystem specifications
+
+- **`docs/specs/`**: a System Requirements Specification following ISO/IEC/IEEE 29148:2018 (every requirement
+  from the thesis spec with an ID, priority, status and verification method) and a Subsystem Design
+  Description following IEEE 1016-2009 (shared core, Stages 0 to 4 and the search layer, each described from
+  the same viewpoints, with a traceability table from requirement to design, code and test). Stage 0 and the
+  shared core are described from the code; the rest is marked planned, consistent with `docs/diagrams/`.
+
 ## 2026-09-29: Class and sequence diagrams
 
 - **`docs/diagrams/`**: a class diagram and a sequence diagram for the project as a whole and for each stage

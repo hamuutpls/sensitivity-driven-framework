@@ -30,6 +30,7 @@ src/sdf/
   stage0/                sensitivity profile, planner + memory prediction, end-to-end Stage 0 run
   utils/                 logging, seeding, environment capture, artifact cache
 docs/diagrams/           class and sequence diagrams, per stage and for the whole project
+docs/specs/              system requirements (ISO/IEC/IEEE 29148) and subsystem design (IEEE 1016)
 ```
 
 ## Stage 0
