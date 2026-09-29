@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-29: Tunable parameters in main.py
+
+- **`main.py`** lists every tunable parameter at the top of one file: the run settings, the five
+  search-space parameters (with their allowed values in comments), the fixed Stage 0 settings and the sweep
+  values. Edit it and run `python main.py`. `MODE` picks a single run or a sweep. Values outside the search
+  space are rejected before anything runs. Settings not listed keep their defaults from `config.py`.
+
 ## 2026-09-29: Stage 0 sweep
 
 - **`sdf-stage0-sweep`** tries several values of every search-space setting and writes one plain-language

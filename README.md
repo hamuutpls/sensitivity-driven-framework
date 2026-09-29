@@ -15,9 +15,23 @@ compression, applied to TinyLlama-1.1B-Chat.
 Every stage compares, under identical conditions, three variants of each method: the **FP16** baseline, the
 **original** method used on its own, and the **framework** version (Stage 0 plan + the method).
 
+## Quick start
+
+Open `main.py`, change the settings at the top (every tunable parameter is there, with its allowed values),
+then run:
+
+```bash
+pip install -e .
+python main.py
+```
+
+`MODE = "single"` runs Stage 0 once; `MODE = "sweep"` tries every combination in `SWEEP` and writes one
+comparison report. The command-line tools below do the same with `--set` overrides.
+
 ## Layout
 
 ```
+main.py                  every tunable parameter, edit and run
 configs/tinyllama.yaml   Colab paths only; every default lives in config.py
 src/sdf/
   config.py              FrameworkConfig: the single config object (YAML + --set overrides)
