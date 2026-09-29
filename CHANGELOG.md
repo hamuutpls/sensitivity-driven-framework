@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-29: Class and sequence diagrams
+
+- **`docs/diagrams/`**: a class diagram and a sequence diagram for the project as a whole and for each stage
+  and the search layer, in Mermaid so GitHub draws them. Stage 0 and the shared parts are drawn from the
+  code; Stages 1 to 4 and the search are drawn from the design and labelled `<<planned>>`.
+
 ## 2026-09-28: Report gaps from the first local run
 
 - **Every core metric in both report tables.** Held-out perplexity, peak GPU memory and per-token decode

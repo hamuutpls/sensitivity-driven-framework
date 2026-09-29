@@ -29,6 +29,7 @@ src/sdf/
   reporting/             StageReporter: report.md, stage_<N>_comparison.xlsx, results.json for every stage
   stage0/                sensitivity profile, planner + memory prediction, end-to-end Stage 0 run
   utils/                 logging, seeding, environment capture, artifact cache
+docs/diagrams/           class and sequence diagrams, per stage and for the whole project
 ```
 
 ## Stage 0
