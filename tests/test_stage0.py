@@ -177,3 +177,21 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg):
     assert "Share removed (same-size plan)" in report and "pruning caveat" in report
     assert "Perplexity (held-out half)" in report.split("# Technical details")[1]
     assert report.split("## Summary")[1].split("##")[0].count("\n\n") <= 2  # one paragraph
+
+
+def test_sweep_end_to_end(tiny_llama, tokenizer, small_cfg):
+    from sdf.stage0.sweep import run_sweep
+
+    ctx = start_run(small_cfg)
+    grid = {"sensitive_threshold": [0.3, 0.7], "prune_ratio_aggressive": [0.0, 0.3], "gptq_groupsize": [32, PER_CHANNEL],
+            "calib_dataset": ["wikitext2", "c4"], "calib_samples": [8, 16]}
+    out = run_sweep(ctx, grid, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts)
+    data = json.loads(out["json"].read_text())
+    assert len(data["rows"]) == 2 * 2 * 2 * 2 * 2
+    assert len(data["calibration"]) == 4 and not data["failures"]
+    assert all(r["same_gb"] <= r["uniform_gb"] * (1 + 1e-9) and r["noprune_gb"] <= r["uniform_gb"] * (1 + 1e-9)
+               for r in data["rows"])
+    report = out["report"].read_text(encoding="utf-8")
+    for heading in ("## Summary", "## 1. Threshold", "## 2. Prune ratio", "## 3. Group size", "## 4. Calibration"):
+        assert heading in report
+    assert load_workbook(out["xlsx"])["All plans"].max_row == len(data["rows"]) + 1

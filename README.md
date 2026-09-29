@@ -63,6 +63,19 @@ latency of the plans are measured once Stage 1 applies them.
 The sensitivity profile depends only on the model and calibration settings, so it is cached and reused by
 every trial. Each trial then only re-plans.
 
+### Sweep
+
+`sdf-stage0-sweep` tries several values of every setting and writes one comparison report
+(`stage_0_sweep/report.md`, `sweep.xlsx`, `results.json`). By default it tries every calibration text and
+sample count, every group size, and 5 evenly spaced thresholds and prune ratios. Each calibration setting is
+profiled once (cached); the rest only re-plans.
+
+```bash
+sdf-stage0-sweep --config configs/tinyllama.yaml                          # full sweep, needs the GPU
+sdf-stage0-sweep --grid sensitive_threshold=0.4,0.5,0.6 --grid calib_samples=64
+sdf-stage0-sweep --profile results/<run>/stage_0/sensitivity_profile.json # planning only, no GPU
+```
+
 ## Usage
 
 ```bash

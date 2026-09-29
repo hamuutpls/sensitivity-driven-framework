@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-29: Stage 0 sweep
+
+- **`sdf-stage0-sweep`** tries several values of every search-space setting and writes one plain-language
+  report plus `sweep.xlsx` (every plan) and `results.json`. It covers the threshold, the prune ratio, the
+  group size, and the calibration text and amount. For each combination it shows the threshold plan, the
+  same-size plan and the no-removal plan against the standard method, how much the calibration setting
+  changes the layer ranking (rank agreement), and which plans are both smaller and safer than the standard
+  method.
+- A calibration setting that fails (for example, a dataset that can't be downloaded) is recorded in the
+  report instead of stopping the sweep.
+- `--profile` plans from saved sensitivity profiles, so the planning part runs without a GPU.
+- Profile loading moved into `stage0.run.load_profile`, shared by the single run and the sweep.
+
 ## 2026-09-28: Report gaps from the first local run
 
 - **Every core metric in both report tables.** Held-out perplexity, peak GPU memory and per-token decode

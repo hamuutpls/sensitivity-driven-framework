@@ -86,6 +86,23 @@ def _cost_metrics(cost: PlanCost) -> dict[str, float]:
             "sparsity": cost.sparsity, "sensitivity_exposure": cost.sensitivity_exposure}
 
 
+def load_profile(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
+                 text_loader: Callable[[str, str], list[str]]) -> tuple[SensitivityProfile, bool]:
+    """The sensitivity profile for this calibration setting; it depends on nothing else, so it is cached."""
+    cfg = ctx.cfg
+
+    def compute() -> dict[str, Any]:
+        batches = calibration_batches(text_loader(candidate["calib_dataset"], "train"), handle.tokenizer,
+                                      candidate["calib_samples"], cfg.calibration.seq_len,
+                                      cfg.calibration.batch_size, cfg.run.seed)
+        prof = profile_sensitivity(handle.model(cfg.stage0.profile_dtype), batches, device=handle.device,
+                                   meta=profile_key(ctx, candidate))
+        return prof.to_dict()
+
+    prof_dict, cached = ctx.cache.get_or_compute("sensitivity_profile", profile_key(ctx, candidate), compute)
+    return SensitivityProfile.from_dict(prof_dict), cached
+
+
 def run_stage0(
     ctx: RunContext,
     candidate: dict[str, Any],
@@ -99,18 +116,7 @@ def run_stage0(
     handle = _ModelHandle(ctx, device, model, tokenizer)
     text_loader = text_loader or functools.partial(load_texts, cfg.data.sources)
 
-    # --- sensitivity profile (depends only on model + calibration, so cached across trials) -------------
-    def compute_profile() -> dict[str, Any]:
-        batches = calibration_batches(text_loader(candidate["calib_dataset"], "train"), handle.tokenizer,
-                                      candidate["calib_samples"], cfg.calibration.seq_len,
-                                      cfg.calibration.batch_size, cfg.run.seed)
-        prof = profile_sensitivity(handle.model(s0.profile_dtype), batches, device=device,
-                                   meta=profile_key(ctx, candidate))
-        return prof.to_dict()
-
-    prof_dict, prof_cached = ctx.cache.get_or_compute("sensitivity_profile", profile_key(ctx, candidate),
-                                                      compute_profile)
-    profile = SensitivityProfile.from_dict(prof_dict)
+    profile, prof_cached = load_profile(ctx, candidate, handle, text_loader)
     # The only place scores are normalised: cheap, so not cached, and changing the method reuses the profile.
     scores = normalize(profile.raw_scores, s0.normalization)
 
