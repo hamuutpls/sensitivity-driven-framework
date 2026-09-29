@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-29: Report explains the sensitivity-driven method step by step
+
+- The plain part's background section is now "How this stage works". It explains in four numbered steps
+  how the score is measured (weight size times gradient, summed per layer), how it is ranked onto a 0-1
+  scale, what the threshold does, and how bits and pruning follow, including the two same-size versions.
+
 ## 2026-09-29: Local output folders
 
 - Results and the cache now go to `thesis_compression/results` and `thesis_compression/cache` under the
