@@ -1,6 +1,16 @@
 """Stage 0a: per-layer sensitivity profiling.
 
-Score for decoder layer l, summed over calibration batches b:
+Three scores are available (`stage0.score`):
+
+- grad_x_weight (default, `profile_sensitivity`): one backward pass per batch, see below.
+- layer_removal (`profile_by_ablation`): skip layer l entirely and measure how much the perplexity on the
+  calibration text rises. Direct, but removing a layer is far harsher than compressing it.
+- layer_quant (`profile_by_ablation`): compress only layer l (round-to-nearest at the compressed bit width
+  and group size) and measure the perplexity rise. Closest to what the plan actually does to a layer.
+
+The two ablation scores need one forward pass over the calibration text per layer, plus one baseline.
+
+gradient x weight score for decoder layer l, summed over calibration batches b:
 
     s_l = sum_b sum_{w in layer l} |g_w(b) * w|
 
@@ -15,10 +25,12 @@ can be computed once and reused by every trial (see SensitivityProfile.save / lo
 from __future__ import annotations
 
 import json
+import math
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 import torch
 from torch import nn
@@ -205,4 +217,110 @@ def profile_sensitivity(
         other_numel=other,
         cost=cost,
         meta=dict(meta or {}),
+    )
+
+
+SCORES = ("grad_x_weight", "layer_removal", "layer_quant")
+
+
+@contextmanager
+def skip_layer(layer: nn.Module) -> Iterator[None]:
+    """Make `layer` pass its input straight through (as if it were removed), for any decoder layer whose
+    first input is the hidden states and whose output is the hidden states or a tuple starting with them."""
+    captured = {}
+
+    def pre(module, args, kwargs):
+        captured["h"] = args[0] if args else kwargs["hidden_states"]
+
+    def post(module, args, kwargs, out):
+        return (captured["h"],) + tuple(out[1:]) if isinstance(out, tuple) else captured["h"]
+
+    handles = [layer.register_forward_pre_hook(pre, with_kwargs=True),
+               layer.register_forward_hook(post, with_kwargs=True)]
+    try:
+        yield
+    finally:
+        for h in handles:
+            h.remove()
+
+
+def fake_quantize_(weight: torch.Tensor, bits: int, group_size: int) -> None:
+    """Round `weight` (out, in) in place to `bits` with one min/max scale per group of `group_size` inputs
+    (group_size <= 0 or not dividing the input size: one group per row)."""
+    out_f, in_f = weight.shape
+    g = group_size if 0 < group_size and in_f % group_size == 0 else in_f
+    w = weight.data.float().reshape(out_f, in_f // g, g)
+    lo, hi = w.amin(dim=-1, keepdim=True), w.amax(dim=-1, keepdim=True)
+    scale = ((hi - lo) / (2 ** bits - 1)).clamp(min=1e-12)
+    q = ((w - lo) / scale).round().clamp(0, 2 ** bits - 1) * scale + lo
+    weight.data.copy_(q.reshape(out_f, in_f).to(weight.dtype))
+
+
+@contextmanager
+def quantize_layer(layer: nn.Module, bits: int, group_size: int) -> Iterator[None]:
+    """Temporarily round every Linear weight in `layer`; the original weights are restored afterwards."""
+    linears = [m for m in layer.modules() if isinstance(m, nn.Linear)]
+    saved = [m.weight.data.clone() for m in linears]
+    try:
+        for m in linears:
+            fake_quantize_(m.weight, bits, group_size)
+        yield
+    finally:
+        for m, w in zip(linears, saved):
+            m.weight.data.copy_(w)
+
+
+@torch.no_grad()
+def _mean_loss(model: nn.Module, batches: list[torch.Tensor], device: torch.device) -> float:
+    losses = [model(input_ids=b.to(device), labels=b.to(device)).loss.float().item() for b in batches]
+    return sum(losses) / len(losses)
+
+
+def profile_by_ablation(
+    model: nn.Module,
+    batches: Iterable[torch.Tensor],
+    method: str,
+    device: torch.device | str | None = None,
+    bits: int = 4,
+    group_size: int = 128,
+    meta: dict[str, Any] | None = None,
+) -> SensitivityProfile:
+    """Score each decoder layer by the rise in calibration perplexity when that layer alone is removed
+    (`layer_removal`) or compressed to `bits` (`layer_quant`). The raw score is perplexity with the change
+    minus perplexity without it, so it can be slightly negative when a change happens to help."""
+    if method not in ("layer_removal", "layer_quant"):
+        raise ValueError(f"unknown ablation {method!r}")
+    device = torch.device(device) if device is not None else next(model.parameters()).device
+    batches = list(batches)
+    if not batches:
+        raise ValueError("no calibration batches given")
+    layers = find_decoder_layers(model)
+    was_training = model.training
+    model.eval()
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    t0 = time.perf_counter()
+    try:
+        base = math.exp(_mean_loss(model, batches, device))
+        layer_ppl = []
+        for layer in layers:
+            change = skip_layer(layer) if method == "layer_removal" else quantize_layer(layer, bits, group_size)
+            with change:
+                layer_ppl.append(math.exp(_mean_loss(model, batches, device)))
+    finally:
+        model.train(was_training)
+    if not all(math.isfinite(p) for p in layer_ppl):
+        # removing a layer can blow perplexity up; cap it so the ranking still works
+        layer_ppl = [p if math.isfinite(p) else float(torch.finfo(torch.float64).max) for p in layer_ppl]
+    numel, rows, other = layer_shapes(model)
+    cost = {
+        "calibration_batches": len(batches),
+        "calibration_tokens": sum(b.numel() for b in batches),
+        "wall_clock_s": time.perf_counter() - t0,
+        "peak_memory_gb": (torch.cuda.max_memory_allocated(device) / 1e9) if device.type == "cuda" else None,
+    }
+    return SensitivityProfile(
+        raw_scores=[p - base for p in layer_ppl], layer_numel=numel, layer_rows=rows, other_numel=other,
+        method=method, cost=cost,
+        meta={**(meta or {}), "baseline_ppl": base, "layer_ppl": layer_ppl},
     )

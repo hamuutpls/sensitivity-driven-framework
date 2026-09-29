@@ -56,6 +56,10 @@ at or above `sensitive_threshold` is **protected** (8-bit, no pruning). Every ot
 (4-bit, pruned at `prune_ratio_aggressive`). A threshold *t* therefore protects about the top (1 − *t*) share
 of layers.
 
+`stage0.score` switches the measurement: `layer_removal` (perplexity rise when a layer is skipped) or
+`layer_quant` (perplexity rise when only that layer is compressed). `MODE = "compare_scores"` in `main.py`
+runs all three and compares their rankings.
+
 Rank is used instead of min-max because one outlier layer skews min-max. On TinyLlama, layer 0 scores 2705
 against 6596–8647 for the other layers, so min-max put layers 1–21 between 0.66 and 1.0 and threshold 0.5
 protected 21 of 22. Min-max is still available as `stage0.normalization: minmax`.

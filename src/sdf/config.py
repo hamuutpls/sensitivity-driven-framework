@@ -69,6 +69,8 @@ class Stage0Config:
     # rank | minmax. Rank is robust to outlier layers; see sdf.stage0.sensitivity.normalize.
     normalization: str = "rank"
     profile_dtype: str = "float32"  # fp16 gradients overflow; profile in fp32 (or bfloat16 on GPU)
+    # How layer sensitivity is measured: grad_x_weight | layer_removal | layer_quant (see stage0/sensitivity.py)
+    score: str = "grad_x_weight"
     protected_bits: int = 8
     compressed_bits: int = 4
     # Same-size plan without pruning: robust layers drop to this many bits instead, so the size match comes

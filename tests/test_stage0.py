@@ -195,3 +195,44 @@ def test_sweep_end_to_end(tiny_llama, tokenizer, small_cfg):
     for heading in ("## Summary", "## 1. Threshold", "## 2. Prune ratio", "## 3. Group size", "## 4. Calibration"):
         assert heading in report
     assert load_workbook(out["xlsx"])["All plans"].max_row == len(data["rows"]) + 1
+
+
+def test_ablation_scores_restore_the_model(tiny_llama):
+    from sdf.stage0.sensitivity import find_decoder_layers, profile_by_ablation, skip_layer
+
+    batches = [torch.randint(0, 64, (2, 16), generator=torch.Generator().manual_seed(i)) for i in range(2)]
+    before = {k: v.clone() for k, v in tiny_llama.state_dict().items()}
+    ids = batches[0]
+    with torch.no_grad():
+        ref = tiny_llama(input_ids=ids).logits
+        with skip_layer(find_decoder_layers(tiny_llama)[1]):
+            skipped = tiny_llama(input_ids=ids).logits
+        after = tiny_llama(input_ids=ids).logits
+    assert not torch.allclose(ref, skipped) and torch.allclose(ref, after)  # hook removed afterwards
+
+    for method in ("layer_removal", "layer_quant"):
+        prof = profile_by_ablation(tiny_llama, batches, method, device="cpu", bits=2, group_size=16)
+        assert prof.method == method and prof.num_layers == 4
+        assert prof.meta["baseline_ppl"] > 1 and len(prof.meta["layer_ppl"]) == 4
+        assert any(s != 0 for s in prof.raw_scores)
+        assert all(torch.equal(v, before[k]) for k, v in tiny_llama.state_dict().items())  # weights restored
+
+
+def test_compare_scores_end_to_end(tiny_llama, tokenizer, small_cfg):
+    from sdf.stage0.compare import compare_scores
+
+    ctx = start_run(small_cfg)
+    cand = SEARCH_SPACE.make({"calib_samples": 16, "gptq_groupsize": 32})
+    out = compare_scores(ctx, cand, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts)
+    data = json.loads(out["json"].read_text())
+    assert data["scores"] == ["grad_x_weight", "layer_removal", "layer_quant"]
+    assert all(data["agreement"][s][s] == pytest.approx(1.0) for s in data["scores"])
+    assert len(data["per_layer"]) == 4
+    report = out["report"].read_text(encoding="utf-8")
+    assert "## Agreement between the ways" in report and "remove the layer" in report
+
+    # a normal Stage 0 run with the removal score
+    ctx2 = start_run(small_cfg.with_overrides({"stage0.score": "layer_removal", "run.run_id": "removal"}))
+    res = run_stage0(ctx2, cand, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts, measure_fp16=False)
+    assert res.profile.method == "layer_removal"
+    assert "switched off" in (ctx2.run_dir / "stage_0" / "report.md").read_text(encoding="utf-8")

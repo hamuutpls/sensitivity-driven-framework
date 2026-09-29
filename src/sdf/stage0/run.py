@@ -23,7 +23,14 @@ from sdf.stage0.planner import (
     predict_cost,
     uniform_plan,
 )
-from sdf.stage0.sensitivity import SensitivityProfile, normalize, outlier_layers, profile_sensitivity
+from sdf.stage0.sensitivity import (
+    SCORES,
+    SensitivityProfile,
+    normalize,
+    outlier_layers,
+    profile_by_ablation,
+    profile_sensitivity,
+)
 from sdf.utils.env import environment_info, resolve_device
 from sdf.utils.logging import get_logger
 
@@ -69,9 +76,12 @@ class _ModelHandle:
 
 def profile_key(ctx: RunContext, cand: dict[str, Any]) -> dict[str, Any]:
     cfg = ctx.cfg
-    return {"model": cfg.model.name, "profile_dtype": cfg.stage0.profile_dtype, 
-            "calib_dataset": cand["calib_dataset"], "calib_samples": cand["calib_samples"],
-            "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size, "seed": cfg.run.seed}
+    key = {"model": cfg.model.name, "profile_dtype": cfg.stage0.profile_dtype, "score": cfg.stage0.score,
+           "calib_dataset": cand["calib_dataset"], "calib_samples": cand["calib_samples"],
+           "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size, "seed": cfg.run.seed}
+    if cfg.stage0.score == "layer_quant":  # the per-layer compression depends on these too
+        key.update(bits=cfg.stage0.compressed_bits, group_size=cand["gptq_groupsize"])
+    return key
 
 
 def fp16_key(ctx: RunContext, device: torch.device) -> dict[str, Any]:
@@ -95,8 +105,16 @@ def load_profile(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandl
         batches = calibration_batches(text_loader(candidate["calib_dataset"], "train"), handle.tokenizer,
                                       candidate["calib_samples"], cfg.calibration.seq_len,
                                       cfg.calibration.batch_size, cfg.run.seed)
-        prof = profile_sensitivity(handle.model(cfg.stage0.profile_dtype), batches, device=handle.device,
-                                   meta=profile_key(ctx, candidate))
+        s0 = cfg.stage0
+        if s0.score == "grad_x_weight":
+            prof = profile_sensitivity(handle.model(s0.profile_dtype), batches, device=handle.device,
+                                       meta=profile_key(ctx, candidate))
+        elif s0.score in ("layer_removal", "layer_quant"):
+            prof = profile_by_ablation(handle.model(s0.profile_dtype), batches, s0.score, device=handle.device,
+                                       bits=s0.compressed_bits, group_size=candidate["gptq_groupsize"],
+                                       meta=profile_key(ctx, candidate))
+        else:
+            raise ValueError(f"unknown stage0.score {s0.score!r}; choose from {SCORES}")
         return prof.to_dict()
 
     prof_dict, cached = ctx.cache.get_or_compute("sensitivity_profile", profile_key(ctx, candidate), compute)
@@ -350,11 +368,8 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         "others fall apart at the slightest change.\n\n"
         "Stage 0 finds out which is which, in four steps.\n\n"
         f"1. **Measure.** The model reads {hp['calib_samples']} short passages of ordinary text "
-        f"({hp['calib_dataset']}) and tries to predict each next word. For every number inside the model we "
-        "ask two things: how big is this number, and how much would the model's mistakes change if this "
-        "number were nudged (the *gradient*)? Multiplying the two gives a rough estimate of how much damage "
-        "changing that number would do. Adding these up over every number in a layer, and over all the "
-        f"passages, gives that layer's raw sensitivity score. This is done for each of the {n} layers.\n"
+        f"({hp['calib_dataset']}) and tries to predict each next word. " + _MEASURE_PLAIN[profile.method]
+        + f" This is done for each of the {n} layers.\n"
         f"2. **Rank.** The {n} raw scores are put in order and turned into a 0-to-1 scale: the least "
         "sensitive layer gets 0, the most sensitive gets 1, and the rest are spaced evenly between by their "
         "position in the order. Using the order rather than the raw values stops one unusual layer from "
@@ -511,6 +526,21 @@ def _unused_budget(bp: CompressionPlan, budget_gb: float, protected_bits: int,
             f"{need:.3f} GB. The protected set is kept to the top-k layers by sensitivity, so packing stops "
             "here rather than skipping to a less sensitive layer; in a model whose decoder layers are all the "
             "same size (TinyLlama), no other layer would fit either.")
+
+
+_MEASURE_PLAIN = {
+    "grad_x_weight": "For every number inside the model we ask two things: how big is this number, and how much "
+                     "would the model's mistakes change if this number were nudged (the *gradient*)? Multiplying "
+                     "the two gives a rough estimate of how much damage changing that number would do. Adding "
+                     "these up over every number in a layer, and over all the passages, gives that layer's raw "
+                     "sensitivity score.",
+    "layer_removal": "Then one layer at a time is switched off (skipped, so the text passes straight through it) "
+                     "and the passages are read again. How much the prediction error (perplexity) rises is that "
+                     "layer's raw sensitivity score: the bigger the rise, the more the model depends on it.",
+    "layer_quant": "Then one layer at a time is compressed on its own, the way the plan would compress it (fewer "
+                   "bits per number), and the passages are read again. How much the prediction error "
+                   "(perplexity) rises is that layer's raw sensitivity score.",
+}
 
 
 def _top(k: int) -> str:

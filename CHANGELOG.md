@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-09-29: Layer-removal and one-layer-compression sensitivity scores
+
+- **`stage0.score`** (`SENSITIVITY_SCORE` in main.py) chooses how sensitivity is measured:
+  - `grad_x_weight` (default): unchanged.
+  - `layer_removal`: skip one decoder layer at a time and measure the rise in perplexity on the
+    calibration text.
+  - `layer_quant`: compress only that layer (round-to-nearest at `compressed_bits` and the candidate's
+    group size) and measure the rise in perplexity. This is closest to what the plan does.
+
+  The ablation scores need one forward pass over the calibration text per layer. They work on any decoder
+  stack through hooks and temporary weight rounding, and the model is restored afterwards. The score is
+  part of the profile cache key.
+- **`MODE = "compare_scores"`** in main.py profiles all three ways on the same text and writes
+  `stage_0_scores/report.md`, `scores.xlsx` and `results.json`: rank agreement between the ways, the layers
+  each would protect, and a per-layer table.
+- The report's "How this stage works" section describes whichever score was used.
+
 ## 2026-09-29: Report explains the sensitivity-driven method step by step
 
 - The plain part's background section is now "How this stage works". It explains in four numbered steps

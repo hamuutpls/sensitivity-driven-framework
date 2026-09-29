@@ -9,6 +9,7 @@ Every tunable parameter is here. Anything not listed keeps its default from src/
 # =====================================================================================================
 MODE = "single"  # "single": one Stage 0 run with the settings in section 2
 #                  "sweep":  try every combination of the values in section 4 and write one comparison report
+#                  "compare_scores": measure sensitivity all three ways (section 3) and compare how they rank layers
 
 MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 OUTPUT_ROOT = "thesis_compression/results"  # local folder, relative to where you run; results/<run_id>/stage_0/
@@ -29,6 +30,10 @@ GPTQ_GROUPSIZE = 128  # 32 | 64 | 128 | -1 (one scale per row): numbers sharing 
 # =====================================================================================================
 # 3. Stage 0 fixed settings (not searched)
 # =====================================================================================================
+SENSITIVITY_SCORE = "grad_x_weight"  # how a layer's sensitivity is measured:
+#   "grad_x_weight": size of each number x its gradient, summed per layer (one pass, fast estimate)
+#   "layer_removal": perplexity rise when the layer is skipped entirely
+#   "layer_quant":   perplexity rise when only that layer is compressed to COMPRESSED_BITS
 NORMALIZATION = "rank"  # rank | minmax: how raw sensitivity scores are put on the 0-1 scale
 PROTECTED_BITS = 8  # bits per number in protected layers
 COMPRESSED_BITS = 4  # bits per number in unprotected layers
@@ -64,6 +69,7 @@ def build_config():
         "hyperparams.calib_dataset": CALIB_DATASET,
         "hyperparams.calib_samples": CALIB_SAMPLES,
         "hyperparams.gptq_groupsize": GPTQ_GROUPSIZE,
+        "stage0.score": SENSITIVITY_SCORE,
         "stage0.normalization": NORMALIZATION,
         "stage0.protected_bits": PROTECTED_BITS,
         "stage0.compressed_bits": COMPRESSED_BITS,
@@ -94,8 +100,12 @@ def main():
             for v in values:
                 SEARCH_SPACE.make({**candidate, name: v})
         outputs = run_sweep(start_run(cfg), grid)
+    elif MODE == "compare_scores":
+        from sdf.stage0.compare import compare_scores
+
+        outputs = compare_scores(start_run(cfg), candidate)
     else:
-        raise SystemExit(f"MODE must be 'single' or 'sweep', not {MODE!r}")
+        raise SystemExit(f"MODE must be 'single', 'sweep' or 'compare_scores', not {MODE!r}")
     for name, path in outputs.items():
         print(f"{name}: {path}")
 
