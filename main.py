@@ -8,7 +8,7 @@ Every tunable parameter is here. Anything not listed keeps its default from src/
 # 1. What to run
 # =====================================================================================================
 MODE = "single"  # "single": one Stage 0 run with the settings in section 2
-#                  "sweep":  try every combination of the values in section 4 and write one comparison report
+#                  "sweep":  try every combination of the values in section 5 and write one comparison report
 #                  "compare_scores": measure sensitivity all three ways (section 3) and compare how they rank layers
 
 MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
@@ -45,7 +45,23 @@ EVAL_SEQ_LEN = 512  # tokens per perplexity window
 EVAL_MAX_WINDOWS = None  # cap on perplexity windows (None = the whole WikiText-2 test split)
 
 # =====================================================================================================
-# 4. Sweep values (MODE = "sweep"). Leave a list out, or set it to None, to use every allowed value
+# 4. KV cache plan (the model's short-term memory while writing). Stage 0 measures it and plans, per layer:
+#    bits for keys, bits for values, and the share of past tokens kept. Stage 3 carries the plan out.
+# =====================================================================================================
+KV_CACHE = True  # False skips the KV cache measurement and plan
+KV_BITS_OPTIONS = [2, 4, 8]  # bit widths tried for each layer's keys and values (ascending)
+KV_UNIFORM_BITS = 4  # the standard method: every key and value at this many bits, every token kept
+KV_AVG_BITS = None  # average bits the plan may spend; None = KV_UNIFORM_BITS (same size as the standard method)
+KV_GROUP_SIZE = 64  # numbers sharing one scale factor
+KV_CALIB_SAMPLES = 16  # passages for the KV measurement (one pass per layer x key/value x bit width)
+KV_KEEP_RATIOS = [0.1, 0.2, 0.3, 0.5, 0.75]  # shares of past tokens a layer may keep
+KV_ATTENTION_COVERAGE = 0.95  # a layer keeps the fewest tokens that still get this share of its attention
+KV_CONTEXT_LEN = 2048  # text length (tokens) for the predicted cache memory
+KV_BATCH_SIZE = 1  # texts held at once for the predicted cache memory
+KV_MODULE_NAMES = ["k_proj", "v_proj"]  # names of the layers producing keys and values (Llama, Mistral, Qwen)
+
+# =====================================================================================================
+# 5. Sweep values (MODE = "sweep"). Leave a list out, or set it to None, to use every allowed value
 #    (5 evenly spaced values for the threshold and prune ratio).
 # =====================================================================================================
 SWEEP = {
@@ -76,6 +92,17 @@ def build_config():
         "stage0.no_prune_compressed_bits": NO_PRUNE_COMPRESSED_BITS,
         "stage0.uniform_bits": UNIFORM_BITS,
         "stage0.uniform_prune_ratio": UNIFORM_PRUNE_RATIO,
+        "stage0.kv_cache": KV_CACHE,
+        "stage0.kv_bits_options": KV_BITS_OPTIONS,
+        "stage0.kv_uniform_bits": KV_UNIFORM_BITS,
+        "stage0.kv_avg_bits": KV_AVG_BITS,
+        "stage0.kv_group_size": KV_GROUP_SIZE,
+        "stage0.kv_calib_samples": KV_CALIB_SAMPLES,
+        "stage0.kv_keep_ratios": KV_KEEP_RATIOS,
+        "stage0.kv_attention_coverage": KV_ATTENTION_COVERAGE,
+        "stage0.kv_context_len": KV_CONTEXT_LEN,
+        "stage0.kv_batch_size": KV_BATCH_SIZE,
+        "stage0.kv_module_names": KV_MODULE_NAMES,
         "calibration.seq_len": CALIB_SEQ_LEN,
         "eval.seq_len": EVAL_SEQ_LEN,
         "eval.max_windows": EVAL_MAX_WINDOWS,

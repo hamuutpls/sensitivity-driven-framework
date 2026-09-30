@@ -79,6 +79,14 @@ For the two plans it reports predicted weight memory, average bits per weight, s
 exposure*, which measures how much compression lands on sensitive layers (lower is better). Accuracy and
 latency of the plans are measured once Stage 1 applies them.
 
+**KV cache plan** (`stage0/kv_cache.py`, section 4 of `main.py`). Per layer, Stage 0 also chooses key bits
+and value bits separately (each layer's keys, then values, are rounded alone to 2/4/8 bits and the perplexity
+rise is measured; a greedy allocation spends the uniform 4-bit average where damage is largest) and a token
+budget (the fewest past tokens that still receive 95% of the layer's attention, H2O / SnapKV style). It
+compares uniform 4-bit, the plan, and the plan without eviction on predicted cache memory at
+`KV_CONTEXT_LEN` tokens, average bits, share of tokens kept, predicted perplexity rise and attention kept.
+Stage 3 applies the plan.
+
 The sensitivity profile depends only on the model and calibration settings, so it is cached and reused by
 every trial. Each trial then only re-plans.
 

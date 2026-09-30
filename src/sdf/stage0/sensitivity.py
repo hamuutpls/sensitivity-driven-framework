@@ -244,16 +244,21 @@ def skip_layer(layer: nn.Module) -> Iterator[None]:
             h.remove()
 
 
-def fake_quantize_(weight: torch.Tensor, bits: int, group_size: int) -> None:
-    """Round `weight` (out, in) in place to `bits` with one min/max scale per group of `group_size` inputs
-    (group_size <= 0 or not dividing the input size: one group per row)."""
-    out_f, in_f = weight.shape
-    g = group_size if 0 < group_size and in_f % group_size == 0 else in_f
-    w = weight.data.float().reshape(out_f, in_f // g, g)
+def round_to_nearest(x: torch.Tensor, bits: int, group_size: int) -> torch.Tensor:
+    """`x` rounded to `bits` with one min/max scale per group of `group_size` along the last dimension
+    (group_size <= 0 or not dividing that dimension: one group per row)."""
+    n = x.shape[-1]
+    g = group_size if 0 < group_size and n % group_size == 0 else n
+    w = x.float().reshape(*x.shape[:-1], n // g, g)
     lo, hi = w.amin(dim=-1, keepdim=True), w.amax(dim=-1, keepdim=True)
     scale = ((hi - lo) / (2 ** bits - 1)).clamp(min=1e-12)
     q = ((w - lo) / scale).round().clamp(0, 2 ** bits - 1) * scale + lo
-    weight.data.copy_(q.reshape(out_f, in_f).to(weight.dtype))
+    return q.reshape(x.shape).to(x.dtype)
+
+
+def fake_quantize_(weight: torch.Tensor, bits: int, group_size: int) -> None:
+    """Round `weight` (out, in) in place to `bits` with one scale per group of `group_size` inputs."""
+    weight.data.copy_(round_to_nearest(weight.data, bits, group_size))
 
 
 @contextmanager

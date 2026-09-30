@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-09-30: Stage 0 plans the KV cache
+
+- New `stage0/kv_cache.py`, on by default (`KV_CACHE` in main.py, section 4). Per decoder layer it plans:
+  1. key bits and 2. value bits, chosen separately: each layer's keys (then values) alone are rounded to each
+     of `KV_BITS_OPTIONS` and the calibration perplexity rise is measured. A greedy allocation spends the
+     same average bits as the uniform `KV_UNIFORM_BITS` cache where the measured damage is largest. Keys are
+     rounded per channel and values per token (KIVI / KVQuant), keys before RoPE.
+  3. a token budget (H2O / SnapKV style eviction): the fewest of `KV_KEEP_RATIOS` whose top tokens still
+     receive `KV_ATTENTION_COVERAGE` of the layer's attention (oracle top-k, measured with eager attention).
+  4. predicted cache memory at `KV_CONTEXT_LEN` tokens x `KV_BATCH_SIZE`, with scale overhead per group.
+- Report rows `kv_cache/original` (uniform bits, no eviction), `kv_cache/framework` (bits + budget) and
+  `kv_cache_bits_only/framework` (bits alone, to separate the two effects); the FP16 row gets the 16-bit cache
+  size. New metrics, per-layer columns, a "KV cache plan" section and plain-language text. Plans and the KV
+  profile are saved as JSON; the profile is cached.
+- Key/value layers are found by name (`KV_MODULE_NAMES`), so any model with separate key/value projections
+  works; fused-QKV models need their own names.
+
 ## 2026-09-30: Default sensitivity score is layer removal
 
 - `stage0.score` defaults to `layer_removal`, Mohammad's choice: a layer's sensitivity is the rise in
