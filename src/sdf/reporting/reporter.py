@@ -118,8 +118,9 @@ class StageReporter:
         self.plain_summary: str = ""  # one paragraph: what was done, what came out, what it means
         self.plain_intro: str = ""  # what this stage does and why, in everyday words
         self.plain_why: list[str] = []  # findings: why the framework won or lost, caveats, in everyday words
-        # Optional plain per-layer table: (heading, intro sentence, [(per_layer key, column header), ...]).
-        self.plain_layer_columns: tuple[str, str, list[tuple[str, str]]] | None = None
+        # Optional plain per-layer table: (heading, intro sentence, [(per_layer key, column header, meaning), ...]);
+        # the meaning is listed under the table.
+        self.plain_layer_columns: tuple[str, str, list[tuple[str, ...]]] | None = None
         self.glossary: dict[str, str] = dict(BASE_GLOSSARY)
         self.started = time.strftime("%Y-%m-%d %H:%M:%S")
 

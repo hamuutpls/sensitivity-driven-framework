@@ -195,6 +195,11 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     assert "Perplexity (held-out half)" in report.split("# Technical details")[1]
     assert report.split("## Summary")[1].split("##")[0].count("\n\n") <= 2  # one paragraph
     assert data2["original_model"]["num_parameters"] == n_params
+    layer_part = report.split("## Sensitivity of every layer")[1].split("\n## ")[0]
+    header = next(line for line in layer_part.splitlines() if line.startswith("| Layer"))
+    notes = layer_part.split("**What each column means**")[1]
+    assert notes.count("\n- **") == header.count("|") - 1  # one explanation per column
+    assert "- **Raw score**: How much the prediction error" in layer_part
     assert "## Original model" in report and f"{n_params:,}" in report
 
 

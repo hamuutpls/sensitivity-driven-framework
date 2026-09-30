@@ -50,6 +50,17 @@ MAIN_METRICS = ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "peak_me
                 "kv_attention_kept", "build_time_s"]
 
 
+# What the per-layer "Raw score" column holds, per sensitivity score.
+_RAW_SCORE_MEANING = {
+    "layer_removal": "How much the prediction error (perplexity) on the calibration text rises when this layer "
+                     "is skipped. Bigger means the model depends on the layer more.",
+    "layer_quant": "How much the prediction error (perplexity) on the calibration text rises when only this "
+                   "layer is compressed. Bigger means the layer is more fragile.",
+    "grad_x_weight": "Size of each number times how much the model's error would change if it were nudged, "
+                     "added up over the layer. Bigger means more sensitive.",
+}
+
+
 @dataclass
 class Stage0Result:
     plan: CompressionPlan
@@ -560,12 +571,23 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         "before it is put on that scale. \"Protected\" layers keep high precision; the others are compressed "
         "and have the listed share of their numbers removed. The last column gives the bits per number in the "
         "same-size plan that removes nothing.",
-        [("layer", "Layer"), ("sensitivity", "Sensitivity (0 to 1)"), ("raw_score", "Raw score"),
-         ("framework_protected", "Protected (framework plan)"),
-         ("framework_prune_ratio", "Share removed (framework plan)"),
-         ("same_size_protected", "Protected (same-size plan)"),
-         ("same_size_prune_ratio", "Share removed (same-size plan)"),
-         ("no_prune_bits", "Bits (same-size, nothing removed)"), ("outlier", "Unusual layer")],
+        [("layer", "Layer", "The layer's position in the model, counting from 0 at the input end."),
+         ("sensitivity", "Sensitivity (0 to 1)", "The layer's rank among all layers: 0 is the least sensitive "
+          "layer, 1 the most. The plans compare this with the threshold."),
+         ("raw_score", "Raw score", _RAW_SCORE_MEANING.get(profile.method, "The measurement before it is put on "
+          "the 0 to 1 scale.")),
+         ("framework_protected", "Protected (framework plan)", "\"yes\" if the framework plan keeps this layer "
+          "at high precision because its sensitivity is at or above the threshold."),
+         ("framework_prune_ratio", "Share removed (framework plan)", "Share of the layer's numbers the "
+          "framework plan deletes (0.3 means 30%); protected layers lose nothing."),
+         ("same_size_protected", "Protected (same-size plan)", "\"yes\" if the plan that fits in the standard "
+          "method's memory protects this layer. It protects the most sensitive layers first, as many as fit."),
+         ("same_size_prune_ratio", "Share removed (same-size plan)", "Share of the layer's numbers the "
+          "same-size plan deletes."),
+         ("no_prune_bits", "Bits (same-size, nothing removed)", "Bits per number for this layer in the "
+          "same-size plan that deletes nothing: protected layers keep more bits, the rest drop to fewer."),
+         ("outlier", "Unusual layer", "\"yes\" if the raw score is far from the other layers' (robust "
+          "z-score above 3.5), so the layer stands out as much more (or less) sensitive than the rest.")],
     )
     rep.glossary["Embeddings and LM head"] = ("The model's word dictionary: the table that turns words into "
                                               "numbers at the start, and numbers back into words at the end.")
@@ -730,6 +752,11 @@ def _add_kv_details(rep: StageReporter, prof: KVProfile, plan: KVPlan, bits_only
         head, intro, cols = rep.plain_layer_columns
         rep.plain_layer_columns = (head, intro + " The last three columns are the short-term memory (KV cache) "
                                    "plan: bits for keys, bits for values, and the share of earlier words kept.",
-                                   cols + [("kv_key_bits", "Key bits (cache)"), ("kv_value_bits", "Value bits (cache)"),
-                                           ("kv_keep_ratio", "Share of words kept (cache)")])
+                                   cols + [("kv_key_bits", "Key bits (cache)", "Bits per number for this layer's "
+                                            "stored keys (the notes used to decide which earlier words matter)."),
+                                           ("kv_value_bits", "Value bits (cache)", "Bits per number for this layer's "
+                                            "stored values (the content taken from earlier words)."),
+                                           ("kv_keep_ratio", "Share of words kept (cache)", "Share of earlier "
+                                            "words this layer keeps notes on; 1.00 keeps all, 0.10 keeps the "
+                                            "10% that get the most attention.")])
     rep.next_steps.append("Run Stage 3 (KVQuant, H2O, SnapKV) with the KV cache plan to measure its real accuracy.")

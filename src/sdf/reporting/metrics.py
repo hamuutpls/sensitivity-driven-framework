@@ -96,7 +96,7 @@ METRICS: dict[str, MetricSpec] = {
     # Stage 0 allocation
     "avg_bits_per_weight": MetricSpec(
         "Average bits per weight", "bits", "lower", "storage used per number in the model",
-        "A model is made of a huge number of numbers (TinyLlama has about 1.1 billion). The original stores each one with 16 bits (binary "
+        "A model is made of a huge number of numbers (see Original model). The original stores each one with 16 bits (binary "
         "digits); compression stores most of them with fewer bits, like rounding prices to the nearest "
         "dollar instead of the nearest cent. Fewer bits means a smaller model, but too few loses detail."),
     "sparsity": MetricSpec(

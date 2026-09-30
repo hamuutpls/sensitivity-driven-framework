@@ -114,9 +114,6 @@ def _plain_part(rep: "StageReporter") -> list[str]:
         seen.add(r.plain_name)
         lines.append(f"- **{r.plain_name}**: {_cap(r.info.get('plain_desc') or VARIANT_PLAIN[r.variant][1])}")
     metrics = [m for m in rep.main_metrics if m in METRICS and any(m in r.metrics for r in ok)]
-    for m in metrics:
-        spec = METRICS[m]
-        lines.append(f"- **{_cap(spec.plain or spec.label)}**: {spec.meaning}")
     lines += [f"- **{term}**: {text}" for term, text in rep.glossary.items()]
     lines.append("")
 
@@ -135,13 +132,16 @@ def _plain_part(rep: "StageReporter") -> list[str]:
     table = [[r.plain_name] + [_value(r.metrics.get(m), None) if m in r.metrics else "–" for m in metrics]
              for r in ok]
     lines += [_table(headers, table), ""]
+    lines += _column_notes([(headers[0], "Which version of the model the row describes (see Key terms above).")]
+                           + [(_cap(METRICS[m].plain or METRICS[m].label), METRICS[m].meaning) for m in metrics])
 
     # 4. per-layer table, when the stage provides one
     if rep.plain_layer_columns and rep.per_layer:
         heading, intro, cols = rep.plain_layer_columns
         lines += [f"## {heading}", "", intro, ""]
-        lines += [_table([h for _, h in cols],
-                         [[_layer_cell(row.get(k)) for k, _ in cols] for row in rep.per_layer]), ""]
+        lines += [_table([c[1] for c in cols],
+                         [[_layer_cell(row.get(c[0])) for c in cols] for row in rep.per_layer]), ""]
+        lines += _column_notes([(c[1], c[2]) for c in cols if len(c) > 2])
 
     # 5. findings
     lines += ["## Findings", ""]
@@ -195,6 +195,14 @@ def original_model_lines(info: dict[str, Any]) -> list[str]:
     return lines + [_table(["What", "Value", "What it means"], rows), ""]
 
 
+def _column_notes(notes: list[tuple[str, str]]) -> list[str]:
+    """"What each column means" list under a table, so every column is explained where it is read."""
+    notes = [(h, m) for h, m in notes if m]
+    if not notes:
+        return []
+    return ["**What each column means**", ""] + [f"- **{h}**: {m}" for h, m in notes] + [""]
+
+
 def _layer_cell(v: Any) -> str:
     if isinstance(v, bool):
         return "yes" if v else ""
@@ -226,6 +234,13 @@ def _technical_part(rep: "StageReporter") -> list[str]:
         rows.append([f"`{r.key}`", r.status] + [r.metrics.get(m) for m in metrics]
                     + ["n/a (not all targets measurable yet)" if met is None else met])
     lines += [_table(headers, rows), ""]
+    lines += _column_notes(
+        [("Row", "Method and version, as `method/variant`: `fp16` is the uncompressed model, `original` the method "
+                 "used the standard way, `framework` the method guided by Stage 0."),
+         ("Status", "`ok` if the row finished, `failed` if it raised an error (the error is under Anomalies).")]
+        + [(label(m), _technical_note(m)) for m in metrics]
+        + [("Requirement met", "Whether the row meets every deployment target that was set; `n/a` when a "
+                               "target cannot be measured at this stage.")])
     lines += [f"Full metrics, deltas and raw measurements are in `{rep.xlsx_path.name}` and `results.json`.", ""]
 
     lines += ["## Key findings", ""]
@@ -240,6 +255,16 @@ def _technical_part(rep: "StageReporter") -> list[str]:
     lines += ["", "## Suggested next steps", ""]
     lines += [f"- {s}" for s in rep.next_steps] or ["- None."]
     return lines
+
+
+def _technical_note(m: str) -> str:
+    spec = METRICS.get(m)
+    if spec is None:
+        return ""
+    bits = [spec.unit] if spec.unit else []
+    if spec.better:
+        bits.append(f"{spec.better} is better")
+    return _cap(spec.plain or spec.label) + (f" ({', '.join(bits)})" if bits else "") + "."
 
 
 def write_report(rep: "StageReporter", path: "Path") -> None:
