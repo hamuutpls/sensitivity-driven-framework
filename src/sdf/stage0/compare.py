@@ -12,9 +12,10 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 
 from sdf.data import load_texts
+from sdf.reporting.markdown import original_model_lines
 from sdf.run import RunContext
 from sdf.stage0.planner import plan_compression
-from sdf.stage0.run import _ModelHandle, load_profile
+from sdf.stage0.run import _ModelHandle, load_profile, original_model_info
 from sdf.stage0.sensitivity import SCORES, SensitivityProfile, normalize, outlier_layers
 from sdf.stage0.sweep import _spearman
 from sdf.utils.cache import atomic_write_text
@@ -54,6 +55,7 @@ def compare_scores(ctx: RunContext, candidate: dict[str, Any], scores: tuple[str
                        **{f"{s}_protected": i in protected[s] for s in names}}
                       for i in range(profiles[names[0]].num_layers)],
     }
+    result["original_model"] = original_model_info(ctx, handle, profiles[names[0]])
     out = ctx.run_dir / "stage_0_scores"
     out.mkdir(parents=True, exist_ok=True)
     atomic_write_text(out / "results.json", json.dumps(result, indent=2, default=str))
@@ -89,6 +91,7 @@ def _report(res: dict[str, Any], cand: dict[str, Any]) -> str:
           + " ".join(f"*{label(a)}* and *{label(b)}* rank the layers with agreement "
                      f"{res['agreement'][a][b]:.2f} (1 = same order) and pick {res['overlap'][a][b]} of the same "
                      f"{k} layers to protect." for a, b in pairs), ""]
+    L += original_model_lines(res.get("original_model", {}))
     L += ["## The ways compared", "",
           "- **Gradient x weight**: one pass over the text; for every number, its size times how much the "
           "model's mistakes would change if it were nudged, added up per layer. Fast, but an estimate.",

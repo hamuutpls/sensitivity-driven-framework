@@ -84,3 +84,29 @@ def test_report_has_plain_language_part(tmp_path):
     assert "| Version | Prediction error on test text (validation half) (lower is better) |" in plain
     assert "It kept the fragile parts intact." in plain
     assert "## Results" in technical and "`gptq/framework`" in technical  # technical tables kept
+
+
+def test_original_model_section(tmp_path):
+    from transformers import LlamaConfig
+
+    from sdf.utils.model_info import describe_model
+
+    cfg = LlamaConfig(vocab_size=64, hidden_size=32, intermediate_size=64, num_hidden_layers=4,
+                      num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=128)
+    info = describe_model(cfg, "tiny", num_parameters=1_000)
+    assert info["num_layers"] == 4 and info["num_key_value_heads"] == 2 and info["head_dim"] == 8
+    assert info["max_context"] == 128 and info["bits_per_parameter"] == 16
+    assert info["fp16_size_gb"] == 1_000 * 2 / 1e9
+    assert "num_parameters" not in describe_model(cfg)  # unknown count is left out, not guessed
+
+    rep = make_reporter(tmp_path)
+    rep.original_model = info
+    with rep.method("baseline", "fp16") as r:
+        r.metrics["ppl_val"] = 10.0
+    outputs = rep.finalize()
+    md = outputs["report"].read_text(encoding="utf-8")
+    section = md.split("## Original model")[1].split("\n## ")[0]
+    assert "Key/value heads" in section and "| 2 |" in section and "What it means" in section
+    assert json.loads(outputs["json"].read_text())["original_model"]["num_layers"] == 4
+    keys = [c.value for c in load_workbook(outputs["xlsx"])["Config"]["A"]]
+    assert "original_model.hidden_size" in keys

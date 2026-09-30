@@ -103,6 +103,8 @@ def _plain_part(rep: "StageReporter") -> list[str]:
     summary = rep.plain_summary or " ".join(v.replace("**", "") for v in verdicts)
     lines = ["## Summary", "", summary or "No comparison could be made; see the failures below.", ""]
 
+    lines += original_model_lines(rep.original_model)
+
     # 2. key terms: the versions compared, the measures, then stage-specific words
     lines += ["## Key terms", ""]
     seen = set()
@@ -165,6 +167,34 @@ def _plain_part(rep: "StageReporter") -> list[str]:
     return lines
 
 
+def _model_value(key: str, v: Any) -> str:
+    if key == "num_parameters":
+        return f"{v:,} ({v / 1e9:.2f} billion)" if v >= 1e8 else f"{v:,}"
+    if key == "fp16_size_gb":
+        return f"{v:.2f} GB"
+    if key == "bits_per_parameter":
+        return f"{v} bits"
+    if key == "max_context":
+        return f"{v:,} tokens"
+    if isinstance(v, int) and not isinstance(v, bool):
+        return f"{v:,}"
+    return _fmt(v)
+
+
+def original_model_lines(info: dict[str, Any]) -> list[str]:
+    """"Original model" section: what the uncompressed model looks like, so every number has a reference
+    point. Used by every report writer."""
+    from sdf.utils.model_info import MODEL_FACTS
+
+    lines = ["## Original model", ""]
+    if not info:
+        return lines + ["The original model's parameters were not recorded for this run.", ""]
+    lines += ["Every version in this report starts from this model, unchanged as published.", ""]
+    rows = [[MODEL_FACTS.get(k, (k, ""))[0], _model_value(k, v), MODEL_FACTS.get(k, ("", ""))[1]]
+            for k, v in info.items()]
+    return lines + [_table(["What", "Value", "What it means"], rows), ""]
+
+
 def _layer_cell(v: Any) -> str:
     if isinstance(v, bool):
         return "yes" if v else ""
@@ -179,6 +209,10 @@ def _technical_part(rep: "StageReporter") -> list[str]:
               for r in rep.rows]
     lines += ["", "Every row shares these conditions:", ""]
     lines += [f"- **{k}**: {_fmt(v)}" for k, v in rep.conditions.items()]
+
+    if rep.original_model:
+        lines += ["", "Original model (from its config):", ""]
+        lines += [f"- **{k}**: {_fmt(v)}" for k, v in rep.original_model.items()]
 
     lines += ["", "## Environment", ""]
     lines += [f"- **{k}**: {_fmt(v)}" for k, v in rep.environment.items()]

@@ -18,10 +18,11 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 
 from sdf.data import load_texts
+from sdf.reporting.markdown import original_model_lines
 from sdf.run import RunContext
 from sdf.search_space import PER_CHANNEL, SEARCH_SPACE
 from sdf.stage0.planner import budget_matched_plan, plan_compression, predict_cost, uniform_plan
-from sdf.stage0.run import _ModelHandle, load_profile
+from sdf.stage0.run import _ModelHandle, load_profile, original_model_info
 from sdf.stage0.sensitivity import SensitivityProfile, normalize, outlier_layers
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.env import resolve_device
@@ -113,8 +114,8 @@ def run_sweep(ctx: RunContext, grid: dict[str, list[Any]] | None = None, model=N
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
     grid = {**default_grid(), **(grid or {})}
     defaults = SEARCH_SPACE.make(cfg.hyperparams)
+    handle = _ModelHandle(ctx, resolve_device(cfg.model.device), model, tokenizer)
     if profiles is None:
-        handle = _ModelHandle(ctx, resolve_device(cfg.model.device), model, tokenizer)
         text_loader = text_loader or functools.partial(load_texts, cfg.data.sources)
         profiles = {}
         for ds, n in itertools.product(grid["calib_dataset"], grid["calib_samples"]):
@@ -140,7 +141,8 @@ def run_sweep(ctx: RunContext, grid: dict[str, list[Any]] | None = None, model=N
     calib = calibration_rows(profiles, reference, focus["sensitive_threshold"], s0.normalization)
     result = {"grid": grid, "defaults": defaults, "focus": focus, "reference": list(reference), "rows": rows,
               "calibration": calib, "failures": {f"{k[0]} x {k[1]}": v for k, v in failures.items()},
-              "num_layers": profiles[reference].num_layers}
+              "num_layers": profiles[reference].num_layers,
+              "original_model": original_model_info(ctx, handle, profiles[reference])}
 
     out = ctx.run_dir / "stage_0_sweep"
     out.mkdir(parents=True, exist_ok=True)
@@ -216,6 +218,7 @@ def _report(res: dict[str, Any], s0) -> str:
              f"ranking agrees only {worst['rank_agreement']:.2f} (out of 1) with the default. ")
           + "Nothing here measures accuracy yet; that needs Stage 1.", ""]
 
+    L += original_model_lines(res.get("original_model", {}))
     L += ["## Key terms", "",
           "- **Threshold**: the cut-off for protecting a layer. Layers are ranked from 0 (least sensitive) to 1 "
           "(most sensitive); every layer at or above the threshold is protected.",

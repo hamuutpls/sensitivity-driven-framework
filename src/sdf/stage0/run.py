@@ -33,6 +33,7 @@ from sdf.stage0.sensitivity import (
     profile_sensitivity,
 )
 from sdf.utils.env import environment_info, resolve_device
+from sdf.utils.model_info import count_parameters, describe_model
 from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -77,6 +78,23 @@ class _ModelHandle:
             log.info("loading %s", self.ctx.cfg.model.name)
             self._model = AutoModelForCausalLM.from_pretrained(self.ctx.cfg.model.name)
         return self._model.to(device=self.device, dtype=getattr(torch, dtype))
+
+
+def original_model_info(ctx: RunContext, handle: _ModelHandle,
+                        profile: SensitivityProfile | None = None) -> dict[str, Any]:
+    """The uncompressed model's parameters for the report. Reads only the config file when the weights are
+    not loaded (everything came from cache); the parameter count then comes from the sensitivity profile."""
+    name = ctx.cfg.model.name
+    try:
+        if handle._model is not None:
+            return describe_model(handle._model.config, name, count_parameters(handle._model))
+        from transformers import AutoConfig
+
+        n = sum(profile.layer_numel) + profile.other_numel if profile is not None else None
+        return describe_model(AutoConfig.from_pretrained(name), name, n)
+    except Exception:  # noqa: BLE001 - the report must still be written
+        log.exception("could not read the configuration of %s", name)
+        return {"name": name}
 
 
 def profile_key(ctx: RunContext, cand: dict[str, Any]) -> dict[str, Any]:
@@ -184,6 +202,7 @@ def run_stage0(
                     "group size for memory prediction": candidate["gptq_groupsize"]},
         requirement=cfg.requirement,
         main_metrics=MAIN_METRICS,
+        original_model=original_model_info(ctx, handle, profile),
     )
     predict = lambda plan: predict_cost(plan, profile, candidate["gptq_groupsize"],  # noqa: E731
                                         s0.group_overhead_bits, s0.baseline_bits)
