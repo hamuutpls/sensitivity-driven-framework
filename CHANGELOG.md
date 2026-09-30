@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-09-30: Specs describe layer removal and the KV cache plan
+
+- `docs/specs/` version 0.2: S0-01 names layer removal as the default sensitivity score, with one-layer
+  compression and gradient x weight selectable (SDD §5.3); new S0-10 to S0-13 and SDD §5.8 for the Stage 0 KV
+  cache plan; MET-06, S3-02 and SDD §8 follow that plan; traceability updated.
+
+## 2026-09-29: System and subsystem specifications
+
+- **`docs/specs/`**: a System Requirements Specification following ISO/IEC/IEEE 29148:2018 (every requirement
+  from the thesis spec with an ID, priority, status and verification method) and a Subsystem Design
+  Description following IEEE 1016-2009 (shared core, Stages 0 to 4 and the search layer, each described from
+  the same viewpoints, with a traceability table from requirement to design, code and test). Stage 0 and the
+  shared core are described from the code; the rest is marked planned, consistent with `docs/diagrams/`.
+
 ## 2026-09-30: Diagrams describe layer removal and the KV cache plan
 
 - `docs/diagrams/stage0.md`: layer removal is the default sensitivity score (grad x weight and one-layer
