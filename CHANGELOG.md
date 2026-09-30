@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-30: Default sensitivity score is layer removal
+
+- `stage0.score` defaults to `layer_removal`, Mohammad's choice: a layer's sensitivity is the rise in
+  calibration perplexity when it is skipped. `layer_quant` and `grad_x_weight` stay selectable.
+
 ## 2026-09-29: Default sensitivity score is now single-layer compression
 
 - `stage0.score` defaults to `layer_quant`. On TinyLlama (WikiText-2, 64 passages) gradient × weight ranked

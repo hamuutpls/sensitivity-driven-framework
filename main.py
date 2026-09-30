@@ -30,7 +30,7 @@ GPTQ_GROUPSIZE = 128  # 32 | 64 | 128 | -1 (one scale per row): numbers sharing 
 # =====================================================================================================
 # 3. Stage 0 fixed settings (not searched)
 # =====================================================================================================
-SENSITIVITY_SCORE = "layer_quant"  # how a layer's sensitivity is measured:
+SENSITIVITY_SCORE = "layer_removal"  # how a layer's sensitivity is measured:
 #   "grad_x_weight": size of each number x its gradient, summed per layer (one pass, fast estimate)
 #   "layer_removal": perplexity rise when the layer is skipped entirely
 #   "layer_quant":   perplexity rise when only that layer is compressed to COMPRESSED_BITS

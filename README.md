@@ -47,18 +47,17 @@ src/sdf/
 
 ## Stage 0
 
-For each decoder layer *l* the default score (`stage0.score: layer_quant`) is the rise in calibration
-perplexity when only that layer is compressed (round-to-nearest at `compressed_bits`, group size
-`gptq_groupsize`): the damage that protecting the layer prevents. On TinyLlama the older gradient × weight
+For each decoder layer *l* the default score (`stage0.score: layer_removal`) is the rise in calibration
+perplexity when that layer is skipped (its output = its input). On TinyLlama the older gradient × weight
 estimate ranked layer 0 as the least sensitive layer, although skipping it raises perplexity from 14 to about
-1,190, and its ranking did not agree with the measured compression damage (rank agreement −0.01).
+1,190.
 
 The scores are rank-normalised to [0, 1]: a layer's position in the sorted order, divided by (n − 1). A layer
 at or above `sensitive_threshold` is **protected** (8-bit, no pruning). Every other layer is **compressed**
 (4-bit, pruned at `prune_ratio_aggressive`). A threshold *t* therefore protects about the top (1 − *t*) share
 of layers.
 
-`stage0.score` switches the measurement: `layer_removal` (perplexity rise when a layer is skipped) or
+`stage0.score` switches the measurement: `layer_quant` (perplexity rise when only that layer is compressed) or
 `grad_x_weight` (Σ_batches Σ_{w ∈ layer l} |∂L/∂w · w|, one backward pass, a first-order estimate). `MODE = "compare_scores"` in `main.py`
 runs all three and compares their rankings.
 
