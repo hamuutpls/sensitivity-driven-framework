@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-30: Diagrams describe layer removal and the KV cache plan
+
+- `docs/diagrams/stage0.md`: layer removal is the default sensitivity score (grad x weight and one-layer
+  compression still drawn as options); new KV cache classes (`KVProfile`, `KVPlan`, `KVLayerPlan`, `KVCost`,
+  `kv_cache` module) and the three KV cache rows in the sequence diagram. `stage3.md` now reads the Stage 0 KV
+  cache plan.
+
 ## 2026-09-29: Class and sequence diagrams
 
 - **`docs/diagrams/`**: a class diagram and a sequence diagram for the project as a whole and for each stage

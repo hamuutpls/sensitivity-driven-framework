@@ -5,8 +5,10 @@ Drawn from the code in `src/sdf/stage0/`. Back to the [overview](README.md).
 ## In plain words
 
 Stage 0 finds out which layers of the model are fragile. It feeds the model some ordinary text and, for every
-layer, estimates how much the model's predictions would suffer if that layer's numbers were changed. That
-estimate is the layer's **sensitivity score**. Layers scoring at or above a threshold are **protected** (kept at
+layer, measures how much worse the model gets when that layer is removed (skipped): the rise in perplexity is
+the layer's **sensitivity score**. This **layer removal** score is the default; two other ways can be picked
+with `SENSITIVITY_SCORE` in `main.py`: compressing only that layer (`layer_quant`), or a one-pass estimate from
+the size of each number times its gradient (`grad_x_weight`). Layers scoring at or above a threshold are **protected** (kept at
 8 bits, nothing removed); the rest are **compressed** (4 bits, and some of their numbers removed). The result is
 a **compression plan**: one line per layer saying how many bits it gets and how much of it is removed.
 
@@ -16,6 +18,13 @@ Stage 0 does not compress anything yet. It predicts how much memory each plan wo
 - the **standard method**: every layer treated the same (uniform 4 bits),
 - the **framework**: the sensitivity plan, plus two versions squeezed into exactly the standard method's memory
   (one that removes numbers from robust layers, one that only lowers their bits), so the comparison is fair.
+
+Stage 0 also plans the model's short-term memory while it writes, the **KV cache**. For every layer it measures
+how much perplexity rises when only that layer's keys (then values) are rounded to 2, 4 or 8 bits, and gives
+more bits where rounding hurts most, keeping the same average as a uniform 4-bit cache. It also finds, per
+layer, the fewest earlier words that still get 95% of the layer's attention (a **token budget**), and predicts
+the cache's memory at 2,048 tokens. The report compares the uniform 4-bit cache, the full plan, and the plan
+with bits only (nothing forgotten).
 
 Measuring the sensitivity is the slow part, so the scores are saved and reused by every later trial that uses
 the same model and calibration text.
@@ -36,6 +45,17 @@ classDiagram
         +float uniform_prune_ratio
         +int group_overhead_bits
         +int baseline_bits
+        +str score
+        +bool kv_cache
+        +list~int~ kv_bits_options
+        +int kv_uniform_bits
+        +float kv_avg_bits
+        +int kv_group_size
+        +int kv_calib_samples
+        +list~float~ kv_keep_ratios
+        +float kv_attention_coverage
+        +int kv_context_len
+        +list~str~ kv_module_names
     }
     class SensitivityProfile {
         +list~float~ raw_scores
@@ -85,8 +105,47 @@ classDiagram
         +tokenizer
         +model(dtype)
     }
+    class KVProfile {
+        +list~int~ bits_options
+        +list~int~ key_dims
+        +list~int~ value_dims
+        +list key_rise
+        +list value_rise
+        +list~float~ keep_ratios
+        +list coverage
+        +dict cost
+        +num_layers() int
+        +save(path)
+    }
+    class KVLayerPlan {
+        +int layer
+        +int key_bits
+        +int value_bits
+        +float keep_ratio
+    }
+    class KVPlan {
+        +tuple~KVLayerPlan~ layers
+        +str kind
+        +save(path)
+    }
+    class KVCost {
+        +float memory_gb
+        +float avg_bits
+        +float kept_share
+        +float ppl_rise
+        +float attention_kept
+        +tuple per_layer_mb
+    }
+    class kv_cache {
+        <<module>>
+        +profile_kv(model, batches, bits_options, group_size, keep_ratios, names) KVProfile
+        +uniform_kv_plan(num_layers, bits) KVPlan
+        +plan_kv(profile, avg_bits, coverage_target) KVPlan
+        +predict_kv(plan, profile, context_len, batch_size, group_size, ...) KVCost
+    }
     class sensitivity {
         <<module>>
+        +profile_by_ablation(model, batches, method, device, bits, group_size, meta) SensitivityProfile
         +profile_sensitivity(model, batches, device, meta) SensitivityProfile
         +normalize(scores, method) list
         +outlier_layers(raw_scores, cutoff) list
@@ -104,7 +163,10 @@ classDiagram
     class run {
         <<module>>
         +run_stage0(ctx, candidate, model, tokenizer, text_loader, measure_fp16) Stage0Result
+        +load_profile(ctx, candidate, handle, text_loader) tuple
+        +load_kv_profile(ctx, candidate, handle, text_loader) tuple
         +profile_key(ctx, candidate) dict
+        +kv_profile_key(ctx, candidate) dict
         +fp16_key(ctx, device) dict
     }
     class StageReporter {
@@ -123,17 +185,23 @@ classDiagram
     planner ..> CompressionPlan : builds
     planner ..> PlanCost : predicts
     planner ..> SensitivityProfile : reads sizes
+    KVPlan *-- KVLayerPlan
+    kv_cache ..> KVProfile : builds
+    kv_cache ..> KVPlan : builds
+    kv_cache ..> KVCost : predicts
+    run ..> kv_cache : if kv_cache
     run ..> sensitivity
     run ..> planner
     run ..> _ModelHandle : loads model only on a cache miss
-    run ..> ArtifactCache : profile and FP16 metrics
-    run ..> StageReporter : 5 comparison rows
+    run ..> ArtifactCache : profiles and FP16 metrics
+    run ..> StageReporter : 5 weight rows + 3 KV rows
     run ..> Stage0Config
     run ..> Stage0Result : returns
 ```
 
-`sensitivity`, `planner` and `run` are the modules `sdf.stage0.sensitivity`, `sdf.stage0.planner` and
-`sdf.stage0.run`; they hold plain functions, not classes. `StageReporter` and `ArtifactCache` are shared by
+`sensitivity`, `planner`, `kv_cache` and `run` are the modules `sdf.stage0.sensitivity`, `sdf.stage0.planner`,
+`sdf.stage0.kv_cache` and `sdf.stage0.run`; they hold plain functions, not classes. `profile_by_ablation` gives
+the `layer_removal` (default) and `layer_quant` scores; `profile_sensitivity` gives `grad_x_weight`. `StageReporter` and `ArtifactCache` are shared by
 every stage (see the [overview](README.md)).
 
 ## Sequence diagram
@@ -149,6 +217,7 @@ sequenceDiagram
     participant M as _ModelHandle
     participant S as sensitivity
     participant P as planner
+    participant K as kv_cache
     participant E as eval.measure_model
     participant Rep as StageReporter
 
@@ -158,9 +227,18 @@ sequenceDiagram
         C->>D: load_texts(calib_dataset, "train")
         C->>D: calibration_batches(texts, tokenizer, calib_samples, seq_len, seed)
         C->>M: model(profile_dtype)
-        C->>S: profile_sensitivity(model, batches)
-        loop each calibration batch
-            S->>S: forward + backward, add sum of abs(grad x weight) per layer
+        alt score = layer_removal (default) or layer_quant
+            C->>S: profile_by_ablation(model, batches, score)
+            S->>S: perplexity of the unchanged model
+            loop each decoder layer
+                S->>S: skip the layer (or round only its weights), perplexity, restore
+            end
+            Note over S: raw score = perplexity with the change minus without
+        else score = grad_x_weight
+            C->>S: profile_sensitivity(model, batches)
+            loop each calibration batch
+                S->>S: forward + backward, add sum of abs(grad x weight) per layer
+            end
         end
         S-->>C: SensitivityProfile (raw scores, layer sizes, cost)
     end
@@ -199,9 +277,26 @@ sequenceDiagram
         P->>P: protect the k most sensitive, stop when over budget
     end
 
+    opt kv_cache (default on)
+        Note over R,Rep: rows 6 to 8, KV cache
+        R->>C: get_or_compute("kv_profile", kv_profile_key)
+        alt cache miss
+            C->>K: profile_kv(model, kv_calib_samples batches)
+            loop each layer, keys then values, each bits option
+                K->>K: round only that tensor, perplexity rise
+            end
+            K->>K: eager attention: share of attention on the top keep-ratio tokens
+            K-->>C: KVProfile
+        end
+        R->>K: uniform_kv_plan(4 bits), predict_kv -> kv_cache / original
+        R->>K: plan_kv(profile, avg bits, 95% coverage), predict_kv -> kv_cache / framework
+        R->>K: plan_kv(profile, avg bits, no eviction), predict_kv -> kv_cache_bits_only / framework
+        Note over K: bits: greedy, spend the uniform average where the rise is largest<br/>budget: fewest tokens keeping 95% of attention
+    end
+
     Note over R,Rep: each row runs inside rep.method(...): an error marks<br/>that row failed and the rest continue, results.json is saved after each row
     R->>R: _add_stage0_details: per-layer table, outlier layers, plain-language text
-    R->>R: save compression_plan*.json, sensitivity_profile.json
+    R->>R: save compression_plan*.json, sensitivity_profile.json, kv_profile.json, kv_cache_plan*.json
     R->>Rep: finalize()
     Rep->>Rep: deltas vs FP16 and vs original, requirement check
     Rep-->>R: report.md, stage_0_comparison.xlsx, results.json
