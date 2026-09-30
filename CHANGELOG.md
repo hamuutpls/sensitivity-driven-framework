@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-09-30: Stage 0 hands everything later stages need
+
+- **Pruning guard.** `stage0.guard_top_k` (default 5, `GUARD_TOP_K` in main.py): the layers whose removal raises
+  perplexity most are never pruned in any framework plan (threshold, same-size, same-size without pruning),
+  whatever score picks the bits. On TinyLlama these are 0, 2, 7, 21, 1. When `stage0.score` is not
+  `layer_removal`, a removal profile is measured and cached for the guard. Before, the critical layers were only
+  safe because the default threshold happened to protect them; a higher threshold, the size-matched plans or
+  the gradient score could prune layer 0, which alone takes perplexity from 14 to ~1190. The sweep guards when
+  its profiles are layer-removal ones.
+- **Activation plan for Stage 2** (`stage0/activation.py`): protected and guarded layers keep
+  `act_protected_bits` (8) activations, the rest `act_compressed_bits` (4); original = `act_uniform_bits` (8).
+  Derived from the weight plan, not measured; Stage 2 should validate it. New rows `activations/original` and
+  `activations/framework` (`avg_activation_bits`), `activation_plan.json`, report section and per-layer columns
+  "Never pruned" and "Activation bits".
+- **Hand-off.** `Stage0Result` also returns the same-size plans, the activation plan and both KV plans;
+  `CompressionPlan.load`, `KVPlan.load` and `ActivationPlan.load` read the saved JSON back.
+- Specs v0.3 (S0-14 to S0-16, SDD §5.4, §5.9, §7.3) and the Stage 0 class diagram updated.
+
 ## 2026-09-30: Every report table explains its columns
 
 - `report.md` lists "What each column means" under the plain results table, the per-layer table and the

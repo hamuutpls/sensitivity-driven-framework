@@ -59,6 +59,10 @@ METRICS: dict[str, MetricSpec] = {
     "avg_kv_bits": MetricSpec(
         "Average bits per cached number", "bits", "lower", "storage used per number in the notes",
         "How many bits each number in the model's notes is stored with, on average (16 uncompressed)."),
+    "avg_activation_bits": MetricSpec(
+        "Average activation bits", "bits", "lower", "storage used per number passed between layers",
+        "How many bits the numbers flowing between the model's layers are rounded to, on average over the "
+        "layers (16 uncompressed). Planned here, applied in Stage 2."),
     "kv_kept_share": MetricSpec(
         "Share of past tokens kept", "", None, "share of earlier words the notes keep",
         "The plan can let some layers forget earlier words that get almost no attention. 1 means nothing is "

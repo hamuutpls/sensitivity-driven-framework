@@ -81,6 +81,14 @@ class Stage0Config:
     uniform_prune_ratio: float = 0.0
     # Per quantisation group GPTQ stores a scale and a zero point; bits each, for the memory prediction.
     group_overhead_bits: int = 32
+    # Pruning guard: never prune the guard_top_k layers whose removal hurts most (layer-removal score, measured
+    # even when another score picks the bits). 0 turns it off.
+    guard_top_k: int = 5
+    # Activation plan for Stage 2, derived from the weight plan: protected and guarded layers keep
+    # act_protected_bits, the rest get act_compressed_bits. The "original method" is act_uniform_bits everywhere.
+    act_protected_bits: int = 8
+    act_compressed_bits: int = 4
+    act_uniform_bits: int = 8
     baseline_bits: int = 16  # bits/weight of the FP16 model and of unquantised tensors (embeddings, norms, lm_head)
     # KV cache plan (see stage0/kv_cache.py). Per layer: key bits, value bits, share of past tokens kept.
     kv_cache: bool = True

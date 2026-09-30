@@ -40,6 +40,10 @@ COMPRESSED_BITS = 4  # bits per number in unprotected layers
 NO_PRUNE_COMPRESSED_BITS = 3  # bits for unprotected layers in the same-size plan that removes nothing
 UNIFORM_BITS = 4  # the standard method: every layer at this many bits ...
 UNIFORM_PRUNE_RATIO = 0.0  # ... with this share removed
+GUARD_TOP_K = 5  # never prune the layers whose removal hurts most, this many of them (0 = no guard)
+ACT_PROTECTED_BITS = 8  # Stage 2 activation plan: bits for protected and never-pruned layers ...
+ACT_COMPRESSED_BITS = 4  # ... and for every other layer
+ACT_UNIFORM_BITS = 8  # the standard method: every layer's activations at this many bits
 CALIB_SEQ_LEN = 512  # tokens per calibration passage
 EVAL_SEQ_LEN = 512  # tokens per perplexity window
 EVAL_MAX_WINDOWS = None  # cap on perplexity windows (None = the whole WikiText-2 test split)
@@ -92,6 +96,10 @@ def build_config():
         "stage0.no_prune_compressed_bits": NO_PRUNE_COMPRESSED_BITS,
         "stage0.uniform_bits": UNIFORM_BITS,
         "stage0.uniform_prune_ratio": UNIFORM_PRUNE_RATIO,
+        "stage0.guard_top_k": GUARD_TOP_K,
+        "stage0.act_protected_bits": ACT_PROTECTED_BITS,
+        "stage0.act_compressed_bits": ACT_COMPRESSED_BITS,
+        "stage0.act_uniform_bits": ACT_UNIFORM_BITS,
         "stage0.kv_cache": KV_CACHE,
         "stage0.kv_bits_options": KV_BITS_OPTIONS,
         "stage0.kv_uniform_bits": KV_UNIFORM_BITS,

@@ -2,6 +2,8 @@
 
 Layer sensitivity >= sensitive_threshold -> protected: `protected_bits`, no pruning.
 Otherwise                                -> compressed: `compressed_bits`, pruned at prune_ratio_aggressive.
+Guarded layers (the ones whose removal breaks the model, see `guarded_layers`) are never pruned, whatever
+their sensitivity score says; they keep the bits the plan gives them.
 
 The "original method" allocation used for comparison is uniform: every layer gets the same bits and pruning.
 """
@@ -24,6 +26,8 @@ class LayerPlan:
     pruning_ratio: float
     protected: bool
     sensitivity: float
+    guarded: bool = False  # never pruned: removing this layer breaks the model
+
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,10 @@ class CompressionPlan:
     def compressed_layers(self) -> list[int]:
         return [lp.layer for lp in self.layers if not lp.protected]
 
+    @property
+    def guarded_layers(self) -> list[int]:
+        return [lp.layer for lp in self.layers if lp.guarded]
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "kind": self.kind,
@@ -54,6 +62,32 @@ class CompressionPlan:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "CompressionPlan":
+        return cls(tuple(LayerPlan(**lp) for lp in d["layers"]), d["kind"], d["sensitive_threshold"],
+                   d["prune_ratio_aggressive"])
+
+    @classmethod
+    def load(cls, path: str | Path) -> "CompressionPlan":
+        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def guarded_layers(removal_scores: list[float], top_k: int) -> frozenset[int]:
+    """The `top_k` layers whose removal raises perplexity most. Pruning them risks breaking the model (on
+    TinyLlama, skipping layer 0 takes perplexity from 14 to ~1190), so no plan prunes them. Takes raw
+    layer-removal scores, so it works for any model; top_k = 0 turns the guard off."""
+    if top_k < 0:
+        raise ValueError(f"guard top_k must be >= 0, got {top_k}")
+    ranked = sorted(range(len(removal_scores)), key=lambda i: removal_scores[i], reverse=True)
+    return frozenset(ranked[:top_k])
+
+
+def _layer(i: int, s: float, protected: bool, protected_bits: int, compressed_bits: int, prune_ratio: float,
+           guarded: frozenset[int]) -> LayerPlan:
+    return LayerPlan(layer=i, bit_width=protected_bits if protected else compressed_bits,
+                     pruning_ratio=0.0 if protected or i in guarded else prune_ratio,
+                     protected=protected, sensitivity=s, guarded=i in guarded)
+
 
 def plan_compression(
     scores: list[float],
@@ -61,19 +95,12 @@ def plan_compression(
     prune_ratio_aggressive: float,
     protected_bits: int,
     compressed_bits: int,
+    guarded: frozenset[int] = frozenset(),
 ) -> CompressionPlan:
     _check_ratio(prune_ratio_aggressive)
-    layers = []
-    for i, s in enumerate(scores):
-        protected = s >= sensitive_threshold
-        layers.append(LayerPlan(
-            layer=i,
-            bit_width=protected_bits if protected else compressed_bits,
-            pruning_ratio=0.0 if protected else prune_ratio_aggressive,
-            protected=protected,
-            sensitivity=s,
-        ))
-    return CompressionPlan(tuple(layers), "sensitivity", sensitive_threshold, prune_ratio_aggressive)
+    layers = tuple(_layer(i, s, s >= sensitive_threshold, protected_bits, compressed_bits, prune_ratio_aggressive,
+                          guarded) for i, s in enumerate(scores))
+    return CompressionPlan(layers, "sensitivity", sensitive_threshold, prune_ratio_aggressive)
 
 
 def uniform_plan(scores: list[float], bits: int, prune_ratio: float) -> CompressionPlan:
@@ -90,11 +117,12 @@ def budget_matched_plan(
     protected_bits: int,
     compressed_bits: int,
     cost: "Callable[[CompressionPlan], PlanCost]",
+    guarded: frozenset[int] = frozenset(),
 ) -> CompressionPlan:
     """The sensitivity plan that fits in `budget_gb` (normally the uniform plan's predicted size).
 
     Protects the k most sensitive layers, with k as large as the budget allows; every other layer is
-    compressed and pruned as usual. This makes the framework-vs-original comparison size-for-size fair: any
+    compressed and pruned as usual (guarded layers are not pruned, and that is counted in the budget). This makes the framework-vs-original comparison size-for-size fair: any
     accuracy difference then comes from *where* the bits go, not from spending more of them.
     """
     _check_ratio(prune_ratio_aggressive)
@@ -102,20 +130,16 @@ def budget_matched_plan(
     best = None
     for k in range(len(ranked) + 1):
         protected = set(ranked[:k])
-        layers = tuple(LayerPlan(
-            layer=i,
-            bit_width=protected_bits if i in protected else compressed_bits,
-            pruning_ratio=0.0 if i in protected else prune_ratio_aggressive,
-            protected=i in protected,
-            sensitivity=s,
-        ) for i, s in enumerate(scores))
+        layers = tuple(_layer(i, s, i in protected, protected_bits, compressed_bits, prune_ratio_aggressive,
+                              guarded) for i, s in enumerate(scores))
         plan = CompressionPlan(layers, "budget", None, prune_ratio_aggressive)
         if cost(plan).weight_memory_gb > budget_gb * (1 + 1e-9):
             break
         best = plan
     if best is None:  # even protecting nothing is over budget: return the k = 0 plan, caller flags it
-        best = CompressionPlan(tuple(LayerPlan(i, compressed_bits, prune_ratio_aggressive, False, s)
-                                     for i, s in enumerate(scores)), "budget", None, prune_ratio_aggressive)
+        best = CompressionPlan(tuple(_layer(i, s, False, protected_bits, compressed_bits, prune_ratio_aggressive,
+                                            guarded) for i, s in enumerate(scores)),
+                               "budget", None, prune_ratio_aggressive)
     return best
 
 

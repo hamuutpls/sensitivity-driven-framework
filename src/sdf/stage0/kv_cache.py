@@ -186,6 +186,14 @@ class KVPlan:
     def save(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "KVPlan":
+        return cls(tuple(KVLayerPlan(**lp) for lp in d["layers"]), d["kind"])
+
+    @classmethod
+    def load(cls, path: str | Path) -> "KVPlan":
+        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
 
 def uniform_kv_plan(num_layers: int, bits: int) -> KVPlan:
     return KVPlan(tuple(KVLayerPlan(i, bits, bits, 1.0) for i in range(num_layers)), "uniform")

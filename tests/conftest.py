@@ -52,4 +52,5 @@ def small_cfg(tmp_path):
         "eval.latency_repeats": 3,
         "stage0.kv_group_size": 8,
         "stage0.kv_calib_samples": 4,
+        "stage0.guard_top_k": 1,  # the toy model has 4 layers; guard one so the others can still be pruned
     })
