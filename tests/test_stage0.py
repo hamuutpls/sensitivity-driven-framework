@@ -140,12 +140,19 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg):
 
     stage_dir = ctx.run_dir / "stage_0"
     for name in ("report.md", "stage_0_comparison.xlsx", "results.json", "compression_plan.json",
-                 "compression_plan_budget_matched_no_prune.json", "sensitivity_profile.json"):
+                 "compression_plan_budget_matched_no_prune.json", "sensitivity_profile.json",
+                 "kv_cache_plan.json", "kv_cache_plan_bits_only.json", "kv_profile.json"):
         assert (stage_dir / name).exists(), name
     data = json.loads((stage_dir / "results.json").read_text())
     rows = {f"{r['method']}/{r['variant']}": r for r in data["rows"]}
     assert set(rows) == {"baseline/fp16", "allocation/original", "allocation/framework",
-                         "allocation_same_size/framework", "allocation_same_size_no_prune/framework"}
+                         "allocation_same_size/framework", "allocation_same_size_no_prune/framework",
+                         "kv_cache/original", "kv_cache/framework", "kv_cache_bits_only/framework"}
+    kv_fw, kv_un = rows["kv_cache/framework"]["metrics"], rows["kv_cache/original"]["metrics"]
+    assert kv_fw["predicted_kv_memory_gb"] <= kv_un["predicted_kv_memory_gb"] * (1 + 1e-9)
+    assert kv_fw["avg_kv_bits"] <= 4 + 1e-9
+    assert rows["baseline/fp16"]["metrics"]["predicted_kv_memory_gb"] > kv_un["predicted_kv_memory_gb"]
+    assert "vs_original_abs" in rows["kv_cache_bits_only/framework"]["deltas"]["predicted_kv_ppl_rise"]
     no_prune = rows["allocation_same_size_no_prune/framework"]
     assert no_prune["metrics"]["sparsity"] == 0
     assert no_prune["metrics"]["predicted_weight_memory_gb"] <= rows["allocation/original"]["metrics"][
@@ -174,6 +181,7 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg):
     assert "same-size version of the framework" in report and "Size floor" in report
     assert "## Sensitivity of every layer" in report
     assert "Unused budget: same-size plan without pruning" in report
+    assert "## KV cache plan" in report and "Key bits (cache)" in report and "short-term memory" in report
     assert "Share removed (same-size plan)" in report and "pruning caveat" in report
     assert "Perplexity (held-out half)" in report.split("# Technical details")[1]
     assert report.split("## Summary")[1].split("##")[0].count("\n\n") <= 2  # one paragraph
