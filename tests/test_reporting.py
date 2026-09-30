@@ -83,6 +83,11 @@ def test_report_has_plain_language_part(tmp_path):
     assert "Perplexity measures how well the model predicts" in plain  # metric defined
     assert "| Version | Prediction error on test text (validation half) (lower is better) |" in plain
     assert "It kept the fragile parts intact." in plain
+    results = plain.split("## Results")[1].split("\n## ")[0]
+    notes = results.split("**What each column means**")[1]  # every column explained under its table
+    assert "- **Version**:" in notes and "- **Prediction error on test text (validation half)**: Perplexity" in notes
+    tech = technical.split("## Results")[1].split("\n## ")[0].split("**What each column means**")[1]
+    assert all(f"- **{c}**" in tech for c in ("Row", "Status", "Requirement met"))
     assert "## Results" in technical and "`gptq/framework`" in technical  # technical tables kept
 
 

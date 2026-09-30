@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-30: Every report table explains its columns
+
+- `report.md` lists "What each column means" under the plain results table, the per-layer table and the
+  technical results table. Metric columns use the metric registry's plain explanation (moved there from Key
+  terms); per-layer columns take an optional third element, the meaning, in `plain_layer_columns`.
+- Stage 0 explains all 12 per-layer columns; the raw-score explanation follows the sensitivity score used.
+
 ## 2026-09-30: Every report describes the original model
 
 - New `utils/model_info.py`: `describe_model(config, name, num_parameters)` reads the original model's
