@@ -1,0 +1,193 @@
+# Changelog
+
+## 2026-09-30: Default sensitivity score is layer removal
+
+- `stage0.score` defaults to `layer_removal`, Mohammad's choice: a layer's sensitivity is the rise in
+  calibration perplexity when it is skipped. `layer_quant` and `grad_x_weight` stay selectable.
+
+## 2026-09-29: Default sensitivity score is now single-layer compression
+
+- `stage0.score` defaults to `layer_quant`. On TinyLlama (WikiText-2, 64 passages) gradient × weight ranked
+  layer 0 least sensitive, so the plan compressed and pruned it, yet skipping layer 0 raises perplexity from
+  14.1 to about 1,190. Its ranking also did not agree with the measured one-layer compression damage (rank
+  agreement −0.01). `layer_quant` measures the damage protection prevents directly. Old runs are unaffected:
+  the score is part of the profile cache key.
+
+## 2026-09-29: Layer-removal and one-layer-compression sensitivity scores
+
+- **`stage0.score`** (`SENSITIVITY_SCORE` in main.py) chooses how sensitivity is measured:
+  - `grad_x_weight` (default): unchanged.
+  - `layer_removal`: skip one decoder layer at a time and measure the rise in perplexity on the
+    calibration text.
+  - `layer_quant`: compress only that layer (round-to-nearest at `compressed_bits` and the candidate's
+    group size) and measure the rise in perplexity. This is closest to what the plan does.
+
+  The ablation scores need one forward pass over the calibration text per layer. They work on any decoder
+  stack through hooks and temporary weight rounding, and the model is restored afterwards. The score is
+  part of the profile cache key.
+- **`MODE = "compare_scores"`** in main.py profiles all three ways on the same text and writes
+  `stage_0_scores/report.md`, `scores.xlsx` and `results.json`: rank agreement between the ways, the layers
+  each would protect, and a per-layer table.
+- The report's "How this stage works" section describes whichever score was used.
+
+## 2026-09-29: Report explains the sensitivity-driven method step by step
+
+- The plain part's background section is now "How this stage works". It explains in four numbered steps
+  how the score is measured (weight size times gradient, summed per layer), how it is ranked onto a 0-1
+  scale, what the threshold does, and how bits and pruning follow, including the two same-size versions.
+
+## 2026-09-29: Local output folders
+
+- Results and the cache now go to `thesis_compression/results` and `thesis_compression/cache` under the
+  folder you run from, in `main.py` and `configs/tinyllama.yaml`, instead of Google Drive paths. The
+  folder is git-ignored. The hardware profile in the config is now `RTX-5070-Ti`.
+
+## 2026-09-29: Tunable parameters in main.py
+
+- **`main.py`** lists every tunable parameter at the top of one file: the run settings, the five
+  search-space parameters (with their allowed values in comments), the fixed Stage 0 settings and the sweep
+  values. Edit it and run `python main.py`. `MODE` picks a single run or a sweep. Values outside the search
+  space are rejected before anything runs. Settings not listed keep their defaults from `config.py`.
+
+## 2026-09-29: Stage 0 sweep
+
+- **`sdf-stage0-sweep`** tries several values of every search-space setting and writes one plain-language
+  report plus `sweep.xlsx` (every plan) and `results.json`. It covers the threshold, the prune ratio, the
+  group size, and the calibration text and amount. For each combination it shows the threshold plan, the
+  same-size plan and the no-removal plan against the standard method, how much the calibration setting
+  changes the layer ranking (rank agreement), and which plans are both smaller and safer than the standard
+  method.
+- A calibration setting that fails (for example, a dataset that can't be downloaded) is recorded in the
+  report instead of stopping the sweep.
+- `--profile` plans from saved sensitivity profiles, so the planning part runs without a GPU.
+- Profile loading moved into `stage0.run.load_profile`, shared by the single run and the sweep.
+
+## 2026-09-28: Report gaps from the first local run
+
+- **Every core metric in both report tables.** Held-out perplexity, peak GPU memory and per-token decode
+  latency were only in results.json; they are now columns in the plain and technical tables, along with
+  sparsity.
+- **Pruning caveat for the same-size plan.** On TinyLlama the same-size plan protects 5 layers and prunes
+  the other 17 by 30%, while uniform prunes nothing, so the size match is bought with pruning. Sensitivity
+  exposure scores 4 bits with 30% pruned as 2.8 effective bits, which likely understates the damage. The
+  report now says so in both parts.
+- **Same-size plan without pruning** (`allocation_same_size_no_prune`). Robust layers drop to
+  `stage0.no_prune_compressed_bits` (3) instead of being pruned, and as many top layers as fit are
+  protected at 8 bits within the uniform plan's memory. This isolates the effect of the sensitivity
+  guidance itself. Its plan is saved as `compression_plan_budget_matched_no_prune.json`.
+- **Per-layer table** now shows the share removed for the same-size plan and the bits per layer of the
+  no-pruning plan.
+- **Prefill latency** is a column in both report tables, next to decode latency.
+- **Unused budget explained.** The same-size plans keep the protected set to the top-k layers by
+  sensitivity, so packing stops at the first layer that doesn't fit (0.011 GB left on TinyLlama). The
+  report now states the leftover and what the next layer would cost. Every TinyLlama decoder layer is the
+  same size, so skipping ahead would not fit another layer either.
+- **Unit test for the no-pruning plan**: it fits the uniform budget, removes nothing, keeps robust layers
+  at 3 bits and protects the 4 most sensitive layers on TinyLlama shapes.
+
+## 2026-09-28: Leaner code after the ponytail audit
+
+About 220 lines were removed with no change to what a run produces:
+
+- **One copy of every default.** The defaults live only in `config.py`. `configs/tinyllama.yaml` now holds
+  only the Colab paths and the hardware profile, so it shows at a glance what a run changes.
+- **Candidates are plain dicts.** The `Candidate` class, the unused sampling helpers and `stage0.score`
+  (a setting with one allowed value) are gone.
+- **Sensitivity is normalised once**, when planning. The saved profile holds only the raw scores, and the
+  planner functions take the normalised score list.
+- **Smaller helpers.** The cache has one `get_or_compute` method, the number and label helpers exist once,
+  `load_texts(sources, dataset, split)` replaces the loader factory, and the package `__init__` files no
+  longer re-export names (import from the modules directly).
+
+## 2026-09-28: Report layout matches the hand-written version
+
+- **New plain-part order.** The plain part of report.md now follows the layout Mohammad liked:
+  1. a one-paragraph summary;
+  2. key terms, covering the versions compared, every measure and stage-specific words;
+  3. one results table with every version, units and "lower is better" in the headers;
+  4. a sensitivity table for every layer;
+  5. findings.
+
+  The Stage 0 findings cover the same-size plan, the 16-bit size floor and outlier layers. The background
+  explanation comes after the findings, and the technical detail follows unchanged.
+
+## 2026-09-28: Fair same-size comparison, size floor, outlier flag
+
+- **Same-size framework plan.** The threshold plan (0.947 GB predicted on TinyLlama) is about 22% bigger
+  than uniform 4-bit (0.777 GB), so comparing its quality against uniform isn't fair. Stage 0 now adds a
+  second framework row, `allocation_same_size/framework`, compared against the same uniform plan. It
+  protects as many of the most sensitive layers as fit in the uniform plan's predicted memory, which works
+  out to 5 of 22 layers at 0.775 GB. Its plan is saved as `compression_plan_budget_matched.json`.
+- **Size floor reported.** Embeddings, the LM head and norms stay at 16 bits in every plan. The report now
+  states this floor (0.26 GB on TinyLlama) in both the plain and the technical part.
+- **Outlier layers flagged.** A layer whose raw sensitivity is far from the rest is flagged in the report
+  and in the Per-layer sheet, together with what the plan does to it. Outliers are found by a robust
+  z-score (median / MAD, above 3.5), which catches TinyLlama's layer 0. They are flagged, not
+  auto-protected.
+
+## 2026-09-28: Plain-language reports
+
+- **Two-part report.md.** Every report now opens with a part written for readers with no AI background:
+  - the short version (did the framework win);
+  - what the stage does;
+  - what was compared;
+  - what each number means, with the three versions side by side and a "which is better/worse" reading;
+  - why the framework won or lost;
+  - a glossary.
+
+  The technical tables follow unchanged under "Technical details".
+- **Built into the shared reporter.** This lives in `StageReporter`, so every stage gets it. Each metric in
+  the registry carries a plain name and explanation, and a stage supplies its own intro, "why" and glossary
+  terms.
+
+## 2026-09-28: Fixes from the first real run (RTX 5070 Ti)
+
+- **Degenerate plan fixed.** Sensitivity scores are now rank-normalised by default
+  (`stage0.normalization: rank`). With min-max, TinyLlama's layer 0 (raw score 2705 against 6596–8647 for
+  the other layers) squeezed layers 1–21 into 0.66–1.0, so threshold 0.5 protected 21 of 22 layers. That
+  plan averaged 8.97 bits against 5.65 for uniform. With rank, `sensitive_threshold` *t* protects about the
+  top (1 − *t*) share of layers, whatever the score distribution. Normalisation is applied when planning,
+  so cached profiles are reused.
+- **Windows encoding fixed.** Every text file is now written and read as UTF-8: reports, JSON, config and
+  `run.log`. Before this, Windows wrote cp1252, which garbled "—" and "Δ" in report.md.
+
+## 2026-09-28: Dataset IDs moved to the config
+
+- **Fix.** WikiText-2 now loads from `Salesforce/wikitext`. Current `datasets` versions no longer resolve
+  the bare `wikitext` id, so Stage 0 failed before profiling.
+- **Config.** All Hub dataset ids and splits now live in the config (`data.sources`), so a moved dataset is
+  a config change rather than a code change.
+
+## 2026-09-28: Stage 0 aligned with the thesis spec
+
+- **Config.** Added a single `FrameworkConfig` (`configs/tinyllama.yaml` plus `--set key=value` overrides).
+  Stage logic no longer hardcodes anything: bit-widths, the uniform baseline, eval settings and output
+  paths all come from the config.
+- **Search space.** It now uses the spec's parameter names and is defined in one place
+  (`search_space.py`), so adding a parameter is one line. The scope is Stage 0 only, so it holds
+  `sensitive_threshold`, `prune_ratio_aggressive`, `calib_dataset` and `calib_samples`, plus
+  `gptq_groupsize`, which Stage 0 uses to predict memory. The Stage 2 and 3 parameters are added with
+  those stages.
+- **Reporting.** Added `StageReporter`, the shared reporting module. Every stage writes `report.md`,
+  `stage_<N>_comparison.xlsx` and `results.json` with one schema. The reporter:
+  - computes deltas against FP16 and against the original method;
+  - highlights framework wins and losses with conditional formatting;
+  - checks the DeploymentRequirement for each row and records the shortfall;
+  - records a failed method as a failed row instead of stopping the stage.
+- **FP16 baseline.** Added measurement of perplexity on the validation and held-out halves of the
+  WikiText-2 test split, model size, peak GPU memory, and prefill and decode latency (warmup runs, repeated
+  timings, mean and std). It is computed once per model, eval settings and hardware, then cached.
+- **Stage 0 comparison.** Stage 0 now compares FP16, a uniform allocation (the original method) and the
+  sensitivity plan. It reports predicted weight memory, bits per weight, sparsity, sensitivity exposure,
+  build cost and per-layer allocations.
+- **Profile caching.** The sensitivity profile is cached by model and calibration settings. Before this, it
+  would have been recomputed for every trial, even though the searched Stage 0 thresholds don't affect it.
+- **Seeding and logging.** Seeding covers python, numpy, torch and cuda, with a deterministic-algorithms
+  flag, and the seed is logged. Logging is timestamped and goes to stderr and to `<run_dir>/run.log`.
+- **Crash-safe output.** Writes are atomic and `results.json` is rewritten after every row, so a Colab
+  disconnect keeps completed work.
+- **Trial log removed.** It belongs to the search layer, which is out of scope for now.
+
+## 2026-09-28: Initial Stage 0
+
+- Project skeleton, gradient × weight sensitivity profile and threshold planner.
