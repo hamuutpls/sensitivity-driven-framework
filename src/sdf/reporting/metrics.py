@@ -52,6 +52,25 @@ METRICS: dict[str, MetricSpec] = {
         "KV-cache memory", "GB", "lower", "short-term memory used during a conversation",
         "While writing a reply, the model keeps notes about the text so far. This is how much memory those "
         "notes take; it grows with the length of the conversation."),
+    "predicted_kv_memory_gb": MetricSpec(
+        "Predicted KV-cache memory", "GB", "lower", "short-term memory needed for one long text",
+        "While writing, the model keeps notes on every earlier word (the KV cache). This is how much memory "
+        "those notes would need for the text length set in the report, calculated from the plan."),
+    "avg_kv_bits": MetricSpec(
+        "Average bits per cached number", "bits", "lower", "storage used per number in the notes",
+        "How many bits each number in the model's notes is stored with, on average (16 uncompressed)."),
+    "kv_kept_share": MetricSpec(
+        "Share of past tokens kept", "", None, "share of earlier words the notes keep",
+        "The plan can let some layers forget earlier words that get almost no attention. 1 means nothing is "
+        "forgotten; 0.5 means half of the notes are dropped."),
+    "predicted_kv_ppl_rise": MetricSpec(
+        "Predicted perplexity rise from cache rounding", "", "lower", "expected accuracy loss from the notes",
+        "The measured rise in prediction error when each layer's notes are rounded as planned, added up over "
+        "layers. It is a prediction; Stage 3 measures the real value."),
+    "kv_attention_kept": MetricSpec(
+        "Attention on kept tokens", "", "higher", "share of the model's focus that survives forgetting",
+        "When a layer forgets earlier words, this is the share of its attention that fell on the words it "
+        "kept, averaged over layers. 1 means nothing it looked at was dropped."),
     # latency
     "prefill_ms_mean": MetricSpec(
         "Prefill latency (mean)", "ms", "lower", "time to read the prompt",

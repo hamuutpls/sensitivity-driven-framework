@@ -42,7 +42,7 @@ class ArtifactCache:
 
 
 def atomic_write_text(path: str | Path, text: str) -> None:
-    """Write via a temp file + rename so a Colab disconnect mid-write never leaves a truncated file."""
+    """Write via a temp file + rename so an interrupted run mid-write never leaves a truncated file."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")

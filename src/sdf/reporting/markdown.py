@@ -161,7 +161,7 @@ def _plain_part(rep: "StageReporter") -> list[str]:
     lines.append("")
 
     if rep.plain_intro:
-        lines += ["## Background: how this stage works", "", rep.plain_intro, ""]
+        lines += ["## How this stage works", "", rep.plain_intro, ""]
     return lines
 
 

@@ -69,3 +69,19 @@ def test_dataset_sources_come_from_config(monkeypatch):
     assert calls[-1]["split"] == "validation"
     with pytest.raises(ValueError):
         loader("c4", "test")
+
+
+def test_main_settings_build_a_valid_config(monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location("main", Path(__file__).parent.parent / "main.py")
+    main = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(main)
+    cfg = main.build_config()
+    assert cfg.hyperparams["sensitive_threshold"] == main.SENSITIVE_THRESHOLD
+    assert cfg.stage0.protected_bits == main.PROTECTED_BITS and cfg.model.name == main.MODEL
+    SEARCH_SPACE.make(cfg.hyperparams)
+    for name, values in main.SWEEP.items():
+        for v in values:
+            SEARCH_SPACE.make({**cfg.hyperparams, name: v})

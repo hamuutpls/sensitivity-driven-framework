@@ -26,7 +26,7 @@ class RunContext:
 def start_run(cfg: FrameworkConfig) -> RunContext:
     """Create <output_root>/<run_id>/, snapshot the config, start logging to run.log and fix seeds.
 
-    Re-using an existing run_id resumes into the same directory (e.g. after a Colab disconnect).
+    Re-using an existing run_id resumes into the same directory (e.g. after an interrupted run).
     """
     run_id = cfg.run.run_id or f"{time.strftime('%Y%m%d-%H%M%S')}_{config_hash(cfg.to_dict(), length=6)}"
     run_dir = Path(cfg.run.output_root) / run_id

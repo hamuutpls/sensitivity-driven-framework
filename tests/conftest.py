@@ -50,4 +50,6 @@ def small_cfg(tmp_path):
         "eval.latency_decode_tokens": 4,
         "eval.latency_warmup": 1,
         "eval.latency_repeats": 3,
+        "stage0.kv_group_size": 8,
+        "stage0.kv_calib_samples": 4,
     })

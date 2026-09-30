@@ -15,10 +15,24 @@ compression, applied to TinyLlama-1.1B-Chat.
 Every stage compares, under identical conditions, three variants of each method: the **FP16** baseline, the
 **original** method used on its own, and the **framework** version (Stage 0 plan + the method).
 
+## Quick start
+
+Open `main.py`, change the settings at the top (every tunable parameter is there, with its allowed values),
+then run:
+
+```bash
+pip install -e .
+python main.py
+```
+
+`MODE = "single"` runs Stage 0 once; `MODE = "sweep"` tries every combination in `SWEEP` and writes one
+comparison report. The command-line tools below do the same with `--set` overrides.
+
 ## Layout
 
 ```
-configs/tinyllama.yaml   Colab paths only; every default lives in config.py
+main.py                  every tunable parameter, edit and run
+configs/tinyllama.yaml   local output paths; every default lives in config.py
 src/sdf/
   config.py              FrameworkConfig: the single config object (YAML + --set overrides)
   search_space.py        the search space (Stage 0 parameters for now); adding a parameter is one line
@@ -34,14 +48,19 @@ docs/diagrams/           class and sequence diagrams, per stage and for the whol
 
 ## Stage 0
 
-For each decoder layer *l* the score is the gradient × weight saliency summed over calibration batches:
-
-    s_l = Σ_batches Σ_{w ∈ layer l} |∂L/∂w · w|
+For each decoder layer *l* the default score (`stage0.score: layer_removal`) is the rise in calibration
+perplexity when that layer is skipped (its output = its input). On TinyLlama the older gradient × weight
+estimate ranked layer 0 as the least sensitive layer, although skipping it raises perplexity from 14 to about
+1,190.
 
 The scores are rank-normalised to [0, 1]: a layer's position in the sorted order, divided by (n − 1). A layer
 at or above `sensitive_threshold` is **protected** (8-bit, no pruning). Every other layer is **compressed**
 (4-bit, pruned at `prune_ratio_aggressive`). A threshold *t* therefore protects about the top (1 − *t*) share
 of layers.
+
+`stage0.score` switches the measurement: `layer_quant` (perplexity rise when only that layer is compressed) or
+`grad_x_weight` (Σ_batches Σ_{w ∈ layer l} |∂L/∂w · w|, one backward pass, a first-order estimate). `MODE = "compare_scores"` in `main.py`
+runs all three and compares their rankings.
 
 Rank is used instead of min-max because one outlier layer skews min-max. On TinyLlama, layer 0 scores 2705
 against 6596–8647 for the other layers, so min-max put layers 1–21 between 0.66 and 1.0 and threshold 0.5
@@ -61,8 +80,29 @@ For the two plans it reports predicted weight memory, average bits per weight, s
 exposure*, which measures how much compression lands on sensitive layers (lower is better). Accuracy and
 latency of the plans are measured once Stage 1 applies them.
 
+**KV cache plan** (`stage0/kv_cache.py`, section 4 of `main.py`). Per layer, Stage 0 also chooses key bits
+and value bits separately (each layer's keys, then values, are rounded alone to 2/4/8 bits and the perplexity
+rise is measured; a greedy allocation spends the uniform 4-bit average where damage is largest) and a token
+budget (the fewest past tokens that still receive 95% of the layer's attention, H2O / SnapKV style). It
+compares uniform 4-bit, the plan, and the plan without eviction on predicted cache memory at
+`KV_CONTEXT_LEN` tokens, average bits, share of tokens kept, predicted perplexity rise and attention kept.
+Stage 3 applies the plan.
+
 The sensitivity profile depends only on the model and calibration settings, so it is cached and reused by
 every trial. Each trial then only re-plans.
+
+### Sweep
+
+`sdf-stage0-sweep` tries several values of every setting and writes one comparison report
+(`stage_0_sweep/report.md`, `sweep.xlsx`, `results.json`). By default it tries every calibration text and
+sample count, every group size, and 5 evenly spaced thresholds and prune ratios. Each calibration setting is
+profiled once (cached); the rest only re-plans.
+
+```bash
+sdf-stage0-sweep --config configs/tinyllama.yaml                          # full sweep, needs the GPU
+sdf-stage0-sweep --grid sensitive_threshold=0.4,0.5,0.6 --grid calib_samples=64
+sdf-stage0-sweep --profile results/<run>/stage_0/sensitivity_profile.json # planning only, no GPU
+```
 
 ## Usage
 
@@ -70,7 +110,7 @@ every trial. Each trial then only re-plans.
 pip install -e ".[dev]"
 pytest
 
-# Colab: outputs go to Drive (see run.output_root in the config)
+# outputs go to ./thesis_compression/ in the folder you run from (see run.output_root)
 sdf-stage0 --config configs/tinyllama.yaml
 sdf-stage0 --config configs/tinyllama.yaml --set hyperparams.sensitive_threshold=0.7 --set run.run_id=my-run
 ```

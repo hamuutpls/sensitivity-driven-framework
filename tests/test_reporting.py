@@ -75,7 +75,7 @@ def test_report_has_plain_language_part(tmp_path):
 
     plain, technical = md.split("# Technical details")
     for heading in ("## Summary", "## Key terms", "## Results", "## Findings",
-                    "## Background: how this stage works"):
+                    "## How this stage works"):
         assert heading in plain
     assert plain.index("## Summary") < plain.index("## Key terms") < plain.index("## Results") \
         < plain.index("## Findings")

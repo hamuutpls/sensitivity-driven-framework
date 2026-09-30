@@ -34,7 +34,7 @@ class DeploymentRequirement:
     target_memory_gb: float | None = None
     target_ppl: float | None = None  # accuracy target, as a maximum validation-half perplexity
     kv_budget_gb: float | None = None
-    hardware_profile: str = "unspecified"  # e.g. "colab-T4", "A100-40GB"
+    hardware_profile: str = "unspecified"  # e.g. "RTX-5070-Ti", "A100-40GB"
 
     def check(self, metrics: Mapping[str, Any]) -> RequirementCheck:
         result = RequirementCheck(met=True)

@@ -23,7 +23,15 @@ from sdf.stage0.planner import (
     predict_cost,
     uniform_plan,
 )
-from sdf.stage0.sensitivity import SensitivityProfile, normalize, outlier_layers, profile_sensitivity
+from sdf.stage0.kv_cache import KVCost, KVPlan, KVProfile, plan_kv, predict_kv, profile_kv, uniform_kv_plan
+from sdf.stage0.sensitivity import (
+    SCORES,
+    SensitivityProfile,
+    normalize,
+    outlier_layers,
+    profile_by_ablation,
+    profile_sensitivity,
+)
 from sdf.utils.env import environment_info, resolve_device
 from sdf.utils.logging import get_logger
 
@@ -32,9 +40,13 @@ log = get_logger(__name__)
 METHOD = "allocation"
 METHOD_BUDGET = "allocation_same_size"
 METHOD_NO_PRUNE = "allocation_same_size_no_prune"
+METHOD_KV = "kv_cache"
+METHOD_KV_BITS = "kv_cache_bits_only"
 MAIN_METRICS = ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "peak_memory_gb", "prefill_ms_mean",
                 "decode_ms_per_token_mean",
-                "avg_bits_per_weight", "sparsity", "sensitivity_exposure", "build_time_s"]
+                "avg_bits_per_weight", "sparsity", "sensitivity_exposure",
+                "predicted_kv_memory_gb", "avg_kv_bits", "kv_kept_share", "predicted_kv_ppl_rise",
+                "kv_attention_kept", "build_time_s"]
 
 
 @dataclass
@@ -69,9 +81,12 @@ class _ModelHandle:
 
 def profile_key(ctx: RunContext, cand: dict[str, Any]) -> dict[str, Any]:
     cfg = ctx.cfg
-    return {"model": cfg.model.name, "profile_dtype": cfg.stage0.profile_dtype, 
-            "calib_dataset": cand["calib_dataset"], "calib_samples": cand["calib_samples"],
-            "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size, "seed": cfg.run.seed}
+    key = {"model": cfg.model.name, "profile_dtype": cfg.stage0.profile_dtype, "score": cfg.stage0.score,
+           "calib_dataset": cand["calib_dataset"], "calib_samples": cand["calib_samples"],
+           "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size, "seed": cfg.run.seed}
+    if cfg.stage0.score == "layer_quant":  # the per-layer compression depends on these too
+        key.update(bits=cfg.stage0.compressed_bits, group_size=cand["gptq_groupsize"])
+    return key
 
 
 def fp16_key(ctx: RunContext, device: torch.device) -> dict[str, Any]:
@@ -84,6 +99,60 @@ def fp16_key(ctx: RunContext, device: torch.device) -> dict[str, Any]:
 def _cost_metrics(cost: PlanCost) -> dict[str, float]:
     return {"predicted_weight_memory_gb": cost.weight_memory_gb, "avg_bits_per_weight": cost.avg_bits_per_weight,
             "sparsity": cost.sparsity, "sensitivity_exposure": cost.sensitivity_exposure}
+
+
+def kv_profile_key(ctx: RunContext, cand: dict[str, Any]) -> dict[str, Any]:
+    cfg, s0 = ctx.cfg, ctx.cfg.stage0
+    return {"model": cfg.model.name, "profile_dtype": s0.profile_dtype, "calib_dataset": cand["calib_dataset"],
+            "calib_samples": s0.kv_calib_samples, "seq_len": cfg.calibration.seq_len,
+            "batch_size": cfg.calibration.batch_size, "seed": cfg.run.seed, "bits": s0.kv_bits_options,
+            "group_size": s0.kv_group_size, "keep_ratios": s0.kv_keep_ratios, "modules": s0.kv_module_names}
+
+
+def load_kv_profile(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
+                    text_loader: Callable[[str, str], list[str]]) -> tuple[KVProfile, bool]:
+    cfg, s0 = ctx.cfg, ctx.cfg.stage0
+    key = kv_profile_key(ctx, candidate)
+
+    def compute() -> dict[str, Any]:
+        batches = calibration_batches(text_loader(candidate["calib_dataset"], "train"), handle.tokenizer,
+                                      s0.kv_calib_samples, cfg.calibration.seq_len, cfg.calibration.batch_size,
+                                      cfg.run.seed)
+        return profile_kv(handle.model(s0.profile_dtype), batches, s0.kv_bits_options, s0.kv_group_size,
+                          s0.kv_keep_ratios, tuple(s0.kv_module_names), device=handle.device, meta=key).to_dict()
+
+    d, cached = ctx.cache.get_or_compute("kv_profile", key, compute)
+    return KVProfile.from_dict(d), cached
+
+
+def _kv_metrics(cost: KVCost) -> dict[str, float]:
+    return {"predicted_kv_memory_gb": cost.memory_gb, "avg_kv_bits": cost.avg_bits, "kv_kept_share": cost.kept_share,
+            "predicted_kv_ppl_rise": cost.ppl_rise, "kv_attention_kept": cost.attention_kept}
+
+
+def load_profile(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
+                 text_loader: Callable[[str, str], list[str]]) -> tuple[SensitivityProfile, bool]:
+    """The sensitivity profile for this calibration setting; it depends on nothing else, so it is cached."""
+    cfg = ctx.cfg
+
+    def compute() -> dict[str, Any]:
+        batches = calibration_batches(text_loader(candidate["calib_dataset"], "train"), handle.tokenizer,
+                                      candidate["calib_samples"], cfg.calibration.seq_len,
+                                      cfg.calibration.batch_size, cfg.run.seed)
+        s0 = cfg.stage0
+        if s0.score == "grad_x_weight":
+            prof = profile_sensitivity(handle.model(s0.profile_dtype), batches, device=handle.device,
+                                       meta=profile_key(ctx, candidate))
+        elif s0.score in ("layer_removal", "layer_quant"):
+            prof = profile_by_ablation(handle.model(s0.profile_dtype), batches, s0.score, device=handle.device,
+                                       bits=s0.compressed_bits, group_size=candidate["gptq_groupsize"],
+                                       meta=profile_key(ctx, candidate))
+        else:
+            raise ValueError(f"unknown stage0.score {s0.score!r}; choose from {SCORES}")
+        return prof.to_dict()
+
+    prof_dict, cached = ctx.cache.get_or_compute("sensitivity_profile", profile_key(ctx, candidate), compute)
+    return SensitivityProfile.from_dict(prof_dict), cached
 
 
 def run_stage0(
@@ -99,18 +168,7 @@ def run_stage0(
     handle = _ModelHandle(ctx, device, model, tokenizer)
     text_loader = text_loader or functools.partial(load_texts, cfg.data.sources)
 
-    # --- sensitivity profile (depends only on model + calibration, so cached across trials) -------------
-    def compute_profile() -> dict[str, Any]:
-        batches = calibration_batches(text_loader(candidate["calib_dataset"], "train"), handle.tokenizer,
-                                      candidate["calib_samples"], cfg.calibration.seq_len,
-                                      cfg.calibration.batch_size, cfg.run.seed)
-        prof = profile_sensitivity(handle.model(s0.profile_dtype), batches, device=device,
-                                   meta=profile_key(ctx, candidate))
-        return prof.to_dict()
-
-    prof_dict, prof_cached = ctx.cache.get_or_compute("sensitivity_profile", profile_key(ctx, candidate),
-                                                      compute_profile)
-    profile = SensitivityProfile.from_dict(prof_dict)
+    profile, prof_cached = load_profile(ctx, candidate, handle, text_loader)
     # The only place scores are normalised: cheap, so not cached, and changing the method reuses the profile.
     scores = normalize(profile.raw_scores, s0.normalization)
 
@@ -210,6 +268,8 @@ def run_stage0(
         row.metrics["build_time_s"] = profile.cost["wall_clock_s"] + time.perf_counter() - t0
         row.info["budget_gb"] = predict(uniform).weight_memory_gb
 
+    kv = _kv_rows(ctx, candidate, handle, text_loader, rep) if s0.kv_cache else None
+
     if plan is None:
         rep.finalize()
         raise RuntimeError(f"Stage 0 planning failed; see {rep.report_path}")
@@ -219,6 +279,11 @@ def run_stage0(
         budget.save(rep.dir / "compression_plan_budget_matched.json")
     if no_prune is not None:
         no_prune.save(rep.dir / "compression_plan_budget_matched_no_prune.json")
+    if kv is not None:
+        _add_kv_details(rep, *kv)
+        kv[0].save(rep.dir / "kv_profile.json")
+        kv[1].save(rep.dir / "kv_cache_plan.json")
+        kv[2].save(rep.dir / "kv_cache_plan_bits_only.json")
     plan.save(rep.dir / "compression_plan.json")
     profile.save(rep.dir / "sensitivity_profile.json")
     return Stage0Result(plan=plan, profile=profile, outputs=rep.finalize())
@@ -342,13 +407,25 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         "barely notice the difference; done carelessly, the picture turns to mush. The catch is that not every "
         "part of the model is equally delicate. Some layers can be squeezed hard with no visible effect, while "
         "others fall apart at the slightest change.\n\n"
-        "Stage 0 finds out which is which. It feeds the model some ordinary text "
-        f"({hp['calib_samples']} short passages) and measures, for each of its {n} layers, how much the "
-        "model's predictions would suffer if that layer were changed. This is the layer's *sensitivity*. "
-        "It then writes a compression plan: the most sensitive layers are **protected** (kept at "
-        f"{s0['protected_bits']} bits per number and never trimmed), and the rest are **compressed** "
-        f"({s0['compressed_bits']} bits per number, with {hp['prune_ratio_aggressive']:.0%} of their numbers "
-        "removed).\n\n"
+        "Stage 0 finds out which is which, in four steps.\n\n"
+        f"1. **Measure.** The model reads {hp['calib_samples']} short passages of ordinary text "
+        f"({hp['calib_dataset']}) and tries to predict each next word. " + _MEASURE_PLAIN[profile.method]
+        + f" This is done for each of the {n} layers.\n"
+        f"2. **Rank.** The {n} raw scores are put in order and turned into a 0-to-1 scale: the least "
+        "sensitive layer gets 0, the most sensitive gets 1, and the rest are spaced evenly between by their "
+        "position in the order. Using the order rather than the raw values stops one unusual layer from "
+        "squashing all the others together.\n"
+        f"3. **Choose.** Every layer at or above the threshold ({hp['sensitive_threshold']:.2f}) is "
+        f"**protected**; the rest are **compressed**. A threshold of {hp['sensitive_threshold']:.2f} "
+        f"protects roughly the most sensitive {1 - hp['sensitive_threshold']:.0%} of layers.\n"
+        f"4. **Allocate.** Protected layers keep {s0['protected_bits']} bits per number and lose nothing. "
+        f"Compressed layers get {s0['compressed_bits']} bits per number and have "
+        f"{hp['prune_ratio_aggressive']:.0%} of their numbers removed. For a fair comparison, two same-size "
+        "versions are also made: they protect as many of the top-ranked layers as fit in the standard "
+        "method's memory, paying for it either by removing numbers from the other layers or, in the version "
+        f"that removes nothing, by storing the other layers with {s0['no_prune_compressed_bits']} bits.\n\n"
+        "The idea being tested is simple: spend the memory where damage hurts most. Whether it works is "
+        "decided by accuracy, which Stage 1 measures.\n\n"
         "Nothing is actually compressed yet. Stage 0 only makes the plan and predicts how big the model would "
         "be. Later stages carry out the plan and measure the real accuracy and speed.")
 
@@ -492,5 +569,148 @@ def _unused_budget(bp: CompressionPlan, budget_gb: float, protected_bits: int,
             "same size (TinyLlama), no other layer would fit either.")
 
 
+_MEASURE_PLAIN = {
+    "grad_x_weight": "For every number inside the model we ask two things: how big is this number, and how much "
+                     "would the model's mistakes change if this number were nudged (the *gradient*)? Multiplying "
+                     "the two gives a rough estimate of how much damage changing that number would do. Adding "
+                     "these up over every number in a layer, and over all the passages, gives that layer's raw "
+                     "sensitivity score.",
+    "layer_removal": "Then one layer at a time is switched off (skipped, so the text passes straight through it) "
+                     "and the passages are read again. How much the prediction error (perplexity) rises is that "
+                     "layer's raw sensitivity score: the bigger the rise, the more the model depends on it.",
+    "layer_quant": "Then one layer at a time is compressed on its own, the way the plan would compress it (fewer "
+                   "bits per number), and the passages are read again. How much the prediction error "
+                   "(perplexity) rises is that layer's raw sensitivity score.",
+}
+
+
 def _top(k: int) -> str:
     return "no layers" if k == 0 else "the most sensitive layer" if k == 1 else f"the {k} most sensitive layers"
+
+
+def _kv_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
+             text_loader: Callable[[str, str], list[str]], rep: StageReporter):
+    """KV cache rows: FP16 cache (added to the baseline row), uniform bits (original), the sensitivity plan
+    with token budgets (framework) and the same plan without eviction (to separate the two effects)."""
+    s0 = ctx.cfg.stage0
+    avg_bits = s0.kv_avg_bits if s0.kv_avg_bits is not None else s0.kv_uniform_bits
+    prof = predict = uniform = None
+    with rep.method(METHOD_KV, "original", label="Standard KV cache compression",
+                    plain_desc=f"every layer's notes stored at {s0.kv_uniform_bits} bits per number, and every "
+                               "earlier word kept.",
+                    description=f"uniform {s0.kv_uniform_bits}-bit keys and values, no eviction") as row:
+        prof, cached = load_kv_profile(ctx, candidate, handle, text_loader)
+        predict = lambda p: predict_kv(p, prof, s0.kv_context_len, s0.kv_batch_size,  # noqa: E731
+                                       s0.kv_group_size, s0.group_overhead_bits, s0.baseline_bits)
+        uniform = uniform_kv_plan(prof.num_layers, s0.kv_uniform_bits)
+        row.metrics.update(_kv_metrics(predict(uniform)))
+        row.metrics["build_time_s"] = 0.0
+        row.info["kv_profile_cached"] = cached
+        base = next((r for r in rep.rows if r.variant == "fp16"), None)
+        if base is not None:
+            base.metrics.update(_kv_metrics(predict(uniform_kv_plan(prof.num_layers, s0.baseline_bits))))
+    if prof is None:
+        return None
+
+    plans = {}
+    for method, target, label, plain, desc in (
+        (METHOD_KV, s0.kv_attention_coverage, "Sensitivity-guided KV cache plan",
+         "each layer's keys and values get their own bits, spending the same average as the standard method "
+         "where rounding hurts most, and layers that focus on few earlier words forget the rest.",
+         f"per-layer key/value bits at {avg_bits:g} average bits, per-layer token budget keeping "
+         f"{s0.kv_attention_coverage:.0%} of attention"),
+        (METHOD_KV_BITS, None, "Sensitivity-guided KV cache plan, bits only",
+         "the same per-layer bits, but no layer forgets anything. Comparing it with the full plan separates "
+         "the effect of choosing bits from the effect of forgetting.",
+         f"per-layer key/value bits at {avg_bits:g} average bits, no eviction"),
+    ):
+        with rep.method(method, "framework", compare_to=METHOD_KV, label=label, plain_desc=plain,
+                        description=desc) as row:
+            t0 = time.perf_counter()
+            plans[method] = plan_kv(prof, avg_bits, target)
+            row.metrics.update(_kv_metrics(predict(plans[method])))
+            row.metrics["build_time_s"] = prof.cost["wall_clock_s"] + time.perf_counter() - t0
+            row.info["kv_profiling_cost"] = prof.cost
+    if len(plans) < 2:
+        return None
+    return prof, plans[METHOD_KV], plans[METHOD_KV_BITS], uniform, predict
+
+
+def _add_kv_details(rep: StageReporter, prof: KVProfile, plan: KVPlan, bits_only: KVPlan, uniform: KVPlan,
+                    predict: Callable[[KVPlan], KVCost]) -> None:
+    s0 = rep.config["stage0"]
+    low, top = prof.bits_options[0], prof.keep_ratios[0]
+    fw, bo, un = predict(plan), predict(bits_only), predict(uniform)
+    fp16 = predict(uniform_kv_plan(prof.num_layers, s0["baseline_bits"]))
+    for row, lp, kr, vr, cov, mb in zip(rep.per_layer, plan.layers, prof.key_rise, prof.value_rise, prof.coverage,
+                                        fw.per_layer_mb):
+        row.update({"kv_key_bits": lp.key_bits, "kv_value_bits": lp.value_bits, "kv_keep_ratio": lp.keep_ratio,
+                    f"kv_key_rise_{low}bit": kr[0], f"kv_value_rise_{low}bit": vr[0],
+                    f"kv_attention_on_top_{top:.0%}": cov[0], "kv_predicted_mb": mb})
+
+    n = prof.num_layers
+    key_mean = sum(r[0] for r in prof.key_rise) / n
+    val_mean = sum(r[0] for r in prof.value_rise) / n
+    evicting = [lp.layer for lp in plan.layers if lp.keep_ratio < 1.0]
+    ctx_desc = f"{s0['kv_context_len']} tokens x {s0['kv_batch_size']} sequence(s)"
+    rep.conditions["KV cache memory prediction"] = ctx_desc
+    rep.sections.append(("KV cache plan", "\n".join([
+        f"Measured on {prof.cost.get('calibration_batches')} batches ({prof.cost.get('calibration_tokens')} tokens) "
+        f"in {prof.cost.get('wall_clock_s', 0):.1f}s. Keys rounded per channel, values per token, groups of "
+        f"{s0['kv_group_size']}; keys before RoPE.",
+        f"Mean perplexity rise with one layer's cache at {low} bits: keys {key_mean:.4g}, values {val_mean:.4g}.",
+        f"Key bits per layer: {[lp.key_bits for lp in plan.layers]}.",
+        f"Value bits per layer: {[lp.value_bits for lp in plan.layers]}.",
+        f"Layers that evict tokens ({len(evicting)}/{n}): "
+        + (", ".join(f"{lp.layer} (keep {lp.keep_ratio:.0%})" for lp in plan.layers if lp.keep_ratio < 1.0)
+           or "none") + f"; target: kept tokens receive {s0['kv_attention_coverage']:.0%} of attention.",
+        f"Predicted cache memory at {ctx_desc}: FP16 {fp16.memory_gb:.4g} GB, uniform {s0['kv_uniform_bits']}-bit "
+        f"{un.memory_gb:.4g} GB, plan {fw.memory_gb:.4g} GB, plan without eviction {bo.memory_gb:.4g} GB.",
+        "",
+        "Attention coverage takes each query's top tokens (an oracle); H2O / SnapKV choose tokens from past "
+        "attention and keep a little less. Perplexity rises are summed over layers, assuming they add up. "
+        "Stage 3 measures both for real.",
+    ])))
+    if key_mean <= val_mean:
+        rep.anomalies.append(f"Keys were no more fragile than values at {low} bits (mean rise {key_mean:.4g} vs "
+                             f"{val_mean:.4g}), the opposite of what KIVI / KVQuant report.")
+
+    rep.plain_intro += (
+        "\n\nStage 0 also plans the model's **short-term memory** (the KV cache). While writing, the model keeps "
+        "two notes (a *key* and a *value*) about every earlier word in every layer, so it doesn't have to "
+        "reread the whole text for each new word. For long texts these notes can take more memory than the "
+        "model itself. The same idea is applied to them: each layer's keys, then its values, are rounded to "
+        f"fewer bits one at a time to see how much that hurts, and each layer's attention is checked to see "
+        "whether it only looks at a few earlier words. The plan then gives fragile notes more bits, robust "
+        "ones fewer, and lets layers that focus on few words forget the rest.")
+    rep.glossary.update({
+        "KV cache": "The model's short-term memory while writing: notes on every earlier word, kept so they don't "
+                    "have to be recomputed. It grows with the length of the text.",
+        "Keys and values": "The two notes each layer keeps per word. The key says what a word is about (used to "
+                           "decide where to look), the value holds what it contributes once looked at.",
+        "Attention": "How much the model looks at each earlier word when choosing the next one.",
+        "Forgetting (token eviction)": "Dropping the notes on earlier words that a layer hardly looks at, "
+                                       "to save memory.",
+    })
+    rep.plain_why.insert(-1, (
+        f"For the short-term memory, rounding one layer's keys to {low} bits raised the prediction error by "
+        f"{key_mean:.3g} on average, against {val_mean:.3g} for values, so "
+        f"{'keys are the more fragile notes' if key_mean > val_mean else 'values were at least as fragile as keys here'}. "
+        f"With the same average bits as the standard method ({un.avg_bits:.3g}), the plan's predicted accuracy "
+        f"loss from rounding is {fw.ppl_rise:.3g} against {un.ppl_rise:.3g} for the standard method (lower is "
+        f"better). {len(evicting)} of {n} layers can forget part of the text while keeping "
+        f"{s0['kv_attention_coverage']:.0%} of their attention, which brings the notes for a "
+        f"{s0['kv_context_len']}-token text (a token is about three quarters of a word) from {un.memory_gb:.3g} GB to {fw.memory_gb:.3g} GB "
+        f"(uncompressed: {fp16.memory_gb:.3g} GB)."))
+    rep.plain_summary = rep.plain_summary.replace(
+        " Nothing has been compressed yet",
+        f" For the short-term memory (KV cache) of a {s0['kv_context_len']}-token text, the plan predicts "
+        f"{fw.memory_gb:.3g} GB against {un.memory_gb:.3g} GB for standard {s0['kv_uniform_bits']}-bit notes and "
+        f"{fp16.memory_gb:.3g} GB uncompressed. Nothing has been compressed yet")
+    if rep.plain_layer_columns:
+        head, intro, cols = rep.plain_layer_columns
+        rep.plain_layer_columns = (head, intro + " The last three columns are the short-term memory (KV cache) "
+                                   "plan: bits for keys, bits for values, and the share of earlier words kept.",
+                                   cols + [("kv_key_bits", "Key bits (cache)"), ("kv_value_bits", "Value bits (cache)"),
+                                           ("kv_keep_ratio", "Share of words kept (cache)")])
+    rep.next_steps.append("Run Stage 3 (KVQuant, H2O, SnapKV) with the KV cache plan to measure its real accuracy.")
