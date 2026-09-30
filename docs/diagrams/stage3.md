@@ -11,7 +11,8 @@ storing it with fewer bits (**QuaRot-KV**, **KVQuant**; the bit count is `quarot
 words the model pays least attention to (**H2O**, **SnapKV**, **InfiniGen**). It then checks whether the memory
 fits the budget set in the deployment requirement.
 
-The framework version gives the cache of layers Stage 0 protected more bits than the rest. Like Stage 2, it
+The framework version follows Stage 0's KV cache plan: each layer's own key bits, value bits and token budget
+(see [stage0.md](stage0.md)). Like Stage 2, it
 starts from the uncompressed model and the Stage 0 plan.
 
 ## Class diagram
@@ -71,7 +72,7 @@ classDiagram
     KVMethod <|.. SnapKV : evict
     KVMethod <|.. InfiniGen : evict
     stage3_run ..> KVMethod
-    stage3_run ..> Stage0Result : reads plan
+    stage3_run ..> Stage0Result : reads the KV cache plan (kv_cache_plan.json)
     stage3_run ..> measure_model
     stage3_run ..> StageReporter : fp16 / original / framework rows
     StageReporter ..> DeploymentRequirement : kv_cache_gb vs kv_budget_gb
@@ -93,7 +94,7 @@ sequenceDiagram
 
     loop each method: QuaRot-KV, KVQuant, H2O, SnapKV, InfiniGen
         Note over R,Rep: original row: method defaults, same cache bits in every layer
-        R->>K: wrap(FP16 model, plan.layers, candidate)
+        R->>K: wrap(FP16 model, KV plan layers, candidate)
         K-->>R: model with a compressed cache
         R->>E: measure_model(model, validation, held-out)
         loop each generated token

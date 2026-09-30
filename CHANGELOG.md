@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-30: Specs describe layer removal and the KV cache plan
+
+- `docs/specs/` version 0.2: S0-01 names layer removal as the default sensitivity score, with one-layer
+  compression and gradient x weight selectable (SDD §5.3); new S0-10 to S0-13 and SDD §5.8 for the Stage 0 KV
+  cache plan; MET-06, S3-02 and SDD §8 follow that plan; traceability updated.
+
 ## 2026-09-29: System and subsystem specifications
 
 - **`docs/specs/`**: a System Requirements Specification following ISO/IEC/IEEE 29148:2018 (every requirement
@@ -8,11 +14,97 @@
   the same viewpoints, with a traceability table from requirement to design, code and test). Stage 0 and the
   shared core are described from the code; the rest is marked planned, consistent with `docs/diagrams/`.
 
+## 2026-09-30: Diagrams describe layer removal and the KV cache plan
+
+- `docs/diagrams/stage0.md`: layer removal is the default sensitivity score (grad x weight and one-layer
+  compression still drawn as options); new KV cache classes (`KVProfile`, `KVPlan`, `KVLayerPlan`, `KVCost`,
+  `kv_cache` module) and the three KV cache rows in the sequence diagram. `stage3.md` now reads the Stage 0 KV
+  cache plan.
+
 ## 2026-09-29: Class and sequence diagrams
 
 - **`docs/diagrams/`**: a class diagram and a sequence diagram for the project as a whole and for each stage
   and the search layer, in Mermaid so GitHub draws them. Stage 0 and the shared parts are drawn from the
   code; Stages 1 to 4 and the search are drawn from the design and labelled `<<planned>>`.
+
+## 2026-09-30: Stage 0 plans the KV cache
+
+- New `stage0/kv_cache.py`, on by default (`KV_CACHE` in main.py, section 4). Per decoder layer it plans:
+  1. key bits and 2. value bits, chosen separately: each layer's keys (then values) alone are rounded to each
+     of `KV_BITS_OPTIONS` and the calibration perplexity rise is measured. A greedy allocation spends the
+     same average bits as the uniform `KV_UNIFORM_BITS` cache where the measured damage is largest. Keys are
+     rounded per channel and values per token (KIVI / KVQuant), keys before RoPE.
+  3. a token budget (H2O / SnapKV style eviction): the fewest of `KV_KEEP_RATIOS` whose top tokens still
+     receive `KV_ATTENTION_COVERAGE` of the layer's attention (oracle top-k, measured with eager attention).
+  4. predicted cache memory at `KV_CONTEXT_LEN` tokens x `KV_BATCH_SIZE`, with scale overhead per group.
+- Report rows `kv_cache/original` (uniform bits, no eviction), `kv_cache/framework` (bits + budget) and
+  `kv_cache_bits_only/framework` (bits alone, to separate the two effects); the FP16 row gets the 16-bit cache
+  size. New metrics, per-layer columns, a "KV cache plan" section and plain-language text. Plans and the KV
+  profile are saved as JSON; the profile is cached.
+- Key/value layers are found by name (`KV_MODULE_NAMES`), so any model with separate key/value projections
+  works; fused-QKV models need their own names.
+
+## 2026-09-30: Default sensitivity score is layer removal
+
+- `stage0.score` defaults to `layer_removal`, Mohammad's choice: a layer's sensitivity is the rise in
+  calibration perplexity when it is skipped. `layer_quant` and `grad_x_weight` stay selectable.
+
+## 2026-09-29: Default sensitivity score is now single-layer compression
+
+- `stage0.score` defaults to `layer_quant`. On TinyLlama (WikiText-2, 64 passages) gradient × weight ranked
+  layer 0 least sensitive, so the plan compressed and pruned it, yet skipping layer 0 raises perplexity from
+  14.1 to about 1,190. Its ranking also did not agree with the measured one-layer compression damage (rank
+  agreement −0.01). `layer_quant` measures the damage protection prevents directly. Old runs are unaffected:
+  the score is part of the profile cache key.
+
+## 2026-09-29: Layer-removal and one-layer-compression sensitivity scores
+
+- **`stage0.score`** (`SENSITIVITY_SCORE` in main.py) chooses how sensitivity is measured:
+  - `grad_x_weight` (default): unchanged.
+  - `layer_removal`: skip one decoder layer at a time and measure the rise in perplexity on the
+    calibration text.
+  - `layer_quant`: compress only that layer (round-to-nearest at `compressed_bits` and the candidate's
+    group size) and measure the rise in perplexity. This is closest to what the plan does.
+
+  The ablation scores need one forward pass over the calibration text per layer. They work on any decoder
+  stack through hooks and temporary weight rounding, and the model is restored afterwards. The score is
+  part of the profile cache key.
+- **`MODE = "compare_scores"`** in main.py profiles all three ways on the same text and writes
+  `stage_0_scores/report.md`, `scores.xlsx` and `results.json`: rank agreement between the ways, the layers
+  each would protect, and a per-layer table.
+- The report's "How this stage works" section describes whichever score was used.
+
+## 2026-09-29: Report explains the sensitivity-driven method step by step
+
+- The plain part's background section is now "How this stage works". It explains in four numbered steps
+  how the score is measured (weight size times gradient, summed per layer), how it is ranked onto a 0-1
+  scale, what the threshold does, and how bits and pruning follow, including the two same-size versions.
+
+## 2026-09-29: Local output folders
+
+- Results and the cache now go to `thesis_compression/results` and `thesis_compression/cache` under the
+  folder you run from, in `main.py` and `configs/tinyllama.yaml`, instead of Google Drive paths. The
+  folder is git-ignored. The hardware profile in the config is now `RTX-5070-Ti`.
+
+## 2026-09-29: Tunable parameters in main.py
+
+- **`main.py`** lists every tunable parameter at the top of one file: the run settings, the five
+  search-space parameters (with their allowed values in comments), the fixed Stage 0 settings and the sweep
+  values. Edit it and run `python main.py`. `MODE` picks a single run or a sweep. Values outside the search
+  space are rejected before anything runs. Settings not listed keep their defaults from `config.py`.
+
+## 2026-09-29: Stage 0 sweep
+
+- **`sdf-stage0-sweep`** tries several values of every search-space setting and writes one plain-language
+  report plus `sweep.xlsx` (every plan) and `results.json`. It covers the threshold, the prune ratio, the
+  group size, and the calibration text and amount. For each combination it shows the threshold plan, the
+  same-size plan and the no-removal plan against the standard method, how much the calibration setting
+  changes the layer ranking (rank agreement), and which plans are both smaller and safer than the standard
+  method.
+- A calibration setting that fails (for example, a dataset that can't be downloaded) is recorded in the
+  report instead of stopping the sweep.
+- `--profile` plans from saved sensitivity profiles, so the planning part runs without a GPU.
+- Profile loading moved into `stage0.run.load_profile`, shared by the single run and the sweep.
 
 ## 2026-09-28: Report gaps from the first local run
 

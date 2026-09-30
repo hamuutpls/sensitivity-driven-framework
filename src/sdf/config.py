@@ -14,7 +14,7 @@ from sdf.requirements import DeploymentRequirement
 
 @dataclass
 class RunConfig:
-    output_root: str = "thesis_compression/results"  # on Colab: /content/drive/MyDrive/thesis_compression/results
+    output_root: str = "thesis_compression/results"  # local folder, relative to the working directory
     run_id: str | None = None  # None -> timestamp + config hash
     cache_dir: str | None = None  # None -> <output_root>/../cache
     seed: int = 0
@@ -69,6 +69,8 @@ class Stage0Config:
     # rank | minmax. Rank is robust to outlier layers; see sdf.stage0.sensitivity.normalize.
     normalization: str = "rank"
     profile_dtype: str = "float32"  # fp16 gradients overflow; profile in fp32 (or bfloat16 on GPU)
+    # How layer sensitivity is measured: grad_x_weight | layer_removal | layer_quant (see stage0/sensitivity.py)
+    score: str = "layer_removal"
     protected_bits: int = 8
     compressed_bits: int = 4
     # Same-size plan without pruning: robust layers drop to this many bits instead, so the size match comes
@@ -80,6 +82,18 @@ class Stage0Config:
     # Per quantisation group GPTQ stores a scale and a zero point; bits each, for the memory prediction.
     group_overhead_bits: int = 32
     baseline_bits: int = 16  # bits/weight of the FP16 model and of unquantised tensors (embeddings, norms, lm_head)
+    # KV cache plan (see stage0/kv_cache.py). Per layer: key bits, value bits, share of past tokens kept.
+    kv_cache: bool = True
+    kv_bits_options: list[int] = field(default_factory=lambda: [2, 4, 8])  # tested per layer, ascending
+    kv_uniform_bits: int = 4  # "original method": every key and value at this many bits, nothing evicted
+    kv_avg_bits: float | None = None  # plan's average bit budget; None = kv_uniform_bits (same size as original)
+    kv_group_size: int = 64  # numbers sharing one scale (tokens for keys, channels for values)
+    kv_calib_samples: int = 16  # passages for the KV measurement (each layer x key/value x bits is one pass)
+    kv_keep_ratios: list[float] = field(default_factory=lambda: [0.1, 0.2, 0.3, 0.5, 0.75])
+    kv_attention_coverage: float = 0.95  # keep the fewest tokens that still receive this share of attention
+    kv_context_len: int = 2048  # tokens per sequence for the memory prediction
+    kv_batch_size: int = 1  # sequences held at once for the memory prediction
+    kv_module_names: list[str] = field(default_factory=lambda: ["k_proj", "v_proj"])  # key / value Linear names
 
 
 @dataclass

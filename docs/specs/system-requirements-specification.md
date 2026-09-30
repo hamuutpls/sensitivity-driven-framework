@@ -6,7 +6,7 @@
 | Standard | ISO/IEC/IEEE 29148:2018, clause 9.6 (SyRS content) |
 | System | Sensitivity-Driven Framework (`sdf`), MSc thesis codebase |
 | Owner | Mohammad (GitHub `hamuutpls`) |
-| Version | 0.1 (draft), 2026-09-29 |
+| Version | 0.2 (draft), 2026-09-30 |
 | Companion | [Subsystem Design Description](subsystem-design-description.md) (IEEE 1016-2009) |
 
 ## Change history
@@ -14,6 +14,7 @@
 | Version | Date | Change |
 |---|---|---|
 | 0.1 | 2026-09-29 | First draft, written from the thesis spec (project instructions), the v2_1 architecture diagram and the Stage 0 code on branch `stage0-sensitivity`. |
+| 0.2 | 2026-09-30 | S0-01 now names layer removal as the default sensitivity score (Mohammad's decision, 2026-09-30), with one-layer compression and gradient × weight selectable; S0-09 covers ablation scores. New S0-10 to S0-13 for the Stage 0 KV cache plan. MET-06 and S3-02 updated to match. |
 
 ---
 
@@ -178,7 +179,7 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | MET-03 | The system shall evaluate downstream tasks (task suite to be fixed with Stage 4). | M | Planned | T | SPEC | SDD §9 |
 | MET-04 | The system shall measure model size on disk. | M | Implemented | T | SPEC | SDD §4.6 |
 | MET-05 | The system shall measure peak GPU memory. | M | Implemented | T | SPEC | SDD §4.6 |
-| MET-06 | The system shall measure KV-cache memory. | M | Planned (Stage 3) | T | SPEC | SDD §8 |
+| MET-06 | The system shall measure KV-cache memory. | M | Partial (predicted in Stage 0; measured in Stage 3) | T | SPEC | SDD §5.8, §8 |
 | MET-07 | The system shall measure prefill latency, per-token decode latency and tokens per second, after warmup runs, over repeated runs, reporting mean and standard deviation and keeping every raw repeat. | M | Implemented | T | SPEC | SDD §4.6 |
 | MET-08 | The system shall record build time (time to prepare the compressed model, including profiling). | M | Implemented | I | SPEC | SDD §4.6 |
 | MET-09 | Each result shall be sanity-checked: output is valid, perplexity is finite, and memory decreased relative to fp16. A failed check shall appear in the report's anomalies. | M | Partial (finite checks; "memory decreased" check to add) | T | SPEC | SDD §4.3 |
@@ -200,7 +201,7 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 
 | ID | Requirement | Pri | Status | Ver | Source | Design |
 |---|---|---|---|---|---|---|
-| S0-01 | Stage 0 shall score each decoder layer's sensitivity as gradient × weight saliency, summed over the calibration batches. | M | Implemented | T | SPEC, DIAG | SDD §5.3 |
+| S0-01 | Stage 0 shall score each decoder layer's sensitivity, by default as the rise in calibration perplexity when that layer alone is skipped (layer removal). The rise when only that layer is compressed (`layer_quant`) and gradient × weight saliency (`grad_x_weight`) shall be selectable through `stage0.score`. | M | Implemented | T | SPEC, DIAG, DEC (2026-09-30) | SDD §5.3 |
 | S0-02 | Scores shall be normalised to [0, 1]; rank normalisation shall be the default and min-max selectable. | M | Implemented | T | DEC | SDD §5.3 |
 | S0-03 | Stage 0 shall flag outlier layers (robust z-score > 3.5) in the report. | D | Implemented | T | DEC | SDD §5.3 |
 | S0-04 | Stage 0 shall produce a per-layer plan: layers at or above `sensitive_threshold` protected (8-bit, no pruning), others compressed (4-bit, pruned at `prune_ratio_aggressive`). | M | Implemented | T | SPEC | SDD §5.4 |
@@ -208,7 +209,11 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | S0-06 | Stage 0's original variant shall be a uniform allocation (every layer 4-bit, no pruning). | M | Implemented | I | DEC | SDD §5.4 |
 | S0-07 | Stage 0 shall report per-layer scores, bits and pruning ratios. | M | Implemented | T | SPEC | SDD §5.4 |
 | S0-08 | The sensitivity profile shall be cached by model and calibration settings and reused across trials. | M | Implemented | T | SPEC | SDD §5.5 |
-| S0-09 | Profiling shall detect non-finite scores and fail with a message pointing at `stage0.profile_dtype`. | M | Implemented | T | DEC | SDD §5.6 |
+| S0-09 | Gradient profiling shall detect non-finite scores and fail with a message pointing at `stage0.profile_dtype`; ablation profiling shall cap a non-finite perplexity so the layer still ranks as most sensitive. | M | Implemented | T | DEC | SDD §5.6 |
+| S0-10 | Stage 0 shall plan key bits and value bits per decoder layer from the measured calibration perplexity rise when only that layer's keys (or values) are rounded to each of `kv_bits_options`, spending the same average bits as the uniform KV cache (`kv_uniform_bits`). | M | Implemented | T | DEC (2026-09-30) | SDD §5.8 |
+| S0-11 | Stage 0 shall plan a token budget per decoder layer: the fewest of `kv_keep_ratios` whose most-attended tokens still receive `kv_attention_coverage` of the layer's attention. | M | Implemented | T | DEC (2026-09-30) | SDD §5.8 |
+| S0-12 | Stage 0 shall predict KV cache memory at `kv_context_len` tokens × `kv_batch_size` for the FP16 cache, the uniform cache and each plan. | M | Implemented | T | DEC (2026-09-30) | SDD §5.8 |
+| S0-13 | Stage 0 shall report the KV cache as rows original (uniform bits, no eviction), framework (bits and token budget) and framework bits only (no eviction), and save the KV profile and plans as JSON. | M | Implemented | T | DEC (2026-09-30) | SDD §5.8 |
 
 #### 3.1.7 Stage 1: weight compression (S1)
 
@@ -232,7 +237,7 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | ID | Requirement | Pri | Status | Ver | Source | Design |
 |---|---|---|---|---|---|---|
 | S3-01 | Stage 3 shall support QuaRot KV, KVQuant, H2O, SnapKV and InfiniGen. | M | Planned | T | SPEC | SDD §8 |
-| S3-02 | In the framework variant, per-layer KV precision or retention shall follow the Stage 0 plan. | M | Planned | T | SPEC | SDD §8 |
+| S3-02 | In the framework variant, per-layer key bits, value bits and token budget shall follow the Stage 0 KV cache plan (`kv_cache_plan.json`). | M | Planned | T | SPEC | SDD §8 |
 | S3-03 | QuaRot key-cache bit width shall be the search parameter `quarot_k_bits`. | M | Planned | I | SPEC | SDD §8 |
 | S3-04 | Stage 3 shall report KV-cache memory and check it against `kv_budget_gb`. | M | Planned | T | SPEC | SDD §8 |
 
@@ -336,12 +341,13 @@ Not applicable: public pre-trained models and public datasets under their own li
 | Demonstration (D) | Running the CLI on Colab or the local PC and checking the outputs exist and are complete. |
 | Test (T) | Automated pytest in `tests/`. |
 
-Current automated coverage (branch `stage0-sensitivity`):
+Current automated coverage (`main`):
 
 | Test file | Requirements covered |
 |---|---|
 | `tests/test_config.py` | CFG-01, CFG-02, SRCH-01 (partial), SRCH-02, CMP-04, IF-01 |
 | `tests/test_stage0.py` | S0-01 … S0-05, S0-07, CMP-07, MET-01, MET-04 … MET-07, PIPE-03 (end-to-end) |
+| `tests/test_kv_cache.py` | S0-10 … S0-12, MET-06 (predicted) |
 | `tests/test_reporting.py` | REP-02 … REP-06, REP-08, CMP-03, CMP-06 |
 
 A full requirement-to-design-to-code matrix is in [SDD Appendix A](subsystem-design-description.md#appendix-a-traceability).
@@ -363,7 +369,7 @@ A full requirement-to-design-to-code matrix is in [SDD Appendix A](subsystem-des
 |---|---|
 | 1 | Downstream task suite (MET-03) not yet chosen. |
 | 2 | "Memory decreased" sanity check (MET-09) to be added to `StageReporter`. |
-| 3 | How the Stage 0 plan maps onto activation (Stage 2) and KV (Stage 3) precision is a design proposal, to be confirmed when those stages are written. |
+| 3 | How the Stage 0 plan maps onto activation (Stage 2) precision is a design proposal, to be confirmed when that stage is written. Stage 3 follows the Stage 0 KV cache plan (S0-10 to S0-13). |
 | 4 | The fidelity schedule for MFBO (which cheaper evaluation stands in for the full one) to be fixed with the search layer. |
 
 ### 5.3 Acronyms

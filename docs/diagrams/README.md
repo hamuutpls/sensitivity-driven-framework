@@ -217,7 +217,7 @@ sequenceDiagram
     Note over Run: make results/run_id/, write config.json,<br/>start run.log, fix seeds, open cache
     Run-->>CLI: RunContext
     CLI->>S0: run_stage0(ctx, candidate)
-    S0->>Rep: rows fp16 / original / framework
+    S0->>Rep: rows fp16 / original / framework (weights, then KV cache)
     Rep-->>S0: report.md, stage_0_comparison.xlsx, results.json
     S0-->>CLI: Stage0Result
     CLI-->>User: prints output paths

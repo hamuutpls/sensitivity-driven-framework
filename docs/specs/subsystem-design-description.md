@@ -6,8 +6,8 @@
 | Standard | IEEE 1016-2009; viewpoint vocabulary from ISO/IEC/IEEE 42010:2022 |
 | System | Sensitivity-Driven Framework (`sdf`), MSc thesis codebase |
 | Owner | Mohammad (GitHub `hamuutpls`) |
-| Version | 0.1 (draft), 2026-09-29 |
-| Status of design | SS-CORE and SS-0 implemented (branch `stage0-sensitivity`); SS-1 to SS-4 and SS-SRCH designed, not implemented |
+| Version | 0.2 (draft), 2026-09-30 |
+| Status of design | SS-CORE and SS-0 implemented (on `main`); SS-1 to SS-4 and SS-SRCH designed, not implemented |
 | Requirements | [System Requirements Specification](system-requirements-specification.md) (ISO/IEC/IEEE 29148) |
 | Diagrams | [`docs/diagrams/`](../diagrams/README.md) (Mermaid class and sequence diagrams) |
 
@@ -16,6 +16,7 @@
 | Version | Date | Change |
 |---|---|---|
 | 0.1 | 2026-09-29 | First draft. Implemented parts described from the code; planned parts from the thesis spec, the v2_1 diagram and `docs/diagrams/`. |
+| 0.2 | 2026-09-30 | §5.3: layer removal is the default sensitivity score; one-layer compression and gradient × weight selectable. New §5.8: the Stage 0 KV cache plan. §8 follows that plan. |
 
 ---
 
@@ -366,15 +367,19 @@ Measure how fragile each decoder layer is and turn that into a per-layer plan of
 which Stages 1 to 3 follow. Also predict what the plan costs before anything is compressed. **Status:**
 implemented and tested. Diagrams: [`stage0.md`](../diagrams/stage0.md).
 
-*In plain words:* Stage 0 nudges each layer a tiny bit and watches how much the model's mistakes grow. Layers
-where mistakes grow a lot are marked "protect"; the rest are marked "compress hard".
+*In plain words:* Stage 0 takes each layer out of the model in turn and watches how much the model's mistakes
+grow. Layers where mistakes grow a lot are marked "protect"; the rest are marked "compress hard". It also plans
+the model's short-term memory while writing (the KV cache): how many bits each layer's stored keys and values
+get, and how many earlier words each layer keeps.
 
 ### 5.2 Composition and interfaces
 
 | Module | Main members |
 |---|---|
-| `stage0/sensitivity.py` | `SensitivityProfile`, `profile_sensitivity(model, batches, device, meta)`, `normalize(scores, method)`, `outlier_layers(raw, cutoff=3.5)`, `find_decoder_layers`, `layer_shapes` |
+| `stage0/sensitivity.py` | `SensitivityProfile`, `profile_by_ablation(model, batches, method, device, bits, group_size, meta)` (`layer_removal`, `layer_quant`), `profile_sensitivity(model, batches, device, meta)` (`grad_x_weight`), `normalize(scores, method)`, `outlier_layers(raw, cutoff=3.5)`, `find_decoder_layers`, `layer_shapes`, `skip_layer`, `quantize_layer` |
 | `stage0/planner.py` | `LayerPlan`, `CompressionPlan`, `plan_compression(...)`, `uniform_plan(...)`, `budget_matched_plan(...)`, `PlanCost`, `predict_cost(...)`, `baseline_cost(...)` |
+| `stage0/kv_cache.py` | `KVProfile`, `profile_kv(...)`, `KVLayerPlan`, `KVPlan`, `uniform_kv_plan(n, bits)`, `plan_kv(profile, avg_bits, coverage_target)`, `KVCost`, `predict_kv(...)` |
+| `stage0/compare.py` | `compare_scores(ctx, candidate)`: profiles all three scores on the same text and reports rank agreement (`MODE = "compare_scores"`) |
 | `stage0/run.py` | `run_stage0(ctx, candidate, model=None, tokenizer=None, text_loader=None, measure_fp16=True) -> Stage0Result(plan, profile, outputs)` |
 
 **Contract handed to later stages (PIPE-03).** `CompressionPlan` JSON:
@@ -388,13 +393,25 @@ where mistakes grow a lot are marked "protect"; the rest are marked "compress ha
 
 ### 5.3 Algorithm: sensitivity score (S0-01 to S0-03)
 
-For decoder layer *l*, over calibration batches *b*:
+`stage0.score` (`SENSITIVITY_SCORE` in `main.py`) picks the score. With *PPL* the calibration perplexity:
 
-    s_l = Σ_b Σ_{w ∈ layer l} |∂L/∂w · w|
+- **`layer_removal`** (default): `s_l = PPL(model without layer l) − PPL(model)`. The layer is skipped with a
+  forward hook that passes its input straight through (`skip_layer`), and restored afterwards.
+- **`layer_quant`**: `s_l = PPL(model with only layer l rounded to compressed_bits) − PPL(model)`, round to
+  nearest at the candidate's `gptq_groupsize` (`quantize_layer`); the original weights are put back afterwards.
+- **`grad_x_weight`**: `s_l = Σ_b Σ_{w ∈ layer l} |∂L/∂w · w|` over calibration batches *b*, the first-order
+  Taylor estimate of the loss change if the layer's weights were zeroed. Only decoder-layer parameters get
+  gradients (embeddings and LM head are frozen for the pass and their flags restored afterwards).
 
-the first-order Taylor estimate of the loss change if the layer's weights were zeroed. Only decoder-layer
-parameters get gradients (embeddings and LM head are frozen for the pass and their flags restored afterwards).
-Profiling runs in `stage0.profile_dtype` (float32 by default, since float16 gradients overflow).
+The two ablation scores need one forward pass over the calibration text per layer and no gradients; they can be
+slightly negative when a change happens to help. Profiling runs in `stage0.profile_dtype` (float32 by default,
+since float16 gradients overflow). The score is part of the profile cache key.
+
+**Rationale for the default.** On TinyLlama (WikiText-2, 64 passages) gradient × weight ranked layer 0 *least*
+sensitive, yet skipping layer 0 raises perplexity from 14.1 to about 1,190. Rank agreement between the scores
+was low (gradient vs removal 0.44, gradient vs one-layer compression −0.01, removal vs compression 0.18).
+Mohammad chose layer removal (2026-09-30): a layer's sensitivity is how much the model gets worse without it.
+Removal's most sensitive layers on TinyLlama are 0, 2, 7, 21 and 1.
 
 Normalisation to [0, 1]:
 
@@ -404,7 +421,7 @@ Normalisation to [0, 1]:
 
 Outliers are flagged when `|s − median| / (1.4826 · MAD) > 3.5` (Iglewicz and Hoaglin).
 
-**Rationale.** Rank was chosen after the first TinyLlama run: layer 0 scores 2705 against 6596–8647 for the
+**Rationale for rank.** Rank was chosen after the first TinyLlama run (gradient score): layer 0 scores 2705 against 6596–8647 for the
 others, so min-max squeezed layers 1–21 into 0.66–1.0 and threshold 0.5 protected 21 of 22 layers.
 
 ### 5.4 Algorithm: planning and cost model (S0-04 to S0-07, CMP-07)
@@ -429,27 +446,65 @@ weight memory (GB), average bits per weight, sparsity, and
 the share of compression that lands on sensitive layers (lower is better).
 
 **Rows reported.** fp16 (measured once, cached); original (uniform); framework (threshold plan); framework,
-same size; framework, same size without pruning. Plan rows carry *predicted* metrics; accuracy and latency of
+same size; framework, same size without pruning; then the three KV cache rows of §5.8 when `stage0.kv_cache`
+is on (the default). Plan rows carry *predicted* metrics; accuracy and latency of
 plans are measured once Stage 1 applies them.
 
 ### 5.5 Information
 
 Outputs in `stage_0/`: `report.md`, `stage_0_comparison.xlsx`, `results.json`, `compression_plan.json`,
-`compression_plan_budget_matched*.json`, `sensitivity_profile.json`. The profile is cached under
+`compression_plan_budget_matched*.json`, `sensitivity_profile.json`, and with the KV cache plan `kv_profile.json`,
+`kv_cache_plan.json`, `kv_cache_plan_bits_only.json`. The KV profile is cached under `kv_profile/`, keyed by
+model, calibration text, `kv_calib_samples`, bits options, group size, keep ratios and module names. The profile is cached under
 `sensitivity_profile/` keyed by model and calibration settings only, so a trial that changes
 `sensitive_threshold` or `prune_ratio_aggressive` re-plans in milliseconds (S0-08, PERF-02). Normalisation is
 applied after the cache, so changing it reuses the profile.
 
 ### 5.6 Errors
 
-Non-finite scores raise `FloatingPointError` naming `stage0.profile_dtype` (S0-09). A pruning ratio outside
+Non-finite gradient scores raise `FloatingPointError` naming `stage0.profile_dtype` (S0-09). An ablation that
+sends perplexity to infinity is capped at the largest float, so that layer ranks as most sensitive. A model
+without the `kv_module_names` projections (for example a fused QKV projection) raises `ValueError`. A pruning ratio outside
 [0, 1) raises `ValueError`. A size budget that even *k* = 0 exceeds returns the *k* = 0 plan and the report
 flags it. Leftover budget after packing (e.g. 0.011 GB on TinyLlama) is stated in the report.
 
 ### 5.7 Resources
 
-Profiling TinyLlama in float32 needs about 9 GB (weights + gradients of decoder layers); bfloat16 halves it
-(PERF-01). Time scales with `calib_samples × seq_len`.
+Gradient profiling of TinyLlama in float32 needs about 9 GB (weights + gradients of decoder layers); bfloat16
+halves it (PERF-01). The ablation scores need no gradients. Time scales with `calib_samples × seq_len`, times the
+number of layers for the ablation scores: on the RTX 5070 Ti, about 29 s for gradient × weight and about 95 s
+for each ablation score (64 passages). The KV profile needs `layers × 2 × len(kv_bits_options)` passes over
+`kv_calib_samples` passages plus one pass with eager attention.
+
+### 5.8 Algorithm: KV cache plan (S0-10 to S0-13)
+
+For each decoder layer *l* and tensor *t* ∈ {key, value}, and each *b* in `kv_bits_options` (2, 4, 8):
+`rise(l, t, b) = PPL(only t of layer l rounded to b bits) − PPL(model)`. The output of the layer's `k_proj` or
+`v_proj` is rounded with a forward hook; keys per channel (before RoPE, as KVQuant and KIVI do) and values per
+token, in groups of `kv_group_size`. Rises are clipped at 0 and made non-increasing in *b* (noise).
+
+**Bits.** Start every tensor at the fewest bits; repeatedly take the upgrade with the largest drop in rise per
+extra bit, while the average stays within `kv_avg_bits` (default `kv_uniform_bits` = 4, so the plan is the same
+size as the uniform cache). Greedy, assuming per-tensor damages add up.
+
+**Token budget.** With eager attention, for each layer and each keep ratio *r* in `kv_keep_ratios`, the share of
+attention that lands on each query's top *r* past tokens (oracle top-k, averaged over heads and the second half
+of the queries, so each sees enough past tokens). The
+budget is the smallest *r* reaching `kv_attention_coverage` (0.95); 1.0 (no eviction) if none does.
+
+**Cost (`predict_kv`).** Per layer: `tokens = ceil(keep_ratio · kv_context_len) · kv_batch_size`; bits =
+`tokens · dim · bits` for keys and values, plus `group_overhead_bits` per `kv_group_size` rounded numbers.
+Reported: predicted KV memory (GB), average bits, share of tokens kept, sum of predicted perplexity rises, and
+mean attention kept.
+
+**Rows.** `kv_cache / original` (every key and value at `kv_uniform_bits`, nothing evicted; the FP16 row gets the
+16-bit cache size), `kv_cache / framework` (bits and budget) and `kv_cache_bits_only / framework` (bits alone,
+separating the effect of bits from the effect of eviction).
+
+**Rationale.** Stage 3 methods (KVQuant, H2O, SnapKV) need a per-layer plan, as Stage 1 does for weights. Layers
+are found by projection name, so any model with separate key and value projections works (model-agnostic).
+On TinyLlama the plan predicts 3.3 MB against 13 MB for the uniform 4-bit cache at 2,048 tokens, almost all from
+eviction; the bit choice alone is within noise at 16 passages.
 
 ---
 
@@ -534,17 +589,17 @@ combining stages is a Stage 4 question.
 ### 8.1 Purpose
 
 Shrink the KV cache by quantising it (QuaRot-KV, KVQuant) or evicting tokens (H2O, SnapKV, InfiniGen), giving
-more cache precision or retention to protected layers; measure KV memory and check it against `kv_budget_gb`
+following the Stage 0 KV cache plan (§5.8) in the framework variant; measure KV memory and check it against `kv_budget_gb`
 (S3-01 to S3-04, MET-06). Diagrams: [`stage3.md`](../diagrams/stage3.md).
 
 ### 8.2 Composition and interfaces *(proposed)*
 
 | Member | Contract |
 |---|---|
-| `KVMethod` | `name`, `kind` (`quantise` / `evict`), `wrap(model, layer_plans, candidate) -> nn.Module` (replaces the cache object used in generation). |
-| `QuaRotKV` | Rotated keys/values quantised to `candidate["quarot_k_bits"]` in compressed layers, higher in protected layers. |
+| `KVMethod` | `name`, `kind` (`quantise` / `evict`), `wrap(model, kv_plan_layers, candidate) -> nn.Module` (replaces the cache object used in generation). |
+| `QuaRotKV` | Rotated keys/values; original variant at `candidate["quarot_k_bits"]` everywhere, framework at each layer's planned key and value bits. |
 | `KVQuant` | Per-channel key quantisation before RoPE, per-token value quantisation, dense-and-sparse outliers. |
-| `H2O`, `SnapKV`, `InfiniGen` | Keep recent tokens plus the tokens with the most accumulated attention; keep budget larger in protected layers. |
+| `H2O`, `SnapKV`, `InfiniGen` | Keep recent tokens plus the tokens with the most accumulated attention; framework variant keeps each layer's planned token budget. |
 | `Stage3Config` | `methods`, `context_len` for the KV measurement. |
 | `kv_cache_gb(model, context_len) -> float` | `2 · n_layers · n_kv_heads · head_dim · context_len · bits / 8` summed per layer with each layer's bits and kept-token share. |
 
@@ -654,13 +709,14 @@ Keeping the searchers separate (not pooled) is what allows benchmarking them aga
 | MET-01, MET-02 | §4.6, §10.3 | `data.eval_windows` | `test_data_windows` |
 | MET-03 | §9.2 | — | — |
 | MET-04 … MET-08 | §4.6 | `eval/metrics.py` | `test_measure_model` |
-| MET-06 | §8.2 | — | — |
+| MET-06 | §5.8, §8.2 | `stage0/kv_cache.predict_kv` (predicted only) | `test_predict_kv` |
 | MET-09 | §4.3 | `StageReporter._sanity_check` (partial) | `test_deltas_wins_failures_and_outputs` |
 | REP-01 … REP-06, REP-08 | §4.3 | `reporting/` | `test_reporting.py` |
 | REP-07 | §4.7 | — | — |
-| S0-01 … S0-03 | §5.3 | `stage0/sensitivity.py` | `test_profile_sensitivity_on_tiny_llama`, `test_normalize`, `test_outlier_layers`, `test_outlier_layer_does_not_protect_everything` |
+| S0-01 … S0-03 | §5.3 | `stage0/sensitivity.py`, `stage0/compare.py` | `test_ablation_scores_restore_the_model`, `test_compare_scores_end_to_end`, `test_profile_sensitivity_on_tiny_llama`, `test_normalize`, `test_outlier_layers`, `test_outlier_layer_does_not_protect_everything` |
 | S0-04 … S0-07 | §5.4 | `stage0/planner.py`, `stage0/run.py` | `test_plan_and_uniform`, `test_predict_cost` |
 | S0-08, S0-09 | §5.5, §5.6 | `stage0/run.py`, `stage0/sensitivity.py` | end-to-end test |
+| S0-10 … S0-13 | §5.8 | `stage0/kv_cache.py`, `stage0/run.py` (`_kv_rows`) | `test_kv_plan_spends_bits_on_fragile_keys`, `test_predict_kv`, `test_coverage_uniform_attention`, `test_profile_kv_on_tiny_llama` |
 | S1-* | §6 | — | — |
 | S2-* | §7 | — | — |
 | S3-* | §8 | — | — |
