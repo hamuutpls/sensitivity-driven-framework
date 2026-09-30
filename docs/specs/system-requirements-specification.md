@@ -6,7 +6,7 @@
 | Standard | ISO/IEC/IEEE 29148:2018, clause 9.6 (SyRS content) |
 | System | Sensitivity-Driven Framework (`sdf`), MSc thesis codebase |
 | Owner | Mohammad (GitHub `hamuutpls`) |
-| Version | 0.2 (draft), 2026-09-30 |
+| Version | 0.3 (draft), 2026-09-30 |
 | Companion | [Subsystem Design Description](subsystem-design-description.md) (IEEE 1016-2009) |
 
 ## Change history
@@ -15,6 +15,7 @@
 |---|---|---|
 | 0.1 | 2026-09-29 | First draft, written from the thesis spec (project instructions), the v2_1 architecture diagram and the Stage 0 code on branch `stage0-sensitivity`. |
 | 0.2 | 2026-09-30 | S0-01 now names layer removal as the default sensitivity score (Mohammad's decision, 2026-09-30), with one-layer compression and gradient × weight selectable; S0-09 covers ablation scores. New S0-10 to S0-13 for the Stage 0 KV cache plan. MET-06 and S3-02 updated to match. |
+| 0.3 | 2026-09-30 | New S0-14 (pruning guard), S0-15 (activation plan for Stage 2) and S0-16 (plans returned and loadable). S2-02 names the activation plan; open issue 3 narrowed to validating it. |
 
 ---
 
@@ -215,6 +216,9 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | S0-11 | Stage 0 shall plan a token budget per decoder layer: the fewest of `kv_keep_ratios` whose most-attended tokens still receive `kv_attention_coverage` of the layer's attention. | M | Implemented | T | DEC (2026-09-30) | SDD §5.8 |
 | S0-12 | Stage 0 shall predict KV cache memory at `kv_context_len` tokens × `kv_batch_size` for the FP16 cache, the uniform cache and each plan. | M | Implemented | T | DEC (2026-09-30) | SDD §5.8 |
 | S0-13 | Stage 0 shall report the KV cache as rows original (uniform bits, no eviction), framework (bits and token budget) and framework bits only (no eviction), and save the KV profile and plans as JSON. | M | Implemented | T | DEC (2026-09-30) | SDD §5.8 |
+| S0-14 | No framework plan shall prune the `guard_top_k` layers with the highest layer-removal score, whichever score sets the bits; a removal profile shall be measured (and cached) when another score is used. | M | Implemented | T | DEC (2026-09-30) | SDD §5.4 |
+| S0-15 | Stage 0 shall plan activation bits per decoder layer for Stage 2: `act_protected_bits` for layers the weight plan protects or guards, `act_compressed_bits` elsewhere; the original variant is `act_uniform_bits` everywhere. Reported as rows `activations/original` and `activations/framework` and saved as `activation_plan.json`. | M | Implemented | T | DEC (2026-09-30) | SDD §5.9 |
+| S0-16 | `run_stage0` shall return every plan (threshold, same-size, same-size without pruning, activation, KV cache) and each plan class shall load its saved JSON (`CompressionPlan.load`, `ActivationPlan.load`, `KVPlan.load`). | M | Implemented | T | DEC (2026-09-30) | SDD §5.2 |
 
 #### 3.1.7 Stage 1: weight compression (S1)
 
@@ -230,7 +234,7 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | ID | Requirement | Pri | Status | Ver | Source | Design |
 |---|---|---|---|---|---|---|
 | S2-01 | Stage 2 shall support SmoothQuant, QuaRot, RPTQ and SpinQuant. | M | Planned | T | SPEC | SDD §7 |
-| S2-02 | In the framework variant, per-layer activation precision shall follow the Stage 0 plan. | M | Planned | T | SPEC | SDD §7 |
+| S2-02 | In the framework variant, per-layer activation precision shall follow the Stage 0 activation plan (`activation_plan.json`, S0-15). | M | Planned | T | SPEC | SDD §7 |
 | S2-03 | SmoothQuant's migration strength shall be the search parameter `smoothquant_alpha`. | M | Planned | I | SPEC | SDD §7 |
 
 #### 3.1.9 Stage 3: KV-cache compression (S3)
@@ -347,7 +351,7 @@ Current automated coverage (`main`):
 | Test file | Requirements covered |
 |---|---|
 | `tests/test_config.py` | CFG-01, CFG-02, SRCH-01 (partial), SRCH-02, CMP-04, IF-01 |
-| `tests/test_stage0.py` | S0-01 … S0-05, S0-07, CMP-07, MET-01, MET-04 … MET-07, PIPE-03 (end-to-end) |
+| `tests/test_stage0.py` | S0-01 … S0-05, S0-07, S0-14 … S0-16, CMP-07, MET-01, MET-04 … MET-07, PIPE-03 (end-to-end) |
 | `tests/test_kv_cache.py` | S0-10 … S0-12, MET-06 (predicted) |
 | `tests/test_reporting.py` | REP-02 … REP-06, REP-08, CMP-03, CMP-06 |
 
@@ -370,7 +374,7 @@ A full requirement-to-design-to-code matrix is in [SDD Appendix A](subsystem-des
 |---|---|
 | 1 | Downstream task suite (MET-03) not yet chosen. |
 | 2 | "Memory decreased" sanity check (MET-09) to be added to `StageReporter`. |
-| 3 | How the Stage 0 plan maps onto activation (Stage 2) precision is a design proposal, to be confirmed when that stage is written. Stage 3 follows the Stage 0 KV cache plan (S0-10 to S0-13). |
+| 3 | The Stage 0 activation plan (S0-15) is derived from the weight plan, not measured: it assumes a layer fragile for weights is fragile for activations. Stage 2 should check this against a measured per-layer activation sensitivity. Stage 3 follows the Stage 0 KV cache plan (S0-10 to S0-13). |
 | 4 | The fidelity schedule for MFBO (which cheaper evaluation stands in for the full one) to be fixed with the search layer. |
 
 ### 5.3 Acronyms

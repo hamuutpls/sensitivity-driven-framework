@@ -17,6 +17,7 @@
 |---|---|---|
 | 0.1 | 2026-09-29 | First draft. Implemented parts described from the code; planned parts from the thesis spec, the v2_1 diagram and `docs/diagrams/`. |
 | 0.2 | 2026-09-30 | §5.3: layer removal is the default sensitivity score; one-layer compression and gradient × weight selectable. New §5.8: the Stage 0 KV cache plan. §8 follows that plan. |
+| 0.3 | 2026-09-30 | §5.4: pruning guard. New §5.9: activation plan for Stage 2; §7.3 follows it. §5.2: `Stage0Result` returns every plan and each plan class loads its JSON. |
 
 ---
 
@@ -377,16 +378,17 @@ get, and how many earlier words each layer keeps.
 | Module | Main members |
 |---|---|
 | `stage0/sensitivity.py` | `SensitivityProfile`, `profile_by_ablation(model, batches, method, device, bits, group_size, meta)` (`layer_removal`, `layer_quant`), `profile_sensitivity(model, batches, device, meta)` (`grad_x_weight`), `normalize(scores, method)`, `outlier_layers(raw, cutoff=3.5)`, `find_decoder_layers`, `layer_shapes`, `skip_layer`, `quantize_layer` |
-| `stage0/planner.py` | `LayerPlan`, `CompressionPlan`, `plan_compression(...)`, `uniform_plan(...)`, `budget_matched_plan(...)`, `PlanCost`, `predict_cost(...)`, `baseline_cost(...)` |
-| `stage0/kv_cache.py` | `KVProfile`, `profile_kv(...)`, `KVLayerPlan`, `KVPlan`, `uniform_kv_plan(n, bits)`, `plan_kv(profile, avg_bits, coverage_target)`, `KVCost`, `predict_kv(...)` |
+| `stage0/planner.py` | `LayerPlan` (incl. `guarded`), `CompressionPlan` (`load`, `from_dict`), `guarded_layers(removal_scores, top_k)`, `plan_compression(...)`, `uniform_plan(...)`, `budget_matched_plan(...)`, `PlanCost`, `predict_cost(...)`, `baseline_cost(...)` |
+| `stage0/activation.py` | `ActivationLayerPlan`, `ActivationPlan` (`avg_bits`, `load`), `activation_plan(weight_plan, protected_bits, compressed_bits)`, `uniform_activation_plan(n, bits)` |
+| `stage0/kv_cache.py` | `KVProfile`, `profile_kv(...)`, `KVLayerPlan`, `KVPlan` (`load`), `uniform_kv_plan(n, bits)`, `plan_kv(profile, avg_bits, coverage_target)`, `KVCost`, `predict_kv(...)` |
 | `stage0/compare.py` | `compare_scores(ctx, candidate)`: profiles all three scores on the same text and reports rank agreement (`MODE = "compare_scores"`) |
-| `stage0/run.py` | `run_stage0(ctx, candidate, model=None, tokenizer=None, text_loader=None, measure_fp16=True) -> Stage0Result(plan, profile, outputs)` |
+| `stage0/run.py` | `run_stage0(ctx, candidate, model=None, tokenizer=None, text_loader=None, measure_fp16=True) -> Stage0Result(plan, profile, outputs, budget_plan, no_prune_plan, activation_plan, kv_plan, kv_plan_bits_only)`; `load_guard(...)` |
 
 **Contract handed to later stages (PIPE-03).** `CompressionPlan` JSON:
 
 ```json
 {"kind": "sensitivity", "sensitive_threshold": 0.5, "prune_ratio_aggressive": 0.3,
- "layers": [{"layer": 0, "bit_width": 4, "pruning_ratio": 0.3, "protected": false, "sensitivity": 0.0}, ...]}
+ "layers": [{"layer": 0, "bit_width": 4, "pruning_ratio": 0.3, "protected": false, "sensitivity": 0.0, "guarded": false}, ...]}
 ```
 
 `kind` is `sensitivity` (threshold plan), `budget` (size-matched plan) or `uniform` (original variant).
@@ -431,6 +433,12 @@ compressed (`compressed_bits` = 4, pruned at `prune_ratio_aggressive`).
 
 **Original variant.** Uniform: every layer `uniform_bits` = 4, pruning `uniform_prune_ratio` = 0.
 
+**Pruning guard (S0-14).** The `guard_top_k` (5) layers with the highest raw layer-removal score are never
+pruned in any framework plan (threshold and both size-matched plans); they keep the bits their plan gives
+them. When `stage0.score` is not `layer_removal`, `load_guard` measures a removal profile as well (cached like
+any profile) and its time is added to the framework rows' build time. In the size-matched plans the unpruned
+guarded layers count against the budget. The uniform original variant is not guarded: it has no Stage 0.
+
 **Size-matched plans.** Rank layers by sensitivity; protect the top *k* for the largest *k* whose predicted
 memory fits the uniform plan's. Two versions: with pruning (robust layers 4-bit, pruned) and without pruning
 (robust layers `no_prune_compressed_bits` = 3, nothing removed), the second isolating the effect of the
@@ -454,7 +462,7 @@ plans are measured once Stage 1 applies them.
 
 Outputs in `stage_0/`: `report.md`, `stage_0_comparison.xlsx`, `results.json`, `compression_plan.json`,
 `compression_plan_budget_matched*.json`, `sensitivity_profile.json`, and with the KV cache plan `kv_profile.json`,
-`kv_cache_plan.json`, `kv_cache_plan_bits_only.json`. The KV profile is cached under `kv_profile/`, keyed by
+`kv_cache_plan.json`, `kv_cache_plan_bits_only.json`, and `activation_plan.json`. The KV profile is cached under `kv_profile/`, keyed by
 model, calibration text, `kv_calib_samples`, bits options, group size, keep ratios and module names. The profile is cached under
 `sensitivity_profile/` keyed by model and calibration settings only, so a trial that changes
 `sensitive_threshold` or `prune_ratio_aggressive` re-plans in milliseconds (S0-08, PERF-02). Normalisation is
@@ -505,6 +513,14 @@ separating the effect of bits from the effect of eviction).
 are found by projection name, so any model with separate key and value projections works (model-agnostic).
 On TinyLlama the plan predicts 3.3 MB against 13 MB for the uniform 4-bit cache at 2,048 tokens, almost all from
 eviction; the bit choice alone is within noise at 16 passages.
+
+### 5.9 Algorithm: activation plan (S0-15)
+
+Derived, not measured. Per decoder layer: `act_protected_bits` (8) if the weight plan (threshold plan)
+protects or guards the layer, else `act_compressed_bits` (4). The original variant is `act_uniform_bits` (8) on
+every layer. Rows `activations/original` and `activations/framework` report `avg_activation_bits`. Assumption:
+a layer fragile for weights is fragile for activations; Stage 2 should confirm it with a measured per-layer
+activation sensitivity (SyRS §5.2 #3).
 
 ---
 
@@ -568,13 +584,13 @@ and the plan, not from Stage 1's output (PIPE-02). Diagrams: [`stage2.md`](../di
 | `QuaRot`, `SpinQuant` | Rotate hidden states with a Hadamard (QuaRot) or learned (SpinQuant) orthogonal matrix, folded into the weights, so outliers spread evenly. |
 | `RPTQ` | Cluster and reorder channels by range, quantise each cluster with its own scale. |
 | `ChannelStats` | `collect(model, batches)`: per-channel max-abs and outlier channels. |
-| `Stage2Config` | `methods`, `protected_act_bits` *(proposed 8)*, `compressed_act_bits` *(proposed 4)*. |
+| `Stage2Config` | `methods`; activation bits come from the Stage 0 activation plan (`stage0.act_*`). |
 | `run_stage2(ctx, candidate, stage0) -> StageResult` | Same three-variant protocol as Stage 1. |
 
 ### 7.3 Mapping the plan (open issue SyRS §5.2 #3)
 
-Proposed: a layer protected in the plan gets `protected_act_bits` for its input activations, others get
-`compressed_act_bits`. The rotation or smoothing transform itself is applied to every layer, since it does not
+Stage 2 reads `activation_plan.json` (§5.9): a layer the weight plan protects or guards gets
+`act_protected_bits` for its input activations, others get `act_compressed_bits`. The rotation or smoothing transform itself is applied to every layer, since it does not
 change the output before rounding.
 
 ### 7.4 Rationale
@@ -717,6 +733,7 @@ Keeping the searchers separate (not pooled) is what allows benchmarking them aga
 | S0-04 … S0-07 | §5.4 | `stage0/planner.py`, `stage0/run.py` | `test_plan_and_uniform`, `test_predict_cost` |
 | S0-08, S0-09 | §5.5, §5.6 | `stage0/run.py`, `stage0/sensitivity.py` | end-to-end test |
 | S0-10 … S0-13 | §5.8 | `stage0/kv_cache.py`, `stage0/run.py` (`_kv_rows`) | `test_kv_plan_spends_bits_on_fragile_keys`, `test_predict_kv`, `test_coverage_uniform_attention`, `test_profile_kv_on_tiny_llama` |
+| S0-14 … S0-16 | §5.2, §5.4, §5.9 | `stage0/planner.py`, `stage0/activation.py`, `stage0/run.py` | `test_guard_blocks_pruning_of_critical_layers`, `test_activation_plan_follows_weight_plan`, `test_guard_uses_layer_removal_when_another_score_picks_bits`, end-to-end test |
 | S1-* | §6 | — | — |
 | S2-* | §7 | — | — |
 | S3-* | §8 | — | — |

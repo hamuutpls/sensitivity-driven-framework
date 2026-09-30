@@ -77,6 +77,7 @@ classDiagram
         +float pruning_ratio
         +bool protected
         +float sensitivity
+        +bool guarded
     }
     class CompressionPlan {
         +tuple~LayerPlan~ layers
@@ -85,8 +86,27 @@ classDiagram
         +float prune_ratio_aggressive
         +protected_layers() list
         +compressed_layers() list
+        +guarded_layers() list
         +to_dict() dict
         +save(path)
+        +load(path) CompressionPlan
+    }
+    class ActivationLayerPlan {
+        +int layer
+        +int act_bits
+        +bool protected
+    }
+    class ActivationPlan {
+        +tuple~ActivationLayerPlan~ layers
+        +str kind
+        +avg_bits() float
+        +save(path)
+        +load(path) ActivationPlan
+    }
+    class activation {
+        <<module>>
+        +activation_plan(weight_plan, protected_bits, compressed_bits) ActivationPlan
+        +uniform_activation_plan(num_layers, bits) ActivationPlan
     }
     class PlanCost {
         +float weight_memory_gb
@@ -100,6 +120,11 @@ classDiagram
         +CompressionPlan plan
         +SensitivityProfile profile
         +dict outputs
+        +CompressionPlan budget_plan
+        +CompressionPlan no_prune_plan
+        +ActivationPlan activation_plan
+        +KVPlan kv_plan
+        +KVPlan kv_plan_bits_only
     }
     class _ModelHandle {
         +tokenizer
@@ -127,6 +152,7 @@ classDiagram
         +tuple~KVLayerPlan~ layers
         +str kind
         +save(path)
+        +load(path) KVPlan
     }
     class KVCost {
         +float memory_gb
@@ -154,18 +180,20 @@ classDiagram
     }
     class planner {
         <<module>>
-        +plan_compression(scores, threshold, prune_ratio, protected_bits, compressed_bits) CompressionPlan
+        +guarded_layers(removal_scores, top_k) frozenset
+        +plan_compression(scores, threshold, prune_ratio, protected_bits, compressed_bits, guarded) CompressionPlan
         +uniform_plan(scores, bits, prune_ratio) CompressionPlan
-        +budget_matched_plan(scores, budget_gb, prune_ratio, protected_bits, compressed_bits, cost) CompressionPlan
+        +budget_matched_plan(scores, budget_gb, prune_ratio, protected_bits, compressed_bits, cost, guarded) CompressionPlan
         +predict_cost(plan, profile, group_size, group_overhead_bits, baseline_bits) PlanCost
         +baseline_cost(profile, baseline_bits) PlanCost
     }
     class run {
         <<module>>
         +run_stage0(ctx, candidate, model, tokenizer, text_loader, measure_fp16) Stage0Result
-        +load_profile(ctx, candidate, handle, text_loader) tuple
+        +load_profile(ctx, candidate, handle, text_loader, score) tuple
+        +load_guard(ctx, candidate, handle, text_loader, profile) tuple
         +load_kv_profile(ctx, candidate, handle, text_loader) tuple
-        +profile_key(ctx, candidate) dict
+        +profile_key(ctx, candidate, score) dict
         +kv_profile_key(ctx, candidate) dict
         +fp16_key(ctx, device) dict
     }
@@ -181,6 +209,12 @@ classDiagram
     CompressionPlan *-- LayerPlan
     Stage0Result *-- CompressionPlan
     Stage0Result *-- SensitivityProfile
+    Stage0Result *-- ActivationPlan
+    Stage0Result *-- KVPlan
+    ActivationPlan *-- ActivationLayerPlan
+    activation ..> ActivationPlan : builds
+    activation ..> CompressionPlan : reads protected and guarded layers
+    run ..> activation
     sensitivity ..> SensitivityProfile : builds
     planner ..> CompressionPlan : builds
     planner ..> PlanCost : predicts

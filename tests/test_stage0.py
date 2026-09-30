@@ -8,8 +8,11 @@ from sdf.data import calibration_batches, eval_windows
 from sdf.eval.metrics import measure_model, model_size_gb
 from sdf.run import start_run
 from sdf.search_space import PER_CHANNEL, SEARCH_SPACE
-from sdf.stage0.planner import baseline_cost, budget_matched_plan, plan_compression, predict_cost, uniform_plan
-from sdf.stage0.run import run_stage0
+from sdf.stage0.activation import ActivationPlan, activation_plan
+from sdf.stage0.kv_cache import KVPlan
+from sdf.stage0.planner import (CompressionPlan, baseline_cost, budget_matched_plan, guarded_layers, plan_compression,
+                                predict_cost, uniform_plan)
+from sdf.stage0.run import profile_key, run_stage0
 from sdf.stage0.sensitivity import SensitivityProfile, normalize, outlier_layers, profile_sensitivity
 from sdf.utils.model_info import count_parameters
 from conftest import fake_texts
@@ -90,6 +93,39 @@ def test_plan_and_uniform():
         plan_compression(TOY_SCORES, 0.5, 1.0, 8, 4)
 
 
+def test_guard_blocks_pruning_of_critical_layers():
+    # TinyLlama layer removal: 0, 2, 7, 21, 1 hurt most. Here: layer 0 is critical but ranks least sensitive,
+    # as it does under gradient x weight.
+    removal = [1190.0, 20.0, 5.0, 900.0]
+    guard = guarded_layers(removal, 2)
+    assert guard == {0, 3}
+    assert guarded_layers(removal, 0) == frozenset()
+    with pytest.raises(ValueError):
+        guarded_layers(removal, -1)
+
+    plan = plan_compression(TOY_SCORES, 0.9, 0.3, 8, 4, guard)
+    assert plan.guarded_layers == [0, 3]
+    assert [lp.pruning_ratio for lp in plan.layers] == [0.0, 0.3, 0.3, 0.0]
+    assert plan.layers[0].bit_width == 4  # the guard blocks pruning only, bits still follow the plan
+
+    prof = toy_profile()
+    cost = lambda p: predict_cost(p, prof, 100, 32, 16)  # noqa: E731
+    budget = cost(uniform_plan(TOY_SCORES, 4, 0.0)).weight_memory_gb
+    same = budget_matched_plan(TOY_SCORES, budget, 0.5, 8, 4, cost, guard)
+    assert all(same.layers[i].pruning_ratio == 0 for i in guard)
+    assert cost(same).weight_memory_gb <= budget  # the unpruned guarded layers are paid for within the budget
+
+    assert CompressionPlan.from_dict(plan.to_dict()) == plan
+
+
+def test_activation_plan_follows_weight_plan():
+    plan = plan_compression(TOY_SCORES, 0.5, 0.3, 8, 4, frozenset({0}))
+    act = activation_plan(plan, 8, 4)
+    assert [lp.act_bits for lp in act.layers] == [8, 4, 8, 8]  # protected 2, 3 and guarded 0
+    assert act.avg_bits == 7.0
+    assert ActivationPlan.from_dict(act.to_dict()) == act
+
+
 def test_predict_cost():
     prof = toy_profile()
     fp16 = baseline_cost(prof, 16)
@@ -142,13 +178,14 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     stage_dir = ctx.run_dir / "stage_0"
     for name in ("report.md", "stage_0_comparison.xlsx", "results.json", "compression_plan.json",
                  "compression_plan_budget_matched_no_prune.json", "sensitivity_profile.json",
-                 "kv_cache_plan.json", "kv_cache_plan_bits_only.json", "kv_profile.json"):
+                 "kv_cache_plan.json", "kv_cache_plan_bits_only.json", "kv_profile.json", "activation_plan.json"):
         assert (stage_dir / name).exists(), name
     data = json.loads((stage_dir / "results.json").read_text())
     rows = {f"{r['method']}/{r['variant']}": r for r in data["rows"]}
     assert set(rows) == {"baseline/fp16", "allocation/original", "allocation/framework",
                          "allocation_same_size/framework", "allocation_same_size_no_prune/framework",
-                         "kv_cache/original", "kv_cache/framework", "kv_cache_bits_only/framework"}
+                         "kv_cache/original", "kv_cache/framework", "kv_cache_bits_only/framework",
+                         "activations/original", "activations/framework"}
     kv_fw, kv_un = rows["kv_cache/framework"]["metrics"], rows["kv_cache/original"]["metrics"]
     assert kv_fw["predicted_kv_memory_gb"] <= kv_un["predicted_kv_memory_gb"] * (1 + 1e-9)
     assert kv_fw["avg_kv_bits"] <= 4 + 1e-9
@@ -167,6 +204,18 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     fw = rows["allocation/framework"]
     assert fw["metrics"]["protected_layers"] == len(res.plan.protected_layers)
     assert "vs_original_abs" in fw["deltas"]["sensitivity_exposure"]
+
+    # the plans later stages read: returned, and loadable from the JSON files
+    assert len(res.plan.guarded_layers) == 1
+    for p in (res.plan, res.budget_plan, res.no_prune_plan):
+        assert all(p.layers[i].pruning_ratio == 0 for i in p.guarded_layers)
+    assert CompressionPlan.load(stage_dir / "compression_plan.json") == res.plan
+    assert CompressionPlan.load(stage_dir / "compression_plan_budget_matched.json") == res.budget_plan
+    assert KVPlan.load(stage_dir / "kv_cache_plan.json") == res.kv_plan
+    assert KVPlan.load(stage_dir / "kv_cache_plan_bits_only.json") == res.kv_plan_bits_only
+    assert ActivationPlan.load(stage_dir / "activation_plan.json") == res.activation_plan
+    assert rows["activations/framework"]["metrics"]["avg_activation_bits"] == res.activation_plan.avg_bits
+    assert rows["activations/original"]["metrics"]["avg_activation_bits"] == 8
     assert len(data["per_layer"]) == 4
     wb = load_workbook(stage_dir / "stage_0_comparison.xlsx")
     assert wb["Per-layer"].max_row == 5
@@ -201,6 +250,18 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     assert notes.count("\n- **") == header.count("|") - 1  # one explanation per column
     assert "- **Raw score**: How much the prediction error" in layer_part
     assert "## Original model" in report and f"{n_params:,}" in report
+    assert "Pruning guard" in report and "Activation plan (for Stage 2)" in report
+
+
+def test_guard_uses_layer_removal_when_another_score_picks_bits(tiny_llama, tokenizer, small_cfg):
+    cfg = small_cfg.with_overrides({"stage0.score": "grad_x_weight", "stage0.kv_cache": False})
+    ctx = start_run(cfg)
+    cand = SEARCH_SPACE.make({"calib_samples": 16})
+    res = run_stage0(ctx, cand, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts, measure_fp16=False)
+    assert res.profile.method == "grad_x_weight"
+    assert len(res.plan.guarded_layers) == 1
+    # the removal profile behind the guard was measured and cached next to the gradient one
+    assert ctx.cache.path("sensitivity_profile", profile_key(ctx, cand, "layer_removal")).exists()
 
 
 def test_sweep_end_to_end(tiny_llama, tokenizer, small_cfg):

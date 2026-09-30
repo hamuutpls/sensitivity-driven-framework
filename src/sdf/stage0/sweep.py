@@ -21,7 +21,7 @@ from sdf.data import load_texts
 from sdf.reporting.markdown import original_model_lines
 from sdf.run import RunContext
 from sdf.search_space import PER_CHANNEL, SEARCH_SPACE
-from sdf.stage0.planner import budget_matched_plan, plan_compression, predict_cost, uniform_plan
+from sdf.stage0.planner import budget_matched_plan, guarded_layers, plan_compression, predict_cost, uniform_plan
 from sdf.stage0.run import _ModelHandle, load_profile, original_model_info
 from sdf.stage0.sensitivity import SensitivityProfile, normalize, outlier_layers
 from sdf.utils.cache import atomic_write_text
@@ -52,18 +52,22 @@ def plan_rows(profile: SensitivityProfile, calib: dict[str, Any], grid: dict[str
               s0) -> list[dict[str, Any]]:
     """One row per (threshold, prune ratio, group size): the framework, same-size and no-prune plans vs uniform."""
     scores = normalize(profile.raw_scores, s0.normalization)
+    # The sweep guards only when the profile is itself a layer-removal one (the default score); run_stage0
+    # measures a removal profile for the guard whatever the score.
+    guard = guarded_layers(profile.raw_scores, s0.guard_top_k) if profile.method == "layer_removal" else frozenset()
     rows = []
     for gs in grid["gptq_groupsize"]:
         cost = functools.partial(predict_cost, profile=profile, group_size=gs,
                                  group_overhead_bits=s0.group_overhead_bits, baseline_bits=s0.baseline_bits)
         uni = cost(uniform_plan(scores, s0.uniform_bits, s0.uniform_prune_ratio))
         no_prune = budget_matched_plan(scores, uni.weight_memory_gb, 0.0, s0.protected_bits,
-                                       s0.no_prune_compressed_bits, cost)
+                                       s0.no_prune_compressed_bits, cost, guard)
         np_cost = cost(no_prune)
         for t, pr in itertools.product(grid["sensitive_threshold"], grid["prune_ratio_aggressive"]):
-            fw_plan = plan_compression(scores, t, pr, s0.protected_bits, s0.compressed_bits)
+            fw_plan = plan_compression(scores, t, pr, s0.protected_bits, s0.compressed_bits, guard)
             fw = cost(fw_plan)
-            same = budget_matched_plan(scores, uni.weight_memory_gb, pr, s0.protected_bits, s0.compressed_bits, cost)
+            same = budget_matched_plan(scores, uni.weight_memory_gb, pr, s0.protected_bits, s0.compressed_bits, cost,
+                                       guard)
             sc = cost(same)
             rows.append({
                 **calib, "sensitive_threshold": t, "prune_ratio_aggressive": pr, "gptq_groupsize": gs,

@@ -17,12 +17,14 @@ from sdf.run import RunContext
 from sdf.stage0.planner import (
     CompressionPlan,
     budget_matched_plan,
+    guarded_layers,
     PlanCost,
     baseline_cost,
     plan_compression,
     predict_cost,
     uniform_plan,
 )
+from sdf.stage0.activation import ActivationPlan, activation_plan, uniform_activation_plan
 from sdf.stage0.kv_cache import KVCost, KVPlan, KVProfile, plan_kv, predict_kv, profile_kv, uniform_kv_plan
 from sdf.stage0.sensitivity import (
     SCORES,
@@ -43,11 +45,12 @@ METHOD_BUDGET = "allocation_same_size"
 METHOD_NO_PRUNE = "allocation_same_size_no_prune"
 METHOD_KV = "kv_cache"
 METHOD_KV_BITS = "kv_cache_bits_only"
+METHOD_ACT = "activations"
 MAIN_METRICS = ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "peak_memory_gb", "prefill_ms_mean",
                 "decode_ms_per_token_mean",
                 "avg_bits_per_weight", "sparsity", "sensitivity_exposure",
                 "predicted_kv_memory_gb", "avg_kv_bits", "kv_kept_share", "predicted_kv_ppl_rise",
-                "kv_attention_kept", "build_time_s"]
+                "kv_attention_kept", "avg_activation_bits", "build_time_s"]
 
 
 # What the per-layer "Raw score" column holds, per sensitivity score.
@@ -63,9 +66,17 @@ _RAW_SCORE_MEANING = {
 
 @dataclass
 class Stage0Result:
-    plan: CompressionPlan
+    """Everything later stages take from Stage 0. Each plan is also saved as JSON next to the report and can be
+    read back with its class's `load` (CompressionPlan, KVPlan, ActivationPlan)."""
+
+    plan: CompressionPlan  # Stage 1: bits and pruning per layer (threshold plan)
     profile: SensitivityProfile
     outputs: dict[str, Path]
+    budget_plan: CompressionPlan | None = None  # same size as the uniform plan
+    no_prune_plan: CompressionPlan | None = None  # same size, nothing pruned
+    activation_plan: ActivationPlan | None = None  # Stage 2: activation bits per layer
+    kv_plan: KVPlan | None = None  # Stage 3: key/value bits and token budget per layer
+    kv_plan_bits_only: KVPlan | None = None
 
 
 class _ModelHandle:
@@ -108,12 +119,13 @@ def original_model_info(ctx: RunContext, handle: _ModelHandle,
         return {"name": name}
 
 
-def profile_key(ctx: RunContext, cand: dict[str, Any]) -> dict[str, Any]:
+def profile_key(ctx: RunContext, cand: dict[str, Any], score: str | None = None) -> dict[str, Any]:
     cfg = ctx.cfg
-    key = {"model": cfg.model.name, "profile_dtype": cfg.stage0.profile_dtype, "score": cfg.stage0.score,
+    score = score or cfg.stage0.score
+    key = {"model": cfg.model.name, "profile_dtype": cfg.stage0.profile_dtype, "score": score,
            "calib_dataset": cand["calib_dataset"], "calib_samples": cand["calib_samples"],
            "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size, "seed": cfg.run.seed}
-    if cfg.stage0.score == "layer_quant":  # the per-layer compression depends on these too
+    if score == "layer_quant":  # the per-layer compression depends on these too
         key.update(bits=cfg.stage0.compressed_bits, group_size=cand["gptq_groupsize"])
     return key
 
@@ -160,28 +172,45 @@ def _kv_metrics(cost: KVCost) -> dict[str, float]:
 
 
 def load_profile(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
-                 text_loader: Callable[[str, str], list[str]]) -> tuple[SensitivityProfile, bool]:
-    """The sensitivity profile for this calibration setting; it depends on nothing else, so it is cached."""
+                 text_loader: Callable[[str, str], list[str]],
+                 score: str | None = None) -> tuple[SensitivityProfile, bool]:
+    """The sensitivity profile for this calibration setting; it depends on nothing else, so it is cached.
+    `score` defaults to stage0.score."""
     cfg = ctx.cfg
+    score = score or cfg.stage0.score
 
     def compute() -> dict[str, Any]:
         batches = calibration_batches(text_loader(candidate["calib_dataset"], "train"), handle.tokenizer,
                                       candidate["calib_samples"], cfg.calibration.seq_len,
                                       cfg.calibration.batch_size, cfg.run.seed)
         s0 = cfg.stage0
-        if s0.score == "grad_x_weight":
+        if score == "grad_x_weight":
             prof = profile_sensitivity(handle.model(s0.profile_dtype), batches, device=handle.device,
-                                       meta=profile_key(ctx, candidate))
-        elif s0.score in ("layer_removal", "layer_quant"):
-            prof = profile_by_ablation(handle.model(s0.profile_dtype), batches, s0.score, device=handle.device,
+                                       meta=profile_key(ctx, candidate, score))
+        elif score in ("layer_removal", "layer_quant"):
+            prof = profile_by_ablation(handle.model(s0.profile_dtype), batches, score, device=handle.device,
                                        bits=s0.compressed_bits, group_size=candidate["gptq_groupsize"],
-                                       meta=profile_key(ctx, candidate))
+                                       meta=profile_key(ctx, candidate, score))
         else:
-            raise ValueError(f"unknown stage0.score {s0.score!r}; choose from {SCORES}")
+            raise ValueError(f"unknown stage0.score {score!r}; choose from {SCORES}")
         return prof.to_dict()
 
-    prof_dict, cached = ctx.cache.get_or_compute("sensitivity_profile", profile_key(ctx, candidate), compute)
+    prof_dict, cached = ctx.cache.get_or_compute("sensitivity_profile", profile_key(ctx, candidate, score), compute)
     return SensitivityProfile.from_dict(prof_dict), cached
+
+
+def load_guard(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
+               text_loader: Callable[[str, str], list[str]],
+               profile: SensitivityProfile) -> tuple[frozenset[int], float]:
+    """Layers no plan may prune, and the extra profiling seconds it took. The guard always ranks by layer
+    removal; when that is not the score picking the bits, a removal profile is measured (and cached) too."""
+    k = ctx.cfg.stage0.guard_top_k
+    if k == 0:
+        return frozenset(), 0.0
+    if profile.method == "layer_removal":
+        return guarded_layers(profile.raw_scores, k), 0.0
+    removal, _ = load_profile(ctx, candidate, handle, text_loader, score="layer_removal")
+    return guarded_layers(removal.raw_scores, k), removal.cost.get("wall_clock_s", 0.0)
 
 
 def run_stage0(
@@ -200,6 +229,8 @@ def run_stage0(
     profile, prof_cached = load_profile(ctx, candidate, handle, text_loader)
     # The only place scores are normalised: cheap, so not cached, and changing the method reuses the profile.
     scores = normalize(profile.raw_scores, s0.normalization)
+    guarded, guard_s = load_guard(ctx, candidate, handle, text_loader, profile)
+    profiling_s = profile.cost["wall_clock_s"] + guard_s  # true cost of a plan, even when cached this time
 
     rep = StageReporter(
         stage=0, run_dir=ctx.run_dir, title="Sensitivity profiling and compression planning",
@@ -250,12 +281,11 @@ def run_stage0(
                                 f"prune {candidate['prune_ratio_aggressive']:.3g} on robust layers)") as row:
         t0 = time.perf_counter()
         plan = plan_compression(scores, candidate["sensitive_threshold"], candidate["prune_ratio_aggressive"],
-                                s0.protected_bits, s0.compressed_bits)
+                                s0.protected_bits, s0.compressed_bits, guarded)
         planning_s = time.perf_counter() - t0
         row.metrics.update(_cost_metrics(predict(plan)))
         row.metrics["protected_layers"] = len(plan.protected_layers)
-        # True cost of producing the plan, even when the profile came from cache this time.
-        row.metrics["build_time_s"] = profile.cost["wall_clock_s"] + planning_s
+        row.metrics["build_time_s"] = profiling_s + planning_s
         row.info.update(profile_cached=prof_cached, profiling_cost=profile.cost)
 
     # --- framework at the same size as the original method --------------------------------------------------
@@ -272,10 +302,10 @@ def run_stage0(
                                 "predicted memory") as row:
         t0 = time.perf_counter()
         budget = budget_matched_plan(scores, predict(uniform).weight_memory_gb, candidate["prune_ratio_aggressive"],
-                                     s0.protected_bits, s0.compressed_bits, predict)
+                                     s0.protected_bits, s0.compressed_bits, predict, guarded)
         row.metrics.update(_cost_metrics(predict(budget)))
         row.metrics["protected_layers"] = len(budget.protected_layers)
-        row.metrics["build_time_s"] = profile.cost["wall_clock_s"] + time.perf_counter() - t0
+        row.metrics["build_time_s"] = profiling_s + time.perf_counter() - t0
         row.info["budget_gb"] = predict(uniform).weight_memory_gb
 
     # --- same size, no pruning ---------------------------------------------------------------------------------
@@ -292,11 +322,29 @@ def run_stage0(
                                 f"layers at {s0.no_prune_compressed_bits} bits") as row:
         t0 = time.perf_counter()
         no_prune = budget_matched_plan(scores, predict(uniform).weight_memory_gb, 0.0, s0.protected_bits,
-                                       s0.no_prune_compressed_bits, predict)
+                                       s0.no_prune_compressed_bits, predict, guarded)
         row.metrics.update(_cost_metrics(predict(no_prune)))
         row.metrics["protected_layers"] = len(no_prune.protected_layers)
-        row.metrics["build_time_s"] = profile.cost["wall_clock_s"] + time.perf_counter() - t0
+        row.metrics["build_time_s"] = profiling_s + time.perf_counter() - t0
         row.info["budget_gb"] = predict(uniform).weight_memory_gb
+
+    # --- activation plan for Stage 2, derived from the weight plan (not measured; see stage0/activation.py) -----
+    act = None
+    with rep.method(METHOD_ACT, "original", label="Standard method: activations",
+                    plain_desc=f"every layer's activations at {s0.act_uniform_bits} bits.",
+                    description=f"uniform {s0.act_uniform_bits}-bit activations") as row:
+        row.metrics["avg_activation_bits"] = uniform_activation_plan(len(scores), s0.act_uniform_bits).avg_bits
+        row.metrics["protected_layers"] = 0
+    with rep.method(METHOD_ACT, "framework", label="Sensitivity-guided framework: activations",
+                    plain_desc=f"layers the weight plan protects or guards keep {s0.act_protected_bits}-bit "
+                               f"activations, the rest drop to {s0.act_compressed_bits} bits.",
+                    description=f"activations {s0.act_protected_bits}-bit on protected/guarded layers, "
+                                f"{s0.act_compressed_bits}-bit elsewhere (from the weight plan)") as row:
+        if plan is None:
+            raise RuntimeError("no weight plan to derive the activation plan from")
+        act = activation_plan(plan, s0.act_protected_bits, s0.act_compressed_bits)
+        row.metrics["avg_activation_bits"] = act.avg_bits
+        row.metrics["protected_layers"] = sum(lp.protected for lp in act.layers)
 
     kv = _kv_rows(ctx, candidate, handle, text_loader, rep) if s0.kv_cache else None
 
@@ -304,7 +352,7 @@ def run_stage0(
         rep.finalize()
         raise RuntimeError(f"Stage 0 planning failed; see {rep.report_path}")
 
-    _add_stage0_details(rep, profile, plan, uniform, budget, no_prune, predict, s0.baseline_bits)
+    _add_stage0_details(rep, profile, plan, uniform, budget, no_prune, predict, s0.baseline_bits, guarded, act)
     if budget is not None:
         budget.save(rep.dir / "compression_plan_budget_matched.json")
     if no_prune is not None:
@@ -314,25 +362,33 @@ def run_stage0(
         kv[0].save(rep.dir / "kv_profile.json")
         kv[1].save(rep.dir / "kv_cache_plan.json")
         kv[2].save(rep.dir / "kv_cache_plan_bits_only.json")
+    if act is not None:
+        act.save(rep.dir / "activation_plan.json")
     plan.save(rep.dir / "compression_plan.json")
     profile.save(rep.dir / "sensitivity_profile.json")
-    return Stage0Result(plan=plan, profile=profile, outputs=rep.finalize())
+    return Stage0Result(plan=plan, profile=profile, outputs=rep.finalize(), budget_plan=budget,
+                        no_prune_plan=no_prune, activation_plan=act,
+                        kv_plan=kv[1] if kv is not None else None, kv_plan_bits_only=kv[2] if kv is not None else None)
 
 
 def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: CompressionPlan,
                         uniform: CompressionPlan, budget: CompressionPlan | None,
                         no_prune: CompressionPlan | None,
-                        predict: Callable[[CompressionPlan], PlanCost], baseline_bits: int) -> None:
+                        predict: Callable[[CompressionPlan], PlanCost], baseline_bits: int,
+                        guarded: frozenset[int], act: ActivationPlan | None) -> None:
     fw_cost, un_cost = predict(plan), predict(uniform)
     outliers = outlier_layers(profile.raw_scores)
     budget_layers = budget.layers if budget is not None else [None] * len(plan.layers)
     no_prune_layers = no_prune.layers if no_prune is not None else [None] * len(plan.layers)
-    for lp, ul, bl, nl, raw, numel, fw_mb, un_mb in zip(plan.layers, uniform.layers, budget_layers, no_prune_layers,
-                                                    profile.raw_scores, profile.layer_numel,
-                                                    fw_cost.per_layer_mb, un_cost.per_layer_mb):
+    act_layers = act.layers if act is not None else [None] * len(plan.layers)
+    for lp, ul, bl, nl, al, raw, numel, fw_mb, un_mb in zip(plan.layers, uniform.layers, budget_layers,
+                                                            no_prune_layers, act_layers, profile.raw_scores,
+                                                            profile.layer_numel, fw_cost.per_layer_mb,
+                                                            un_cost.per_layer_mb):
         rep.per_layer.append({
             "layer": lp.layer, "sensitivity": lp.sensitivity, "raw_score": raw, "outlier": lp.layer in outliers,
-            "weights": numel,
+            "weights": numel, "guarded": lp.guarded,
+            "activation_bits": None if al is None else al.act_bits,
             "framework_protected": lp.protected, "framework_bits": lp.bit_width,
             "framework_prune_ratio": lp.pruning_ratio, "framework_predicted_mb": fw_mb,
             "same_size_protected": None if bl is None else bl.protected,
@@ -359,6 +415,19 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
         "Stage 0 only allocates precision, so memory here is predicted from the plan. Accuracy and latency of "
         "the two allocations are measured once Stage 1 applies them.",
     ])))
+
+    k = rep.config["stage0"]["guard_top_k"]
+    rep.sections.append(("Pruning guard", (
+        f"Never pruned in any framework plan: layers {sorted(guarded)}, the {k} whose removal raises perplexity "
+        "most (layer-removal score). They keep the bits their plan gives them; only pruning is blocked."
+        if guarded else "Off (stage0.guard_top_k = 0): any layer may be pruned.")))
+    if act is not None:
+        rep.sections.append(("Activation plan (for Stage 2)", (
+            f"Activation bits per layer come from the weight plan, not from a measurement: layers it protects or "
+            f"guards keep {rep.config['stage0']['act_protected_bits']} bits, the rest drop to "
+            f"{rep.config['stage0']['act_compressed_bits']}; average {act.avg_bits:.2f} bits. "
+            "This assumes a layer fragile for weights is fragile for activations too; Stage 2 should confirm it "
+            "against a measured activation sensitivity. Saved as activation_plan.json.")))
 
     fixed = fw_cost.fixed_memory_gb
     rep.sections.append(("Size floor", (
@@ -579,7 +648,11 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
          ("framework_protected", "Protected (framework plan)", "\"yes\" if the framework plan keeps this layer "
           "at high precision because its sensitivity is at or above the threshold."),
          ("framework_prune_ratio", "Share removed (framework plan)", "Share of the layer's numbers the "
-          "framework plan deletes (0.3 means 30%); protected layers lose nothing."),
+          "framework plan deletes (0.3 means 30%); protected and guarded layers lose nothing."),
+         ("guarded", "Never pruned", "\"yes\" for the layers the model depends on most (removing one alone "
+          "hurts the most), which no plan may trim, whatever their sensitivity score."),
+         ("activation_bits", "Activation bits (framework)", "Bits for the numbers flowing into this layer, "
+          "planned for Stage 2: protected and never-pruned layers keep more bits, the rest fewer."),
          ("same_size_protected", "Protected (same-size plan)", "\"yes\" if the plan that fits in the standard "
           "method's memory protects this layer. It protects the most sensitive layers first, as many as fit."),
          ("same_size_prune_ratio", "Share removed (same-size plan)", "Share of the layer's numbers the "
