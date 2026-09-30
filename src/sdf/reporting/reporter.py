@@ -45,12 +45,12 @@ VARIANT_PLAIN = {
 # Terms every report uses. Stages add their own with `glossary`.
 BASE_GLOSSARY = {
     "Language model": "A program that has learned from large amounts of text to predict the next word. "
-                      "Chat assistants are built on these. The one used here is TinyLlama, a small open model "
-                      "with about 1.1 billion numbers inside it.",
+                      "Chat assistants are built on these. The one used here is described under "
+                      "\"Original model\".",
     "Compression": "Making the model smaller and faster by storing its numbers with less detail or removing "
                    "some of them, ideally without making its answers worse.",
     "Layer": "The model is a stack of similar building blocks called layers; text passes through them one "
-             "after another (TinyLlama has 22).",
+             "after another.",
     "Bits": "Computers store numbers as strings of 0s and 1s (bits). More bits per number keeps more detail "
             "but takes more space. The uncompressed model uses 16 bits per number.",
     "FP16": "\"16-bit floating point\", the standard precise format the model is published in.",
@@ -93,6 +93,7 @@ class StageReporter:
         conditions: dict[str, Any],
         requirement: DeploymentRequirement,
         main_metrics: list[str],
+        original_model: dict[str, Any] | None = None,
     ):
         self.stage = stage
         self.title = title
@@ -103,6 +104,8 @@ class StageReporter:
         self.conditions = conditions  # the identical conditions every row shares (calibration, seed, eval data...)
         self.requirement = requirement
         self.main_metrics = main_metrics
+        # The uncompressed model's parameters (sdf.utils.model_info.describe_model), shown in every report.
+        self.original_model: dict[str, Any] = dict(original_model or {})
         self.rows: list[ComparisonRow] = []
         self.per_layer: list[dict[str, Any]] = []
         self.raw: list[dict[str, Any]] = []
@@ -223,6 +226,7 @@ class StageReporter:
             "started": self.started,
             "config": self.config,
             "conditions": self.conditions,
+            "original_model": self.original_model,
             "environment": self.environment,
             "requirement": asdict(self.requirement),
             "rows": [asdict(r) for r in self.rows],

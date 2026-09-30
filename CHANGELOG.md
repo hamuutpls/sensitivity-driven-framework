@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-09-30: Every report describes the original model
+
+- New `utils/model_info.py`: `describe_model(config, name, num_parameters)` reads the original model's
+  parameters from its Hugging Face config (architecture, parameter count, layers, hidden size, feed-forward
+  size, attention heads, key/value heads, numbers per head, vocabulary, maximum context, published number
+  format, bits per number, size at 16 bits, shared word tables). Fields a model's config lacks are left out,
+  so it works for any model.
+- `StageReporter(original_model=...)`: an "Original model" section near the top of `report.md` (value and a
+  plain-language meaning for each), `original_model.*` rows in the Config sheet, and `original_model` in
+  `results.json`. The sweep and score-comparison reports show the same section.
+- Stage 0 reads only the config file when everything comes from cache; the parameter count then comes from
+  the sensitivity profile. The glossary no longer hardcodes TinyLlama's size.
+
 ## 2026-09-30: Specs describe layer removal and the KV cache plan
 
 - `docs/specs/` version 0.2: S0-01 names layer removal as the default sensitivity score, with one-layer

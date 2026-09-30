@@ -11,6 +11,7 @@ from sdf.search_space import PER_CHANNEL, SEARCH_SPACE
 from sdf.stage0.planner import baseline_cost, budget_matched_plan, plan_compression, predict_cost, uniform_plan
 from sdf.stage0.run import run_stage0
 from sdf.stage0.sensitivity import SensitivityProfile, normalize, outlier_layers, profile_sensitivity
+from sdf.utils.model_info import count_parameters
 from conftest import fake_texts
 
 
@@ -133,7 +134,7 @@ def test_measure_model(tiny_llama, tokenizer, small_cfg):
     assert sum(r["measurement"] == "latency" for r in raw) == small_cfg.eval.latency_repeats
 
 
-def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg):
+def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     ctx = start_run(small_cfg)
     cand = SEARCH_SPACE.make({"calib_samples": 16, "sensitive_threshold": 0.5})
     res = run_stage0(ctx, cand, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts)
@@ -169,7 +170,15 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg):
     assert len(data["per_layer"]) == 4
     wb = load_workbook(stage_dir / "stage_0_comparison.xlsx")
     assert wb["Per-layer"].max_row == 5
+    n_params = count_parameters(tiny_llama)
+    assert data["original_model"]["num_parameters"] == n_params
+    assert data["original_model"]["num_layers"] == 4
+    assert "original_model.num_key_value_heads" in [c.value for c in wb["Config"]["A"]]
 
+    # when everything is cached the weights are never loaded: the config file and the profile give the facts
+    import transformers
+
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", lambda name: tiny_llama.config)
     # second trial with other Stage 0 hyperparameters: profile and FP16 baseline come from cache
     res2 = run_stage0(ctx, SEARCH_SPACE.make({"calib_samples": 16, "sensitive_threshold": 0.9}),
                       model=None, tokenizer=tokenizer, text_loader=fake_texts)
@@ -185,6 +194,8 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg):
     assert "Share removed (same-size plan)" in report and "pruning caveat" in report
     assert "Perplexity (held-out half)" in report.split("# Technical details")[1]
     assert report.split("## Summary")[1].split("##")[0].count("\n\n") <= 2  # one paragraph
+    assert data2["original_model"]["num_parameters"] == n_params
+    assert "## Original model" in report and f"{n_params:,}" in report
 
 
 def test_sweep_end_to_end(tiny_llama, tokenizer, small_cfg):

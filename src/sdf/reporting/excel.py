@@ -111,7 +111,8 @@ def _key_values(ws, rep: "StageReporter") -> None:
     ws.column_dimensions["A"].width = 45
     ws.column_dimensions["B"].width = 50
     rows: list[tuple[str, Any]] = []
-    for section, data in (("conditions", rep.conditions), ("config", rep.config),
+    for section, data in (("original_model", rep.original_model), ("conditions", rep.conditions),
+                          ("config", rep.config),
                           ("requirement", rep.to_dict()["requirement"]), ("environment", rep.environment)):
         _flatten(section, data, rows)
     for row in rows:
