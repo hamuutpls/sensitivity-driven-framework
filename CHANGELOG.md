@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-01: Annotated figures
+
+- `docs/figures/`: six annotated figures (SVG + PNG) for the thesis: pipeline overview, how Stage 0 builds its
+  plans, the weight, activation and KV cache plans with the final run's numbers, and what Stage 0 hands to each
+  later stage. Drawn by `docs/figures/make_figures.py` (needs matplotlib, not a package dependency).
+
 ## 2026-10-01: Stage 0 finalised: measured activation plan, hand-off report, honest verdicts
 
 - **Activation plan is measured** (`ACT_PLAN = "measured"`, default): each layer's Linear inputs are rounded to
