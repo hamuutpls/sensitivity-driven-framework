@@ -85,3 +85,7 @@ def test_main_settings_build_a_valid_config(monkeypatch):
     for name, values in main.SWEEP.items():
         for v in values:
             SEARCH_SPACE.make({**cfg.hyperparams, name: v})
+    none = DeploymentRequirement().check({"model_size_gb": 0.5})
+    assert none.met is None and none.targets_set is False  # nothing set: not "met"
+    kv = DeploymentRequirement(kv_budget_gb=0.01).check({"predicted_kv_memory_gb": 0.02})
+    assert kv.met is False and kv.checked == {"kv_budget_gb": "predicted_kv_memory_gb"}

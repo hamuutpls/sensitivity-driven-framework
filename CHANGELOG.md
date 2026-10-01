@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-01: Stage 0 finalised: measured activation plan, hand-off report, honest verdicts
+
+- **Activation plan is measured** (`ACT_PLAN = "measured"`, default): each layer's Linear inputs are rounded to
+  4 and 8 bits on their own (64 passages) and the perplexity rise recorded; an average of 6 bits per layer goes
+  where the rise is largest. The weight-derived plan stays as `ACT_PLAN = "from_weights"` and as the comparison
+  row `activations_from_weights/framework`. New metric `predicted_act_ppl_rise`, `activation_profile.json`,
+  per-layer column "Activation damage at fewest bits". `allocate_bits` is now shared by the KV and activation
+  plans.
+- **KV cache measured on 64 passages by default** (`KV_CALIB_SAMPLES`): the 2026-09-30 rerun showed 16 passages
+  were too noisy for the bit choice. The KV bit plan keeps the standard method's 4-bit average (same size); the
+  hand-off report says when the bit choice predicts no gain.
+- **`handoff.md`**: what Stage 0 hands to Stages 1-4 and the search, layer by layer, with predicted costs, the
+  Original model section and every column explained. Linked from report.md and returned in `outputs`.
+- **Report fixes:** build time no longer turns every framework row into a "trade-off" (stated as a one-off
+  cost instead); with no deployment target set, rows say "no targets set" instead of "yes"; `kv_budget_gb` is
+  checked against the predicted KV memory; the FP16 row is called "Original model (uncompressed)".
+- Specs v0.4 (S0-15, S0-17, REP-09; SDD §5.9, §5.10) and the Stage 0 diagram updated.
+
 ## 2026-09-30: Stage 0 hands everything later stages need
 
 - **Pruning guard.** `stage0.guard_top_k` (default 5, `GUARD_TOP_K` in main.py): the layers whose removal raises

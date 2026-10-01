@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sdf.reporting.metrics import METRICS, MetricSpec, is_better, label
+from sdf.reporting.metrics import METRICS, ONE_OFF_COSTS, MetricSpec, is_better, label
 from sdf.utils.cache import atomic_write_text
 
 if TYPE_CHECKING:
@@ -53,15 +53,20 @@ def _plain_verdicts(rep: "StageReporter") -> list[str]:
             out.append(f"There is no working {VARIANT_PLAIN['original'][0].lower()} result for {fw.method}, "
                        "so the framework could not be compared against it.")
             continue
-        wins, losses = [], []
+        wins, losses, one_off = [], [], []
         for m in rep.main_metrics:
             spec = METRICS.get(m)
             a, b = fw.metrics.get(m), orig.metrics.get(m)
             if spec is None or not all(isinstance(x, (int, float)) for x in (a, b)):
                 continue
             better = is_better(m, a - b)
-            if better is not None:
-                (wins if better else losses).append(spec.plain or spec.label)
+            if better is None:
+                continue
+            if m in ONE_OFF_COSTS:
+                if not better:
+                    one_off.append(f"{spec.plain or spec.label} ({_value(a - b, spec)} more, paid once)")
+                continue
+            (wins if better else losses).append(spec.plain or spec.label)
         if wins and not losses:
             head = "beat the standard method on every measure compared"
         elif losses and not wins:
@@ -75,8 +80,19 @@ def _plain_verdicts(rep: "StageReporter") -> list[str]:
             detail.append("better on " + ", ".join(wins))
         if losses:
             detail.append("worse on " + ", ".join(losses))
-        out.append(f"**{fw.plain_name}** {head}" + (" (" + "; ".join(detail) + ")." if detail else "."))
+        text = f"**{fw.plain_name}** {head}" + (" (" + "; ".join(detail) + ")." if detail else ".")
+        if one_off:
+            text += " It costs more to prepare: " + "; ".join(one_off) + "."
+        out.append(text)
     return out
+
+
+def requirement_cell(req: dict[str, Any]) -> str:
+    """Table cell for a row's requirement check."""
+    if not req.get("targets_set", True):
+        return "no targets set"
+    met = req.get("met")
+    return "n/a (not all targets measurable yet)" if met is None else "yes" if met else "no"
 
 
 def _requirement_plain(r: "ComparisonRow") -> str | None:
@@ -230,17 +246,15 @@ def _technical_part(rep: "StageReporter") -> list[str]:
     headers = ["Row", "Status"] + [label(m) for m in metrics] + ["Requirement met"]
     rows = []
     for r in rep.rows:
-        met = r.requirement.get("met")
-        rows.append([f"`{r.key}`", r.status] + [r.metrics.get(m) for m in metrics]
-                    + ["n/a (not all targets measurable yet)" if met is None else met])
+        rows.append([f"`{r.key}`", r.status] + [r.metrics.get(m) for m in metrics] + [requirement_cell(r.requirement)])
     lines += [_table(headers, rows), ""]
     lines += _column_notes(
         [("Row", "Method and version, as `method/variant`: `fp16` is the uncompressed model, `original` the method "
                  "used the standard way, `framework` the method guided by Stage 0."),
          ("Status", "`ok` if the row finished, `failed` if it raised an error (the error is under Anomalies).")]
         + [(label(m), _technical_note(m)) for m in metrics]
-        + [("Requirement met", "Whether the row meets every deployment target that was set; `n/a` when a "
-                               "target cannot be measured at this stage.")])
+        + [("Requirement met", "Whether the row meets every deployment target that was set; `no targets set` "
+                               "when the run set none, `n/a` when a target cannot be measured at this stage.")])
     lines += [f"Full metrics, deltas and raw measurements are in `{rep.xlsx_path.name}` and `results.json`.", ""]
 
     lines += ["## Key findings", ""]

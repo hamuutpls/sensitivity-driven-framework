@@ -13,13 +13,14 @@ _CHECKS: dict[str, tuple[str, ...]] = {
     "target_latency_ms": ("decode_ms_per_token_mean",),
     "target_memory_gb": ("model_size_gb", "predicted_weight_memory_gb"),
     "target_ppl": ("ppl_val",),
-    "kv_budget_gb": ("kv_cache_gb",),
+    "kv_budget_gb": ("kv_cache_gb", "predicted_kv_memory_gb"),
 }
 
 
 @dataclass
 class RequirementCheck:
-    met: bool | None  # None = nothing failed but at least one target could not be measured yet
+    met: bool | None  # None = no target set, or nothing failed but a target could not be measured yet
+    targets_set: bool = True
     shortfall: dict[str, float] = field(default_factory=dict)  # target -> amount over the target
     checked: dict[str, str] = field(default_factory=dict)  # target -> metric it was checked against
     unmeasured: list[str] = field(default_factory=list)
@@ -38,6 +39,8 @@ class DeploymentRequirement:
 
     def check(self, metrics: Mapping[str, Any]) -> RequirementCheck:
         result = RequirementCheck(met=True)
+        if all(getattr(self, t) is None for t in _CHECKS):
+            return RequirementCheck(met=None, targets_set=False)
         for target_name, metric_names in _CHECKS.items():
             target = getattr(self, target_name)
             if target is None:

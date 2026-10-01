@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
-from sdf.reporting.metrics import is_better, is_number, label
+from sdf.reporting.metrics import ONE_OFF_COSTS, is_better, is_number, label
 from sdf.requirements import DeploymentRequirement
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.logging import get_logger
@@ -34,7 +34,7 @@ VARIANTS = ("fp16", "original", "framework")
 
 # Plain-language names and explanations of the three variants, for readers with no AI background.
 VARIANT_PLAIN = {
-    "fp16": ("Uncompressed model", "the model exactly as published, with nothing removed or simplified. It is "
+    "fp16": ("Original model (uncompressed)", "the model exactly as published, with nothing removed or simplified. It is "
              "the reference point: the best accuracy we can hope for, and the most memory."),
     "original": ("Standard method", "the compression technique applied the usual way, treating every part of "
                  "the model the same."),
@@ -191,7 +191,7 @@ class StageReporter:
         """Plain-language framework-vs-original findings, one line per method."""
         lines = []
         for fw in (r for r in self.rows if r.variant == "framework" and r.status == "ok"):
-            wins, losses = [], []
+            wins, losses, one_off = [], [], []
             for name, d in fw.deltas.items():
                 abs_d = d.get("vs_original_abs")
                 if abs_d is None:
@@ -201,16 +201,19 @@ class StageReporter:
                     continue
                 pct = d.get("vs_original_pct")
                 desc = f"{label(name)} ({abs_d:+.4g}{'' if pct is None else f', {pct:+.1f}%'})"
-                (wins if better else losses).append(desc)
-            if not wins and not losses:
+                (one_off if name in ONE_OFF_COSTS else wins if better else losses).append(desc)
+            if not wins and not losses and not one_off:
                 lines.append(f"**{fw.method}**: no original-method row to compare against.")
                 continue
-            verdict = "beats" if wins and not losses else "trades off against" if wins else "loses to"
+            verdict = ("beats" if wins and not losses else "trades off against" if wins and losses
+                       else "loses to" if losses else "ties with")
             text = f"**{fw.method}**: the framework {verdict} the original method."
             if wins:
                 text += " Better on " + "; ".join(wins) + "."
             if losses:
                 text += " Worse on " + "; ".join(losses) + "."
+            if one_off:
+                text += " One-off cost: " + "; ".join(one_off) + "."
             lines.append(text)
         for r in self.rows:
             if r.status == "ok" and r.requirement.get("met") is False:

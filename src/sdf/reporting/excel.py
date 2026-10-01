@@ -11,6 +11,7 @@ from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from sdf.reporting.markdown import requirement_cell
 from sdf.reporting.metrics import METRICS, label as metric_label
 
 if TYPE_CHECKING:
@@ -73,8 +74,7 @@ def _summary(ws, rep: "StageReporter") -> None:
     _header(ws, headers)
 
     for r in rep.rows:
-        met = r.requirement.get("met")
-        line = [r.method, r.variant, r.status, "n/a" if met is None else ("yes" if met else "no"),
+        line = [r.method, r.variant, r.status, requirement_cell(r.requirement),
                 _cell(r.requirement.get("shortfall") or "")]
         for m in metrics:
             line.append(_cell(r.metrics.get(m)))

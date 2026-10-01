@@ -11,6 +11,11 @@ from dataclasses import dataclass
 from typing import Literal
 
 
+# One-off costs (paid once, before the model is used) do not decide whether the framework beat the original;
+# reports state them separately so a framework row is not called a trade-off just for needing profiling.
+ONE_OFF_COSTS = frozenset({"build_time_s"})
+
+
 @dataclass(frozen=True)
 class MetricSpec:
     label: str  # technical name, used in tables
@@ -63,6 +68,11 @@ METRICS: dict[str, MetricSpec] = {
         "Average activation bits", "bits", "lower", "storage used per number passed between layers",
         "How many bits the numbers flowing between the model's layers are rounded to, on average over the "
         "layers (16 uncompressed). Planned here, applied in Stage 2."),
+    "predicted_act_ppl_rise": MetricSpec(
+        "Predicted perplexity rise from activation rounding", "", "lower",
+        "expected accuracy loss from rounding the numbers passed between layers",
+        "Stage 0 rounded each layer's incoming numbers on its own and measured how much the prediction error "
+        "(perplexity) rose. This adds those rises up for the plan's bits. Smaller is better."),
     "kv_kept_share": MetricSpec(
         "Share of past tokens kept", "", None, "share of earlier words the notes keep",
         "The plan can let some layers forget earlier words that get almost no attention. 1 means nothing is "

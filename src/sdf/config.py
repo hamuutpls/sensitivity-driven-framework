@@ -84,11 +84,16 @@ class Stage0Config:
     # Pruning guard: never prune the guard_top_k layers whose removal hurts most (layer-removal score, measured
     # even when another score picks the bits). 0 turns it off.
     guard_top_k: int = 5
-    # Activation plan for Stage 2, derived from the weight plan: protected and guarded layers keep
-    # act_protected_bits, the rest get act_compressed_bits. The "original method" is act_uniform_bits everywhere.
-    act_protected_bits: int = 8
-    act_compressed_bits: int = 4
+    # Activation plan for Stage 2 (see stage0/activation.py). "measured": round each layer's Linear inputs to
+    # every act_bits_options width, measure the perplexity rise, spend act_avg_bits where it hurts most.
+    # "from_weights": no measurement; protected and guarded layers of the weight plan get the highest option,
+    # the rest the lowest. The "original method" is act_uniform_bits on every layer.
+    act_plan: str = "measured"
+    act_bits_options: list[int] = field(default_factory=lambda: [4, 8])  # ascending
+    act_avg_bits: float = 6.0
     act_uniform_bits: int = 8
+    act_group_size: int = 128  # input channels sharing one scale, per token
+    act_calib_samples: int = 64  # passages for the measurement (one pass per layer x bit width)
     baseline_bits: int = 16  # bits/weight of the FP16 model and of unquantised tensors (embeddings, norms, lm_head)
     # KV cache plan (see stage0/kv_cache.py). Per layer: key bits, value bits, share of past tokens kept.
     kv_cache: bool = True
@@ -96,7 +101,7 @@ class Stage0Config:
     kv_uniform_bits: int = 4  # "original method": every key and value at this many bits, nothing evicted
     kv_avg_bits: float | None = None  # plan's average bit budget; None = kv_uniform_bits (same size as original)
     kv_group_size: int = 64  # numbers sharing one scale (tokens for keys, channels for values)
-    kv_calib_samples: int = 16  # passages for the KV measurement (each layer x key/value x bits is one pass)
+    kv_calib_samples: int = 64  # passages for the KV measurement (each layer x key/value x bits is one pass)
     kv_keep_ratios: list[float] = field(default_factory=lambda: [0.1, 0.2, 0.3, 0.5, 0.75])
     kv_attention_coverage: float = 0.95  # keep the fewest tokens that still receive this share of attention
     kv_context_len: int = 2048  # tokens per sequence for the memory prediction

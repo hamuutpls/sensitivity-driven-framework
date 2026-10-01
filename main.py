@@ -41,9 +41,6 @@ NO_PRUNE_COMPRESSED_BITS = 3  # bits for unprotected layers in the same-size pla
 UNIFORM_BITS = 4  # the standard method: every layer at this many bits ...
 UNIFORM_PRUNE_RATIO = 0.0  # ... with this share removed
 GUARD_TOP_K = 5  # never prune the layers whose removal hurts most, this many of them (0 = no guard)
-ACT_PROTECTED_BITS = 8  # Stage 2 activation plan: bits for protected and never-pruned layers ...
-ACT_COMPRESSED_BITS = 4  # ... and for every other layer
-ACT_UNIFORM_BITS = 8  # the standard method: every layer's activations at this many bits
 CALIB_SEQ_LEN = 512  # tokens per calibration passage
 EVAL_SEQ_LEN = 512  # tokens per perplexity window
 EVAL_MAX_WINDOWS = None  # cap on perplexity windows (None = the whole WikiText-2 test split)
@@ -57,12 +54,24 @@ KV_BITS_OPTIONS = [2, 4, 8]  # bit widths tried for each layer's keys and values
 KV_UNIFORM_BITS = 4  # the standard method: every key and value at this many bits, every token kept
 KV_AVG_BITS = None  # average bits the plan may spend; None = KV_UNIFORM_BITS (same size as the standard method)
 KV_GROUP_SIZE = 64  # numbers sharing one scale factor
-KV_CALIB_SAMPLES = 16  # passages for the KV measurement (one pass per layer x key/value x bit width)
+KV_CALIB_SAMPLES = 64  # passages for the KV measurement (one pass per layer x key/value x bit width);
+#                        16 proved too noisy for the bit choice (2026-09-30 rerun)
 KV_KEEP_RATIOS = [0.1, 0.2, 0.3, 0.5, 0.75]  # shares of past tokens a layer may keep
 KV_ATTENTION_COVERAGE = 0.95  # a layer keeps the fewest tokens that still get this share of its attention
 KV_CONTEXT_LEN = 2048  # text length (tokens) for the predicted cache memory
 KV_BATCH_SIZE = 1  # texts held at once for the predicted cache memory
 KV_MODULE_NAMES = ["k_proj", "v_proj"]  # names of the layers producing keys and values (Llama, Mistral, Qwen)
+
+# =====================================================================================================
+# 4b. Activation plan (the numbers passed between layers while the model runs). Stage 2 carries it out.
+# =====================================================================================================
+ACT_PLAN = "measured"  # "measured": test each layer's sensitivity to rounding its inputs (about 44 passes)
+#                        "from_weights": no test; layers the weight plan protects or never prunes keep more bits
+ACT_BITS_OPTIONS = [4, 8]  # bit widths a layer's activations may get (ascending)
+ACT_AVG_BITS = 6.0  # average bits the plan may spend per layer
+ACT_UNIFORM_BITS = 8  # the standard method: every layer's activations at this many bits
+ACT_GROUP_SIZE = 128  # numbers sharing one scale factor
+ACT_CALIB_SAMPLES = 64  # passages for the activation measurement
 
 # =====================================================================================================
 # 5. Sweep values (MODE = "sweep"). Leave a list out, or set it to None, to use every allowed value
@@ -97,9 +106,12 @@ def build_config():
         "stage0.uniform_bits": UNIFORM_BITS,
         "stage0.uniform_prune_ratio": UNIFORM_PRUNE_RATIO,
         "stage0.guard_top_k": GUARD_TOP_K,
-        "stage0.act_protected_bits": ACT_PROTECTED_BITS,
-        "stage0.act_compressed_bits": ACT_COMPRESSED_BITS,
+        "stage0.act_plan": ACT_PLAN,
+        "stage0.act_bits_options": ACT_BITS_OPTIONS,
+        "stage0.act_avg_bits": ACT_AVG_BITS,
         "stage0.act_uniform_bits": ACT_UNIFORM_BITS,
+        "stage0.act_group_size": ACT_GROUP_SIZE,
+        "stage0.act_calib_samples": ACT_CALIB_SAMPLES,
         "stage0.kv_cache": KV_CACHE,
         "stage0.kv_bits_options": KV_BITS_OPTIONS,
         "stage0.kv_uniform_bits": KV_UNIFORM_BITS,

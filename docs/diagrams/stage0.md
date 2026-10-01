@@ -91,6 +91,11 @@ classDiagram
         +save(path)
         +load(path) CompressionPlan
     }
+    class ActivationProfile {
+        +list~int~ bits_options
+        +list rise
+        +dict cost
+    }
     class ActivationLayerPlan {
         +int layer
         +int act_bits
@@ -105,8 +110,15 @@ classDiagram
     }
     class activation {
         <<module>>
-        +activation_plan(weight_plan, protected_bits, compressed_bits) ActivationPlan
+        +profile_activations(model, batches, bits_options, group_size) ActivationProfile
+        +plan_activations(profile, avg_bits) ActivationPlan
+        +activation_plan_from_weights(weight_plan, high, low) ActivationPlan
         +uniform_activation_plan(num_layers, bits) ActivationPlan
+        +predicted_rise(plan, profile) float
+    }
+    class handoff {
+        <<module>>
+        +write_handoff(path, ...) Path
     }
     class PlanCost {
         +float weight_memory_gb
@@ -213,6 +225,8 @@ classDiagram
     Stage0Result *-- KVPlan
     ActivationPlan *-- ActivationLayerPlan
     activation ..> ActivationPlan : builds
+    activation ..> ActivationProfile : builds
+    run ..> handoff : writes handoff.md
     activation ..> CompressionPlan : reads protected and guarded layers
     run ..> activation
     sensitivity ..> SensitivityProfile : builds
