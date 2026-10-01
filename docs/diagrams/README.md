@@ -13,6 +13,8 @@ text in these files.
 | [stage4.md](stage4.md) | Stage 4: evaluation across backends | the design, **planned** |
 | [search.md](search.md) | the search layer (MOBO, MFBO, NSGA-III) | the design, **planned** |
 
+Annotated figures with the real Stage 0 numbers are in [../figures](../figures/README.md).
+
 Anything not written yet carries a `<<planned>>` label. Planned parts follow the flow of the v2_1 design diagram and the
 thesis spec, and reuse the shared pieces that already exist (`FrameworkConfig`, `StageReporter`,
 `ArtifactCache`, `measure_model`), so each new stage only adds its own methods. Names of planned classes and
