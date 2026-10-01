@@ -18,6 +18,7 @@
 | 0.1 | 2026-09-29 | First draft. Implemented parts described from the code; planned parts from the thesis spec, the v2_1 diagram and `docs/diagrams/`. |
 | 0.2 | 2026-09-30 | §5.3: layer removal is the default sensitivity score; one-layer compression and gradient × weight selectable. New §5.8: the Stage 0 KV cache plan. §8 follows that plan. |
 | 0.3 | 2026-09-30 | §5.4: pruning guard. New §5.9: activation plan for Stage 2; §7.3 follows it. §5.2: `Stage0Result` returns every plan and each plan class loads its JSON. |
+| 0.4 | 2026-10-01 | §5.9: activation plan measured by default. New §5.10: `handoff.md`. §4.3: one-off costs out of the verdict; "no targets set". |
 
 ---
 
@@ -379,7 +380,8 @@ get, and how many earlier words each layer keeps.
 |---|---|
 | `stage0/sensitivity.py` | `SensitivityProfile`, `profile_by_ablation(model, batches, method, device, bits, group_size, meta)` (`layer_removal`, `layer_quant`), `profile_sensitivity(model, batches, device, meta)` (`grad_x_weight`), `normalize(scores, method)`, `outlier_layers(raw, cutoff=3.5)`, `find_decoder_layers`, `layer_shapes`, `skip_layer`, `quantize_layer` |
 | `stage0/planner.py` | `LayerPlan` (incl. `guarded`), `CompressionPlan` (`load`, `from_dict`), `guarded_layers(removal_scores, top_k)`, `plan_compression(...)`, `uniform_plan(...)`, `budget_matched_plan(...)`, `PlanCost`, `predict_cost(...)`, `baseline_cost(...)` |
-| `stage0/activation.py` | `ActivationLayerPlan`, `ActivationPlan` (`avg_bits`, `load`), `activation_plan(weight_plan, protected_bits, compressed_bits)`, `uniform_activation_plan(n, bits)` |
+| `stage0/activation.py` | `ActivationProfile`, `profile_activations(model, batches, bits_options, group_size, device, meta)`, `quantize_inputs(layer, bits, group_size)`, `ActivationLayerPlan`, `ActivationPlan` (`avg_bits`, `load`), `plan_activations(profile, avg_bits)`, `activation_plan_from_weights(weight_plan, high, low)`, `uniform_activation_plan(n, bits)`, `predicted_rise(plan, profile)` |
+| `stage0/handoff.py` | `write_handoff(path, ...)`: `handoff.md` (§5.10) |
 | `stage0/kv_cache.py` | `KVProfile`, `profile_kv(...)`, `KVLayerPlan`, `KVPlan` (`load`), `uniform_kv_plan(n, bits)`, `plan_kv(profile, avg_bits, coverage_target)`, `KVCost`, `predict_kv(...)` |
 | `stage0/compare.py` | `compare_scores(ctx, candidate)`: profiles all three scores on the same text and reports rank agreement (`MODE = "compare_scores"`) |
 | `stage0/run.py` | `run_stage0(ctx, candidate, model=None, tokenizer=None, text_loader=None, measure_fp16=True) -> Stage0Result(plan, profile, outputs, budget_plan, no_prune_plan, activation_plan, kv_plan, kv_plan_bits_only)`; `load_guard(...)` |
@@ -516,11 +518,26 @@ eviction; the bit choice alone is within noise at 16 passages.
 
 ### 5.9 Algorithm: activation plan (S0-15)
 
-Derived, not measured. Per decoder layer: `act_protected_bits` (8) if the weight plan (threshold plan)
-protects or guards the layer, else `act_compressed_bits` (4). The original variant is `act_uniform_bits` (8) on
-every layer. Rows `activations/original` and `activations/framework` report `avg_activation_bits`. Assumption:
-a layer fragile for weights is fragile for activations; Stage 2 should confirm it with a measured per-layer
-activation sensitivity (SyRS §5.2 #3).
+**Measured (default, `act_plan = measured`).** For each decoder layer and each of `act_bits_options` ([4, 8]),
+forward pre-hooks round the input of every Linear in that layer only (per token, `act_group_size` = 128
+channels per scale) and the calibration perplexity rise over `act_calib_samples` (64) passages is recorded
+(`ActivationProfile`, cached under `activation_profile/`). `plan_activations` spends `act_avg_bits` (6) per layer
+with the greedy `allocate_bits` shared with the KV plan (negative rises clipped to 0, non-increasing in bits).
+`predicted_act_ppl_rise` adds the per-layer rises for a plan.
+
+**From the weight plan (`act_plan = from_weights`, and the comparison row).** Highest option for layers the
+threshold plan protects or guards, lowest elsewhere; no measurement.
+
+Rows: `activations/original` (uniform `act_uniform_bits` = 8), `activations/framework`, and
+`activations_from_weights/framework` when measured.
+
+### 5.10 Information: hand-off report (S0-17)
+
+`handoff.md` next to `report.md`: Original model; at a glance (stage, what it receives, file, loader); Stage 1
+per-layer bits, share removed and guard for the three plans with predicted sizes; Stage 2 per-layer activation
+bits, measured damage and predicted rise per plan; Stage 3 per-layer key/value bits and words kept with
+predicted memory and rise; Stage 4 FP16 reference numbers and measurement conditions; search parameters with
+current values and ranges; caveats. Every table has column explanations.
 
 ---
 
@@ -589,8 +606,8 @@ and the plan, not from Stage 1's output (PIPE-02). Diagrams: [`stage2.md`](../di
 
 ### 7.3 Mapping the plan (open issue SyRS §5.2 #3)
 
-Stage 2 reads `activation_plan.json` (§5.9): a layer the weight plan protects or guards gets
-`act_protected_bits` for its input activations, others get `act_compressed_bits`. The rotation or smoothing transform itself is applied to every layer, since it does not
+Stage 2 reads `activation_plan.json` (§5.9): each layer's input activations get the planned bits
+(measured by default). The rotation or smoothing transform itself is applied to every layer, since it does not
 change the output before rounding.
 
 ### 7.4 Rationale
@@ -733,7 +750,7 @@ Keeping the searchers separate (not pooled) is what allows benchmarking them aga
 | S0-04 … S0-07 | §5.4 | `stage0/planner.py`, `stage0/run.py` | `test_plan_and_uniform`, `test_predict_cost` |
 | S0-08, S0-09 | §5.5, §5.6 | `stage0/run.py`, `stage0/sensitivity.py` | end-to-end test |
 | S0-10 … S0-13 | §5.8 | `stage0/kv_cache.py`, `stage0/run.py` (`_kv_rows`) | `test_kv_plan_spends_bits_on_fragile_keys`, `test_predict_kv`, `test_coverage_uniform_attention`, `test_profile_kv_on_tiny_llama` |
-| S0-14 … S0-16 | §5.2, §5.4, §5.9 | `stage0/planner.py`, `stage0/activation.py`, `stage0/run.py` | `test_guard_blocks_pruning_of_critical_layers`, `test_activation_plan_follows_weight_plan`, `test_guard_uses_layer_removal_when_another_score_picks_bits`, end-to-end test |
+| S0-14 … S0-17 | §5.2, §5.4, §5.9, §5.10 | `stage0/planner.py`, `stage0/activation.py`, `stage0/handoff.py`, `stage0/run.py` | `test_guard_blocks_pruning_of_critical_layers`, `test_activation_plan_follows_weight_plan`, `test_measured_activation_plan_spends_bits_where_rounding_hurts`, `test_profile_activations_restores_the_model`, `test_guard_uses_layer_removal_when_another_score_picks_bits`, end-to-end test |
 | S1-* | §6 | — | — |
 | S2-* | §7 | — | — |
 | S3-* | §8 | — | — |

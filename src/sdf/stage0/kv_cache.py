@@ -209,21 +209,18 @@ def _monotone(rise: list[float]) -> list[float]:
     return out
 
 
-def plan_kv_bits(profile: KVProfile, avg_bits: float) -> dict[tuple[int, str], int]:
-    """Bits for every (layer, key|value), spending at most `avg_bits` per cached number on average.
+def allocate_bits(items: dict[Any, tuple[int, list[float]]], opts: list[int], avg_bits: float) -> dict[Any, int]:
+    """Bits per item, spending at most `avg_bits` per number on average. `items` maps a key to (numbers stored,
+    measured perplexity rise per option in `opts`, ascending bits).
 
     Greedy: start everything at the fewest bits, then repeatedly take the upgrade with the largest drop in
-    measured perplexity rise per extra bit, while it fits. Assumes per-tensor damages add up.
-    ponytail: greedy, not an exact knapsack; exact only matters with very uneven layer sizes.
+    measured rise per extra bit, while it fits. Assumes per-item damages add up.
+    ponytail: greedy, not an exact knapsack; exact only matters with very uneven item sizes.
     """
-    opts = profile.bits_options
-    items = {}
-    for kind, dims, rises in (("key", profile.key_dims, profile.key_rise),
-                              ("value", profile.value_dims, profile.value_rise)):
-        for layer, (d, r) in enumerate(zip(dims, rises)):
-            items[(layer, kind)] = (d, _monotone(r))
+    items = {k: (d, _monotone(r)) for k, (d, r) in items.items()}
     level = {k: 0 for k in items}
-    budget = avg_bits * sum(d for d, _ in items.values()) - opts[0] * sum(d for d, _ in items.values())
+    total = sum(d for d, _ in items.values())
+    budget = (avg_bits - opts[0]) * total
     while True:
         best, best_gain = None, 0.0
         for k, (d, r) in items.items():
@@ -237,6 +234,16 @@ def plan_kv_bits(profile: KVProfile, avg_bits: float) -> dict[tuple[int, str], i
         k, j, extra = best
         level[k], budget = j, budget - extra
     return {k: opts[j] for k, j in level.items()}
+
+
+def plan_kv_bits(profile: KVProfile, avg_bits: float) -> dict[tuple[int, str], int]:
+    """Bits for every (layer, key|value), spending at most `avg_bits` per cached number on average."""
+    items = {}
+    for kind, dims, rises in (("key", profile.key_dims, profile.key_rise),
+                              ("value", profile.value_dims, profile.value_rise)):
+        for layer, (d, r) in enumerate(zip(dims, rises)):
+            items[(layer, kind)] = (d, r)
+    return allocate_bits(items, profile.bits_options, avg_bits)
 
 
 def keep_ratio_for(coverage: list[float], keep_ratios: list[float], target: float) -> float:

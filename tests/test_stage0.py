@@ -1,4 +1,5 @@
 import json
+import math
 
 import pytest
 import torch
@@ -8,7 +9,8 @@ from sdf.data import calibration_batches, eval_windows
 from sdf.eval.metrics import measure_model, model_size_gb
 from sdf.run import start_run
 from sdf.search_space import PER_CHANNEL, SEARCH_SPACE
-from sdf.stage0.activation import ActivationPlan, activation_plan
+from sdf.stage0.activation import (ActivationPlan, ActivationProfile, activation_plan_from_weights,
+                                   plan_activations, predicted_rise, profile_activations, uniform_activation_plan)
 from sdf.stage0.kv_cache import KVPlan
 from sdf.stage0.planner import (CompressionPlan, baseline_cost, budget_matched_plan, guarded_layers, plan_compression,
                                 predict_cost, uniform_plan)
@@ -120,10 +122,32 @@ def test_guard_blocks_pruning_of_critical_layers():
 
 def test_activation_plan_follows_weight_plan():
     plan = plan_compression(TOY_SCORES, 0.5, 0.3, 8, 4, frozenset({0}))
-    act = activation_plan(plan, 8, 4)
+    act = activation_plan_from_weights(plan, 8, 4)
     assert [lp.act_bits for lp in act.layers] == [8, 4, 8, 8]  # protected 2, 3 and guarded 0
     assert act.avg_bits == 7.0
     assert ActivationPlan.from_dict(act.to_dict()) == act
+
+
+def test_measured_activation_plan_spends_bits_where_rounding_hurts():
+    # rise at [4, 8] bits per layer: layers 1 and 3 suffer at 4 bits
+    prof = ActivationProfile([4, 8], [[0.01, 0.0], [0.5, 0.0], [-0.02, 0.01], [0.3, 0.001]])
+    plan = plan_activations(prof, 6.0)
+    assert [lp.act_bits for lp in plan.layers] == [4, 8, 4, 8]
+    assert plan.avg_bits == 6.0 and [lp.layer for lp in plan.layers if lp.protected] == [1, 3]
+    assert predicted_rise(plan, prof) == pytest.approx(0.01 + 0.0 + 0.0 + 0.001)  # negative rise clipped to 0
+    assert predicted_rise(uniform_activation_plan(4, 4), prof) == pytest.approx(0.81)
+    assert predicted_rise(uniform_activation_plan(4, 6), prof) is None  # 6 bits were not measured
+
+
+def test_profile_activations_restores_the_model(tiny_llama, tokenizer):
+    batches = calibration_batches(fake_texts("wikitext2", "train"), tokenizer, 4, 16, 2, 0)
+    before = [p.clone() for p in tiny_llama.parameters()]
+    prof = profile_activations(tiny_llama, batches, [2, 8], 8, device="cpu")
+    assert prof.num_layers == 4 and all(len(r) == 2 for r in prof.rise)
+    assert all(math.isfinite(x) for r in prof.rise for x in r)
+    assert max(abs(r[0]) for r in prof.rise) > max(abs(r[1]) for r in prof.rise)  # 2 bits change more than 8
+    assert all(torch.equal(a, b) for a, b in zip(before, tiny_llama.parameters()))
+    assert not any(m._forward_pre_hooks for m in tiny_llama.modules())  # hooks removed
 
 
 def test_predict_cost():
@@ -178,14 +202,15 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     stage_dir = ctx.run_dir / "stage_0"
     for name in ("report.md", "stage_0_comparison.xlsx", "results.json", "compression_plan.json",
                  "compression_plan_budget_matched_no_prune.json", "sensitivity_profile.json",
-                 "kv_cache_plan.json", "kv_cache_plan_bits_only.json", "kv_profile.json", "activation_plan.json"):
+                 "kv_cache_plan.json", "kv_cache_plan_bits_only.json", "kv_profile.json", "activation_plan.json",
+                 "activation_profile.json"):
         assert (stage_dir / name).exists(), name
     data = json.loads((stage_dir / "results.json").read_text())
     rows = {f"{r['method']}/{r['variant']}": r for r in data["rows"]}
     assert set(rows) == {"baseline/fp16", "allocation/original", "allocation/framework",
                          "allocation_same_size/framework", "allocation_same_size_no_prune/framework",
                          "kv_cache/original", "kv_cache/framework", "kv_cache_bits_only/framework",
-                         "activations/original", "activations/framework"}
+                         "activations/original", "activations/framework", "activations_from_weights/framework"}
     kv_fw, kv_un = rows["kv_cache/framework"]["metrics"], rows["kv_cache/original"]["metrics"]
     assert kv_fw["predicted_kv_memory_gb"] <= kv_un["predicted_kv_memory_gb"] * (1 + 1e-9)
     assert kv_fw["avg_kv_bits"] <= 4 + 1e-9
@@ -214,8 +239,13 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     assert KVPlan.load(stage_dir / "kv_cache_plan.json") == res.kv_plan
     assert KVPlan.load(stage_dir / "kv_cache_plan_bits_only.json") == res.kv_plan_bits_only
     assert ActivationPlan.load(stage_dir / "activation_plan.json") == res.activation_plan
-    assert rows["activations/framework"]["metrics"]["avg_activation_bits"] == res.activation_plan.avg_bits
+    assert rows["activations/framework"]["metrics"]["avg_activation_bits"] == res.activation_plan.avg_bits == 6
+    assert res.activation_plan.kind == "measured" and res.activation_profile is not None
     assert rows["activations/original"]["metrics"]["avg_activation_bits"] == 8
+    act_fw, act_un = rows["activations/framework"]["metrics"], rows["activations/original"]["metrics"]
+    assert act_fw["predicted_act_ppl_rise"] >= act_un["predicted_act_ppl_rise"]  # fewer bits cannot help
+    assert "predicted_act_ppl_rise" in rows["activations_from_weights/framework"]["metrics"]
+    assert all(r["requirement"]["targets_set"] is False for r in rows.values())  # no targets in small_cfg
     assert len(data["per_layer"]) == 4
     wb = load_workbook(stage_dir / "stage_0_comparison.xlsx")
     assert wb["Per-layer"].max_row == 5
@@ -251,6 +281,17 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     assert "- **Raw score**: How much the prediction error" in layer_part
     assert "## Original model" in report and f"{n_params:,}" in report
     assert "Pruning guard" in report and "Activation plan (for Stage 2)" in report
+    handoff = (stage_dir / "handoff.md").read_text(encoding="utf-8")
+    for heading in ("## Original model", "## At a glance", "## Stage 1: weights", "## Stage 2: activations",
+                    "## Stage 3: KV cache", "## Stage 4: evaluation", "## Search", "## Caveats"):
+        assert heading in handoff, heading
+    tables = [b for b in handoff.split("\n\n") if b.startswith("| ")]
+    notes = [b for b in handoff.split("**What each column means**")[1:]]
+    assert len(notes) == len(tables) - 1  # all but the Original model table carry column notes
+    findings = report.split("## Findings")[1].split("\n## ")[0]
+    assert "paid once" in findings and "time to prepare" not in findings.split("It costs more")[0]  # not a verdict
+    results_rows = [l for l in report.split("## Results")[-1].splitlines() if l.startswith("| `")]
+    assert results_rows and all(l.endswith("| no targets set |") for l in results_rows)
 
 
 def test_guard_uses_layer_removal_when_another_score_picks_bits(tiny_llama, tokenizer, small_cfg):

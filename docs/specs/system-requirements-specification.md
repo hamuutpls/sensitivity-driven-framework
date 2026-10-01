@@ -6,7 +6,7 @@
 | Standard | ISO/IEC/IEEE 29148:2018, clause 9.6 (SyRS content) |
 | System | Sensitivity-Driven Framework (`sdf`), MSc thesis codebase |
 | Owner | Mohammad (GitHub `hamuutpls`) |
-| Version | 0.3 (draft), 2026-09-30 |
+| Version | 0.4 (draft), 2026-10-01 |
 | Companion | [Subsystem Design Description](subsystem-design-description.md) (IEEE 1016-2009) |
 
 ## Change history
@@ -16,6 +16,7 @@
 | 0.1 | 2026-09-29 | First draft, written from the thesis spec (project instructions), the v2_1 architecture diagram and the Stage 0 code on branch `stage0-sensitivity`. |
 | 0.2 | 2026-09-30 | S0-01 now names layer removal as the default sensitivity score (Mohammad's decision, 2026-09-30), with one-layer compression and gradient × weight selectable; S0-09 covers ablation scores. New S0-10 to S0-13 for the Stage 0 KV cache plan. MET-06 and S3-02 updated to match. |
 | 0.3 | 2026-09-30 | New S0-14 (pruning guard), S0-15 (activation plan for Stage 2) and S0-16 (plans returned and loadable). S2-02 names the activation plan; open issue 3 narrowed to validating it. |
+| 0.4 | 2026-10-01 | S0-15: activation plan measured by default. New S0-17 (handoff.md). REP-09: build time does not decide the verdict; a run with no targets reports "no targets set". KV measured on 64 passages by default. |
 
 ---
 
@@ -197,6 +198,7 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | REP-06 | Every report shall be understandable by a reader with no AI background: a plain-language part (what was done, what came out, why, glossary) ahead of the technical tables. | M | Implemented | I | User preference, 2026-09-28 | SDD §4.3 |
 | REP-07 | At the end of a full run the system shall write `all_stages_comparison.xlsx` and a master report. | M | Planned | T | SPEC | SDD §4.7 |
 | REP-08 | Text outputs shall be UTF-8 on every platform (including Windows). | M | Implemented | T | DEC | SDD §4.3 |
+| REP-09 | A framework row's verdict against the original (beats / trade-off / loses / ties) shall ignore one-off costs (build time), which are stated separately; a run with no deployment target shall show "no targets set", not "met". | M | Implemented | T | DEC (2026-10-01) | SDD §4.3 |
 | REP-09 | Every report shall describe the original model (parameters, layers, hidden size, attention and key/value heads, vocabulary, maximum context, number format, size at 16 bits), read from the model's config, with a plain-language meaning for each. | M | Implemented | T | User request, 2026-09-30 | SDD §4.3 |
 
 #### 3.1.6 Stage 0: sensitivity profiling and planning (S0)
@@ -217,7 +219,8 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | S0-12 | Stage 0 shall predict KV cache memory at `kv_context_len` tokens × `kv_batch_size` for the FP16 cache, the uniform cache and each plan. | M | Implemented | T | DEC (2026-09-30) | SDD §5.8 |
 | S0-13 | Stage 0 shall report the KV cache as rows original (uniform bits, no eviction), framework (bits and token budget) and framework bits only (no eviction), and save the KV profile and plans as JSON. | M | Implemented | T | DEC (2026-09-30) | SDD §5.8 |
 | S0-14 | No framework plan shall prune the `guard_top_k` layers with the highest layer-removal score, whichever score sets the bits; a removal profile shall be measured (and cached) when another score is used. | M | Implemented | T | DEC (2026-09-30) | SDD §5.4 |
-| S0-15 | Stage 0 shall plan activation bits per decoder layer for Stage 2: `act_protected_bits` for layers the weight plan protects or guards, `act_compressed_bits` elsewhere; the original variant is `act_uniform_bits` everywhere. Reported as rows `activations/original` and `activations/framework` and saved as `activation_plan.json`. | M | Implemented | T | DEC (2026-09-30) | SDD §5.9 |
+| S0-15 | Stage 0 shall plan activation bits per decoder layer for Stage 2. By default (`act_plan = measured`) it shall measure the calibration perplexity rise when only one layer's Linear inputs are rounded to each of `act_bits_options` and spend `act_avg_bits` where the rise is largest; `act_plan = from_weights` copies the weight plan (protected and guarded layers at the highest option). The original variant is `act_uniform_bits` everywhere. Rows `activations/original`, `activations/framework` and, when measured, `activations_from_weights/framework`; saved as `activation_plan.json` and `activation_profile.json`. | M | Implemented | T | DEC (2026-10-01) | SDD §5.9 |
+| S0-17 | Stage 0 shall write `handoff.md`: for each later stage and the search, the file it loads, the plan layer by layer, the predicted cost against the standard method and the uncompressed model, and what that stage must still measure, in plain language with every table column explained and the Original model section. | M | Implemented | T | DEC (2026-10-01) | SDD §5.10 |
 | S0-16 | `run_stage0` shall return every plan (threshold, same-size, same-size without pruning, activation, KV cache) and each plan class shall load its saved JSON (`CompressionPlan.load`, `ActivationPlan.load`, `KVPlan.load`). | M | Implemented | T | DEC (2026-09-30) | SDD §5.2 |
 
 #### 3.1.7 Stage 1: weight compression (S1)
@@ -351,7 +354,7 @@ Current automated coverage (`main`):
 | Test file | Requirements covered |
 |---|---|
 | `tests/test_config.py` | CFG-01, CFG-02, SRCH-01 (partial), SRCH-02, CMP-04, IF-01 |
-| `tests/test_stage0.py` | S0-01 … S0-05, S0-07, S0-14 … S0-16, CMP-07, MET-01, MET-04 … MET-07, PIPE-03 (end-to-end) |
+| `tests/test_stage0.py` | S0-01 … S0-05, S0-07, S0-14 … S0-17, CMP-07, MET-01, MET-04 … MET-07, PIPE-03 (end-to-end) |
 | `tests/test_kv_cache.py` | S0-10 … S0-12, MET-06 (predicted) |
 | `tests/test_reporting.py` | REP-02 … REP-06, REP-08, CMP-03, CMP-06 |
 
@@ -374,7 +377,7 @@ A full requirement-to-design-to-code matrix is in [SDD Appendix A](subsystem-des
 |---|---|
 | 1 | Downstream task suite (MET-03) not yet chosen. |
 | 2 | "Memory decreased" sanity check (MET-09) to be added to `StageReporter`. |
-| 3 | The Stage 0 activation plan (S0-15) is derived from the weight plan, not measured: it assumes a layer fragile for weights is fragile for activations. Stage 2 should check this against a measured per-layer activation sensitivity. Stage 3 follows the Stage 0 KV cache plan (S0-10 to S0-13). |
+| 3 | The Stage 0 activation plan (S0-15) assumes per-layer activation damages add up; Stage 2 measures the real effect. Stage 3 follows the Stage 0 KV cache plan (S0-10 to S0-13). |
 | 4 | The fidelity schedule for MFBO (which cheaper evaluation stands in for the full one) to be fixed with the search layer. |
 
 ### 5.3 Acronyms
