@@ -5,7 +5,8 @@
 - `hessian` came out negative for some TinyLlama layers (one probe per passage is mostly noise). It now uses
   `stage0.hessian_probes` (default 8) probes per passage, averages the curvature estimate per weight over all
   passages and probes, and drops the negative part before weighting by w². Scores are never negative. Costs
-  1 + `hessian_probes` backward passes per passage and three CPU copies of the layer weights.
+  1 + `hessian_probes` backward passes per passage two CPU copies of the layer weights (originals and the
+  curvature sum) and one extra gradient on the device.
 
 ## 2026-10-03: Four more sensitivity scores
 
