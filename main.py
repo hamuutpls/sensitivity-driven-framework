@@ -9,7 +9,7 @@ Every tunable parameter is here. Anything not listed keeps its default from src/
 # =====================================================================================================
 MODE = "single"  # "single": one Stage 0 run with the settings in section 2
 #                  "sweep":  try every combination of the values in section 5 and write one comparison report
-#                  "compare_scores": measure sensitivity all three ways (section 3) and compare how they rank layers
+#                  "compare_scores": measure sensitivity every way (section 3) and compare how they rank layers
 #                  "prune_sweep": really prune at every level in section 6 and measure the error (standard vs framework)
 
 MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
@@ -35,6 +35,10 @@ SENSITIVITY_SCORE = "layer_removal"  # how a layer's sensitivity is measured:
 #   "grad_x_weight": size of each number x its gradient, summed per layer (one pass, fast estimate)
 #   "layer_removal": perplexity rise when the layer is skipped entirely
 #   "layer_quant":   perplexity rise when only that layer is compressed to COMPRESSED_BITS
+#   "fisher":        0.5 x (gradient x number)^2 per layer, averaged over passages (second-order, Fisher estimate)
+#   "taylor_ema":    |sum of gradient x number| per layer, as a moving average over passages
+#   "hessian":       0.5 x curvature x number^2 per layer (curvature estimated with random probes)
+#   "movement":      how far each number is pushed away from zero over a short fine-tune, per layer
 NORMALIZATION = "rank"  # rank | minmax: how raw sensitivity scores are put on the 0-1 scale
 PROTECTED_BITS = 8  # bits per number in protected layers
 COMPRESSED_BITS = 4  # bits per number in unprotected layers

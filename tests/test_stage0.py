@@ -351,14 +351,56 @@ def test_compare_scores_end_to_end(tiny_llama, tokenizer, small_cfg):
     cand = SEARCH_SPACE.make({"calib_samples": 16, "gptq_groupsize": 32})
     out = compare_scores(ctx, cand, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts)
     data = json.loads(out["json"].read_text())
-    assert data["scores"] == ["grad_x_weight", "layer_removal", "layer_quant"]
+    assert data["scores"] == ["grad_x_weight", "layer_removal", "layer_quant", "fisher", "taylor_ema", "hessian",
+                              "movement"] and not data["failures"]
     assert all(data["agreement"][s][s] == pytest.approx(1.0) for s in data["scores"])
     assert len(data["per_layer"]) == 4
     report = out["report"].read_text(encoding="utf-8")
     assert "## Agreement between the ways" in report and "remove the layer" in report
+    assert "## How well each way matches the measured damage" in report and "Hessian" in report
 
     # a normal Stage 0 run with the removal score
     ctx2 = start_run(small_cfg.with_overrides({"stage0.score": "layer_removal", "run.run_id": "removal"}))
     res = run_stage0(ctx2, cand, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts, measure_fp16=False)
     assert res.profile.method == "layer_removal"
     assert "switched off" in (ctx2.run_dir / "stage_0" / "report.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("method", ["fisher", "taylor_ema", "hessian", "movement"])
+def test_gradient_scores_restore_the_model(tiny_llama, method):
+    torch.manual_seed(0)
+    batches = [torch.randint(0, 64, (2, 16)) for _ in range(3)]
+    before = {n: p.clone() for n, p in tiny_llama.named_parameters()}
+    prof = profile_sensitivity(tiny_llama, batches, method=method, movement_lr=1e-2)
+    assert prof.method == method and len(prof.raw_scores) == 4
+    assert all(math.isfinite(s) for s in prof.raw_scores) and len(set(prof.raw_scores)) > 1
+    if method != "hessian":  # the Hessian diagonal estimate can be negative; the others are sizes
+        assert all(s >= 0 for s in prof.raw_scores)
+    assert all(torch.equal(p, before[n]) for n, p in tiny_llama.named_parameters())
+    assert all(p.grad is None for p in tiny_llama.parameters())
+
+
+def test_hessian_score_matches_exact_diagonal():
+    # one Linear, loss = 0.5 * sum((W x)^2) / n: the diagonal of the Hessian is known exactly, so the probe
+    # estimate (averaged over many batches with different noise) should land close to 0.5 * sum(diag(H) w^2).
+    from sdf.stage0.sensitivity import profile_sensitivity as prof_fn
+
+    class Toy(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = torch.nn.Module()
+            self.model.layers = torch.nn.ModuleList([torch.nn.Linear(4, 3, bias=False)])
+
+        def forward(self, input_ids, labels=None):
+            x = self.x
+            out = self.model.layers[0](x)
+            return type("O", (), {"loss": 0.5 * out.pow(2).sum() / x.shape[0]})
+
+    torch.manual_seed(0)
+    toy = Toy().double()
+    toy.x = torch.randn(8, 4, dtype=torch.float64)
+    w = toy.model.layers[0].weight.detach()
+    diag = (toy.x.pow(2).mean(0)).expand_as(w)  # d2L/dw_ij^2 = mean_n x_nj^2
+    exact = 0.5 * (diag * w * w).sum().item()
+    est = prof_fn(toy, [torch.zeros(1, 1, dtype=torch.long)] * 400, method="hessian").raw_scores[0]
+    assert est == pytest.approx(exact, rel=0.1)
