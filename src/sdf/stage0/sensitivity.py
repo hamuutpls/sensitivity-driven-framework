@@ -172,10 +172,12 @@ def _rademacher(p: torch.Tensor, seed: int, batch: int, index: int) -> torch.Ten
 
 
 def _hessian_probes(flat, backward, input_ids, originals, diag, probes, rel_eps, seed, batch) -> None:
-    """Add z * Hz per weight to `diag` for `probes` noise vectors z, with Hz by a forward difference of gradients,
-    (g(w + eps z) - g(w)) / eps, so no second-order graph is kept. g(w) is the gradient already in p.grad."""
+    """Add z * Hz per weight to `diag` (CPU) for `probes` noise vectors z, with Hz by a forward difference of
+    gradients, (g(w + eps z) - g(w)) / eps, so no second-order graph is kept. g(w) is the gradient already in
+    p.grad; it stays on the device (one more gradient's worth of memory there) so the CPU holds only the
+    originals and `diag`."""
     with torch.no_grad():
-        g0 = [None if p.grad is None else p.grad.detach().to("cpu", torch.float32, copy=True) for _, p in flat]
+        g0 = [None if p.grad is None else p.grad.detach().float().clone() for _, p in flat]
         eps = [None if g is None else rel_eps * p.float().pow(2).mean().sqrt().clamp(min=1e-12).item()
                for g, (_, p) in zip(g0, flat)]
     for k in range(probes):
@@ -188,8 +190,8 @@ def _hessian_probes(flat, backward, input_ids, originals, diag, probes, rel_eps,
             for j, (_, p) in enumerate(flat):
                 if eps[j] is None:
                     continue
-                hz = (p.grad.float() - g0[j].to(p.device)) / eps[j]
-                diag[j] += (_rademacher(p, seed, batch * probes + k, j) * hz).cpu()
+                z = _rademacher(p, seed, batch * probes + k, j)
+                diag[j].add_((z * (p.grad.float() - g0[j]) / eps[j]).cpu())
                 p.copy_(originals[j].to(p.device))
 
 
