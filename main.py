@@ -10,6 +10,7 @@ Every tunable parameter is here. Anything not listed keeps its default from src/
 MODE = "single"  # "single": one Stage 0 run with the settings in section 2
 #                  "sweep":  try every combination of the values in section 5 and write one comparison report
 #                  "compare_scores": measure sensitivity all three ways (section 3) and compare how they rank layers
+#                  "prune_sweep": really prune at every level in section 6 and measure the error (standard vs framework)
 
 MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 OUTPUT_ROOT = "thesis_compression/results"  # local folder, relative to where you run; results/<run_id>/stage_0/
@@ -85,6 +86,12 @@ SWEEP = {
     "gptq_groupsize": [32, 64, 128, -1],
 }
 
+# =====================================================================================================
+# 6. Pruning levels (MODE = "prune_sweep"). Each level is applied to the real weights and measured.
+# =====================================================================================================
+PRUNE_SWEEP_RATIOS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]  # shares removed from each pruned layer
+PRUNE_SWEEP_QUANTIZE = True  # True: also store the rest at the plan's bits (4 / 8); False: pruning only
+
 
 # =====================================================================================================
 def build_config():
@@ -123,6 +130,8 @@ def build_config():
         "stage0.kv_context_len": KV_CONTEXT_LEN,
         "stage0.kv_batch_size": KV_BATCH_SIZE,
         "stage0.kv_module_names": KV_MODULE_NAMES,
+        "stage0.prune_sweep_ratios": PRUNE_SWEEP_RATIOS,
+        "stage0.prune_sweep_quantize": PRUNE_SWEEP_QUANTIZE,
         "calibration.seq_len": CALIB_SEQ_LEN,
         "eval.seq_len": EVAL_SEQ_LEN,
         "eval.max_windows": EVAL_MAX_WINDOWS,
@@ -151,8 +160,12 @@ def main():
         from sdf.stage0.compare import compare_scores
 
         outputs = compare_scores(start_run(cfg), candidate)
+    elif MODE == "prune_sweep":
+        from sdf.stage0.prune_sweep import run_prune_sweep
+
+        outputs = run_prune_sweep(start_run(cfg), candidate)
     else:
-        raise SystemExit(f"MODE must be 'single', 'sweep' or 'compare_scores', not {MODE!r}")
+        raise SystemExit(f"MODE must be 'single', 'sweep', 'compare_scores' or 'prune_sweep', not {MODE!r}")
     for name, path in outputs.items():
         print(f"{name}: {path}")
 

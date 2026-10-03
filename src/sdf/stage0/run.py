@@ -148,6 +148,22 @@ def fp16_key(ctx: RunContext, device: torch.device) -> dict[str, Any]:
             "backend": "hf-transformers", "seed": cfg.run.seed}
 
 
+def load_fp16(ctx: RunContext, handle: _ModelHandle,
+              text_loader: Callable[[str, str], list[str]]) -> tuple[dict[str, Any], bool]:
+    """The uncompressed model's measured metrics and raw measurements, cached per (model, eval settings,
+    hardware)."""
+    cfg = ctx.cfg
+
+    def compute() -> dict[str, Any]:
+        val, held = eval_windows(text_loader(cfg.eval.dataset, "test"), handle.tokenizer, cfg.eval.seq_len,
+                                 cfg.eval.max_windows)
+        metrics, raw = measure_model(handle.model(cfg.model.dtype), val, held, cfg.eval, handle.device,
+                                     seed=cfg.run.seed)
+        return {"metrics": metrics, "raw": raw}
+
+    return ctx.cache.get_or_compute("fp16_baseline", fp16_key(ctx, handle.device), compute)
+
+
 def _cost_metrics(cost: PlanCost) -> dict[str, float]:
     return {"predicted_weight_memory_gb": cost.weight_memory_gb, "avg_bits_per_weight": cost.avg_bits_per_weight,
             "sparsity": cost.sparsity, "sensitivity_exposure": cost.sensitivity_exposure}
@@ -265,14 +281,7 @@ def run_stage0(
         row.metrics.update(_cost_metrics(baseline_cost(profile, s0.baseline_bits)))
         row.metrics["build_time_s"] = 0.0
         if measure_fp16:
-            def compute_fp16() -> dict[str, Any]:
-                texts = text_loader(cfg.eval.dataset, "test")
-                val, held = eval_windows(texts, handle.tokenizer, cfg.eval.seq_len, cfg.eval.max_windows)
-                metrics, raw = measure_model(handle.model(cfg.model.dtype), val, held, cfg.eval, device,
-                                             seed=cfg.run.seed)
-                return {"metrics": metrics, "raw": raw}
-
-            fp16, fp16_cached = ctx.cache.get_or_compute("fp16_baseline", fp16_key(ctx, device), compute_fp16)
+            fp16, fp16_cached = load_fp16(ctx, handle, text_loader)
             row.metrics.update(fp16["metrics"])
             row.info["cached"] = fp16_cached
             rep.add_raw("baseline", "fp16", fp16["raw"])

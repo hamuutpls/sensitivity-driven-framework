@@ -92,7 +92,7 @@ def test_plan_and_uniform():
     uni = uniform_plan(TOY_SCORES, 4, 0.0)
     assert {lp.bit_width for lp in uni.layers} == {4} and not uni.protected_layers
     with pytest.raises(ValueError):
-        plan_compression(TOY_SCORES, 0.5, 1.0, 8, 4)
+        plan_compression(TOY_SCORES, 0.5, 1.5, 8, 4)
 
 
 def test_guard_blocks_pruning_of_critical_layers():

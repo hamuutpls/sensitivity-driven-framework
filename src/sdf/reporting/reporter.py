@@ -94,10 +94,11 @@ class StageReporter:
         requirement: DeploymentRequirement,
         main_metrics: list[str],
         original_model: dict[str, Any] | None = None,
+        subdir: str | None = None,
     ):
         self.stage = stage
         self.title = title
-        self.dir = Path(run_dir) / f"stage_{stage}"
+        self.dir = Path(run_dir) / (subdir or f"stage_{stage}")  # subdir: a side study next to stage_<N>/
         self.dir.mkdir(parents=True, exist_ok=True)
         self.config = config
         self.environment = environment

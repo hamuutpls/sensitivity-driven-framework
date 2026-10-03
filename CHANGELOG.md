@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-03: Pruning levels, measured
+
+- **`MODE = "prune_sweep"`** (`stage0/prune_sweep.py`): prunes the real weights at every share in
+  `PRUNE_SWEEP_RATIOS` (default 10% to 100% in 10% steps, `stage0.prune_sweep_ratios`) and measures perplexity on
+  both test halves, standard method (every layer 4-bit, pruned) vs framework (Stage 0 plan, protected and guarded
+  layers not pruned). Magnitude pruning per output row plus round-to-nearest at the plan's bits
+  (`PRUNE_SWEEP_QUANTIZE = False` for pruning only), simulated on FP16 weights; each level is cached. Outputs in
+  `stage_0_prune_sweep/` with a "Pruning curve" table. Before, pruning was only predicted, at the one fixed
+  ratio (0.3).
+- Pruning ratio 1.0 is now allowed in plans (the layer keeps no weights and passes its input on).
+- `predict_cost` counts scale factors only for kept weights, consistent with its "pruned weights are free"
+  assumption; plans that prune are predicted slightly smaller (about 0.5% at 30% pruning on TinyLlama).
+- `load_fp16` shared by Stage 0 and the new study; `StageReporter(subdir=...)` for side studies.
+
 ## 2026-10-01: Annotated figures
 
 - `docs/figures/`: six annotated figures (SVG + PNG) for the thesis: pipeline overview, how Stage 0 builds its

@@ -26,7 +26,8 @@ python main.py
 ```
 
 `MODE = "single"` runs Stage 0 once; `MODE = "sweep"` tries every combination in `SWEEP` and writes one
-comparison report. The command-line tools below do the same with `--set` overrides.
+comparison report; `MODE = "prune_sweep"` really prunes the model at every level in `PRUNE_SWEEP_RATIOS`
+(10% to 100% by default) and measures the error, standard method vs framework (`stage_0_prune_sweep/`). The command-line tools below do the same with `--set` overrides.
 
 ## Layout
 
