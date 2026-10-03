@@ -125,7 +125,7 @@ def _plain_part(rep: "StageReporter") -> list[str]:
     lines += ["## Key terms", ""]
     seen = set()
     for r in rep.rows:
-        if r.plain_name in seen:
+        if r.plain_name in seen or r.info.get("key_term") is False:  # rows explained by a glossary entry
             continue
         seen.add(r.plain_name)
         lines.append(f"- **{r.plain_name}**: {_cap(r.info.get('plain_desc') or VARIANT_PLAIN[r.variant][1])}")

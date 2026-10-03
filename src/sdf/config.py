@@ -107,6 +107,10 @@ class Stage0Config:
     kv_context_len: int = 2048  # tokens per sequence for the memory prediction
     kv_batch_size: int = 1  # sequences held at once for the memory prediction
     kv_module_names: list[str] = field(default_factory=lambda: ["k_proj", "v_proj"])  # key / value Linear names
+    # Pruning-levels study (MODE "prune_sweep", stage0/prune_sweep.py): really prune at each share and measure
+    # perplexity, standard method vs framework. quantize: also round to the plan's bits (False = pruning only).
+    prune_sweep_ratios: list[float] = field(default_factory=lambda: [round(0.1 * i, 1) for i in range(1, 11)])
+    prune_sweep_quantize: bool = True
 
 
 @dataclass

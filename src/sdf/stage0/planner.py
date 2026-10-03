@@ -165,7 +165,7 @@ def predict_cost(
     """Ideal storage of a plan.
 
     Per compressed layer: kept weights x bits, plus one scale/zero pair (`group_overhead_bits`) per quantisation
-    group (group_size weights, or one per output channel when group_size == PER_CHANNEL). Pruned weights are
+    group of kept weights (group_size weights, or one per output channel when group_size == PER_CHANNEL). Pruned weights are
     assumed to be stored for free, which holds for structured pruning; unstructured sparsity needs a sparse
     format to realise it. Parameters outside the decoder Linear weights stay at `baseline_bits`.
     """
@@ -178,8 +178,9 @@ def predict_cost(
         kept = numel * (1.0 - lp.pruning_ratio)
         bits = kept * lp.bit_width
         if lp.bit_width < baseline_bits:
+            # Scales for kept weights only: pruned rows/columns are gone (structured), so their groups are too.
             groups = rows if group_size == PER_CHANNEL else numel / group_size
-            bits += groups * group_overhead_bits
+            bits += groups * (1.0 - lp.pruning_ratio) * group_overhead_bits
         per_layer_bits.append(bits)
         total_pruned += numel - kept
         eff_bits = lp.bit_width * (1.0 - lp.pruning_ratio)
@@ -211,5 +212,5 @@ def baseline_cost(profile: SensitivityProfile, baseline_bits: int) -> PlanCost:
 
 
 def _check_ratio(r: float) -> None:
-    if not 0.0 <= r < 1.0:
-        raise ValueError(f"pruning ratio must be in [0, 1), got {r}")
+    if not 0.0 <= r <= 1.0:  # 1.0 empties the layer's Linear weights: the layer only passes its input on
+        raise ValueError(f"pruning ratio must be in [0, 1], got {r}")
