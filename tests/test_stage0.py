@@ -374,8 +374,7 @@ def test_gradient_scores_restore_the_model(tiny_llama, method):
     prof = profile_sensitivity(tiny_llama, batches, method=method, movement_lr=1e-2)
     assert prof.method == method and len(prof.raw_scores) == 4
     assert all(math.isfinite(s) for s in prof.raw_scores) and len(set(prof.raw_scores)) > 1
-    if method != "hessian":  # the Hessian diagonal estimate can be negative; the others are sizes
-        assert all(s >= 0 for s in prof.raw_scores)
+    assert all(s >= 0 for s in prof.raw_scores)
     assert all(torch.equal(p, before[n]) for n, p in tiny_llama.named_parameters())
     assert all(p.grad is None for p in tiny_llama.parameters())
 
@@ -402,5 +401,5 @@ def test_hessian_score_matches_exact_diagonal():
     w = toy.model.layers[0].weight.detach()
     diag = (toy.x.pow(2).mean(0)).expand_as(w)  # d2L/dw_ij^2 = mean_n x_nj^2
     exact = 0.5 * (diag * w * w).sum().item()
-    est = prof_fn(toy, [torch.zeros(1, 1, dtype=torch.long)] * 400, method="hessian").raw_scores[0]
+    est = prof_fn(toy, [torch.zeros(1, 1, dtype=torch.long)] * 50, method="hessian").raw_scores[0]
     assert est == pytest.approx(exact, rel=0.1)

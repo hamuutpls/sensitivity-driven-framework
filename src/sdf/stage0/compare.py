@@ -154,7 +154,8 @@ def _report(res: dict[str, Any], cand: dict[str, Any]) -> str:
           "- **Taylor, moving average**: per layer, the gradient x size summed over the whole layer before "
           "taking its size, smoothed over passages with a moving average (as LLM-Pruner does).",
           "- **Hessian**: for every number, the curvature of the error (estimated with random +-1 probes, "
-          "Hutchinson's method) x its size squared, halved, added up per layer (Optimal Brain Damage).",
+          "Hutchinson's method, 8 per passage by default; negative estimates are noise and count as 0) "
+          "x its size squared, halved, added up per layer (Optimal Brain Damage).",
           "- **Movement**: a short fine-tune on the passages (one small step each); for every number, how far "
           "the training pushes it away from zero, added up over steps, then over the layer (movement pruning).",
           "- **Agreement**: 1 means both ways put the layers in the same order, 0 means no relation, negative "
