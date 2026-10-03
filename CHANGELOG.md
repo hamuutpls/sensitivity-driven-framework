@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-03: Four more sensitivity scores
+
+- `stage0.score` adds `fisher`, `taylor_ema`, `hessian` and `movement` (`profile_sensitivity(method=...)`; settings
+  `taylor_ema_beta` 0.9, `movement_lr` 1e-4, `hessian_eps` 1e-3). Hessian uses Hutchinson's diagonal estimate with
+  a finite-difference Hessian-vector product, so it needs no second-order graph; movement runs one plain SGD step
+  per calibration passage. Both restore the weights from a CPU copy and keep per-weight state on the CPU, so GPU
+  memory is about one backward pass. Layer removal stays the default.
+- `compare_scores` runs all seven, survives a failing score, and opens its report with how well each score
+  matches the two measured ones (agreement, top 5 vs the never-pruned set, time, peak memory).
+
 ## 2026-10-03: Pruning levels, measured
 
 - **`MODE = "prune_sweep"`** (`stage0/prune_sweep.py`): prunes the real weights at every share in

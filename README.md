@@ -61,8 +61,12 @@ at or above `sensitive_threshold` is **protected** (8-bit, no pruning). Every ot
 of layers.
 
 `stage0.score` switches the measurement: `layer_quant` (perplexity rise when only that layer is compressed) or
-`grad_x_weight` (Σ_batches Σ_{w ∈ layer l} |∂L/∂w · w|, one backward pass, a first-order estimate). `MODE = "compare_scores"` in `main.py`
-runs all three and compares their rankings.
+`grad_x_weight` (Σ_batches Σ_{w ∈ layer l} |∂L/∂w · w|, one backward pass, a first-order estimate), or one of four
+more gradient scores: `fisher` (mean_b ½ Σ_w (g·w)², empirical Fisher), `taylor_ema` (moving average over batches
+of |Σ_w g·w|, as in LLM-Pruner), `hessian` (mean_b ½ Σ_w diag(H)·w², Hutchinson probes with a finite-difference
+Hessian-vector product, as in Optimal Brain Damage) and `movement` (Σ_w |Σ_steps g·w| over a short SGD
+fine-tune, as in movement pruning). `MODE = "compare_scores"` in `main.py` runs all seven and checks the
+estimates against the two measured ones.
 
 Rank is used instead of min-max because one outlier layer skews min-max. On TinyLlama, layer 0 scores 2705
 against 6596–8647 for the other layers, so min-max put layers 1–21 between 0.66 and 1.0 and threshold 0.5

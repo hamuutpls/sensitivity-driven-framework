@@ -36,6 +36,7 @@ from sdf.stage0.activation import (
 from sdf.stage0.handoff import write_handoff
 from sdf.stage0.kv_cache import KVCost, KVPlan, KVProfile, plan_kv, predict_kv, profile_kv, uniform_kv_plan
 from sdf.stage0.sensitivity import (
+    GRADIENT_SCORES,
     SCORES,
     SensitivityProfile,
     normalize,
@@ -138,6 +139,9 @@ def profile_key(ctx: RunContext, cand: dict[str, Any], score: str | None = None)
            "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size, "seed": cfg.run.seed}
     if score == "layer_quant":  # the per-layer compression depends on these too
         key.update(bits=cfg.stage0.compressed_bits, group_size=cand["gptq_groupsize"])
+    extra = {"taylor_ema": {"ema_beta": cfg.stage0.taylor_ema_beta}, "movement": {"lr": cfg.stage0.movement_lr},
+             "hessian": {"eps": cfg.stage0.hessian_eps}}
+    key.update(extra.get(score, {}))
     return key
 
 
@@ -211,9 +215,11 @@ def load_profile(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandl
                                       candidate["calib_samples"], cfg.calibration.seq_len,
                                       cfg.calibration.batch_size, cfg.run.seed)
         s0 = cfg.stage0
-        if score == "grad_x_weight":
+        if score in GRADIENT_SCORES:
             prof = profile_sensitivity(handle.model(s0.profile_dtype), batches, device=handle.device,
-                                       meta=profile_key(ctx, candidate, score))
+                                       meta=profile_key(ctx, candidate, score), method=score,
+                                       ema_beta=s0.taylor_ema_beta, movement_lr=s0.movement_lr,
+                                       hessian_eps=s0.hessian_eps, seed=cfg.run.seed)
         elif score in ("layer_removal", "layer_quant"):
             prof = profile_by_ablation(handle.model(s0.profile_dtype), batches, score, device=handle.device,
                                        bits=s0.compressed_bits, group_size=candidate["gptq_groupsize"],

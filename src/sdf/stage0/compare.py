@@ -20,12 +20,21 @@ from sdf.stage0.sensitivity import SCORES, SensitivityProfile, normalize, outlie
 from sdf.stage0.sweep import _spearman
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.env import resolve_device
+from sdf.utils.logging import get_logger
+
+log = get_logger(__name__)
 
 PLAIN_NAME = {
     "grad_x_weight": "gradient x weight",
     "layer_removal": "remove the layer",
     "layer_quant": "compress only that layer",
+    "fisher": "Fisher",
+    "taylor_ema": "Taylor, moving average",
+    "hessian": "Hessian",
+    "movement": "movement",
 }
+DIRECT = ("layer_removal", "layer_quant")  # measured damage, the yardsticks the estimates are checked against
+TOP_K = 5
 
 
 def compare_scores(ctx: RunContext, candidate: dict[str, Any], scores: tuple[str, ...] = SCORES, model=None,
@@ -34,9 +43,16 @@ def compare_scores(ctx: RunContext, candidate: dict[str, Any], scores: tuple[str
     handle = _ModelHandle(ctx, resolve_device(cfg.model.device), model, tokenizer)
     text_loader = text_loader or functools.partial(load_texts, cfg.data.sources)
     profiles: dict[str, SensitivityProfile] = {}
+    failures: dict[str, str] = {}
     for score in scores:
         sub = dataclasses.replace(ctx, cfg=cfg.with_overrides({"stage0.score": score}))
-        profiles[score], _ = load_profile(sub, candidate, handle, text_loader)
+        try:
+            profiles[score], _ = load_profile(sub, candidate, handle, text_loader)
+        except Exception as e:  # noqa: BLE001 - one score failing (e.g. out of memory) must not sink the others
+            log.exception("score %s failed", score)
+            failures[score] = f"{type(e).__name__}: {e}"
+    if not profiles:
+        raise RuntimeError(f"every score failed: {failures}")
 
     t = candidate["sensitive_threshold"]
     ranks = {s: normalize(p.raw_scores) for s, p in profiles.items()}
@@ -49,6 +65,10 @@ def compare_scores(ctx: RunContext, candidate: dict[str, Any], scores: tuple[str
         "protected": {s: sorted(p) for s, p in protected.items()},
         "outliers": {s: outlier_layers(p.raw_scores) for s, p in profiles.items()},
         "time_s": {s: p.cost.get("wall_clock_s") for s, p in profiles.items()},
+        "peak_memory_gb": {s: p.cost.get("peak_memory_gb") for s, p in profiles.items()},
+        "top": {s: sorted(range(p.num_layers), key=lambda i: p.raw_scores[i], reverse=True)[:TOP_K]
+                for s, p in profiles.items()},
+        "failures": failures,
         "baseline_ppl": next((p.meta["baseline_ppl"] for p in profiles.values() if "baseline_ppl" in p.meta), None),
         "per_layer": [{"layer": i, **{f"{s}_raw": profiles[s].raw_scores[i] for s in names},
                        **{f"{s}_rank": ranks[s][i] for s in names},
@@ -91,6 +111,33 @@ def _report(res: dict[str, Any], cand: dict[str, Any]) -> str:
           + " ".join(f"*{label(a)}* and *{label(b)}* rank the layers with agreement "
                      f"{res['agreement'][a][b]:.2f} (1 = same order) and pick {res['overlap'][a][b]} of the same "
                      f"{k} layers to protect." for a, b in pairs), ""]
+    direct = [d for d in DIRECT if d in names]
+    if direct:
+        guard = set(res["top"].get("layer_removal", []))
+        L += ["## How well each way matches the measured damage", "",
+              "The two ablation ways measure damage directly, so they are the yardsticks; the others are "
+              "estimates from gradients and should rank the layers the same way to be trusted.", "",
+              "| Way | " + " | ".join(f"Agreement with *{label(d)}*" for d in direct)
+              + f" | Top {TOP_K} layers | Same as never-pruned set | Time (s) | Peak GPU memory (GB) |",
+              "|---|" + "---|" * (len(direct) + 4)]
+        for s in names:
+            tm, pk = res["time_s"].get(s), res["peak_memory_gb"].get(s)
+            L.append(f"| {label(s)} | " + " | ".join(f"{res['agreement'][s][d]:.2f}" for d in direct)
+                     + f" | {', '.join(map(str, res['top'][s]))} | "
+                     + (f"{len(guard & set(res['top'][s]))} of {TOP_K}" if guard else "–")
+                     + " | " + (f"{tm:.1f}" if tm is not None else "–")
+                     + " | " + (f"{pk:.2f}" if pk is not None else "–") + " |")
+        L += ["", "**What each column means**", "",
+              "- **Way**: how layer sensitivity was measured (see *The ways compared* below).",
+              "- **Agreement with ...**: how alike the two rankings of the 22 layers are (Spearman rank "
+              "correlation): 1 = same order, 0 = no relation, negative = roughly opposite.",
+              f"- **Top {TOP_K} layers**: the {TOP_K} layers this way rates most sensitive, most sensitive first.",
+              f"- **Same as never-pruned set**: how many of those {TOP_K} are also among the {TOP_K} layers whose "
+              "removal hurts most (the layers no plan prunes).",
+              "- **Time**: seconds to score every layer once. **Peak GPU memory**: the most graphics-card memory "
+              "it needed.", ""]
+    if res.get("failures"):
+        L += ["Ways that failed: " + "; ".join(f"{label(s)} ({e})" for s, e in res["failures"].items()), ""]
     L += original_model_lines(res.get("original_model", {}))
     L += ["## The ways compared", "",
           "- **Gradient x weight**: one pass over the text; for every number, its size times how much the "
@@ -101,6 +148,15 @@ def _report(res: dict[str, Any], cand: dict[str, Any]) -> str:
           "- **Compress only that layer**: compress one layer at a time the way the plan would "
           f"({cand['gptq_groupsize']}-number groups, simple rounding) and measure the rise in perplexity. The "
           "closest to what compression actually does, but the rises are small and so noisier.",
+          "- **Fisher**: for every number, (its gradient x its size) squared, halved, added up per layer and "
+          "averaged over passages: the second-order estimate of the damage of deleting it, with the "
+          "curvature approximated from gradients (empirical Fisher).",
+          "- **Taylor, moving average**: per layer, the gradient x size summed over the whole layer before "
+          "taking its size, smoothed over passages with a moving average (as LLM-Pruner does).",
+          "- **Hessian**: for every number, the curvature of the error (estimated with random +-1 probes, "
+          "Hutchinson's method) x its size squared, halved, added up per layer (Optimal Brain Damage).",
+          "- **Movement**: a short fine-tune on the passages (one small step each); for every number, how far "
+          "the training pushes it away from zero, added up over steps, then over the layer (movement pruning).",
           "- **Agreement**: 1 means both ways put the layers in the same order, 0 means no relation, negative "
           "means roughly opposite.", ""]
     L += ["## Agreement between the ways", "", "| | " + " | ".join(label(s) for s in names) + " |",
