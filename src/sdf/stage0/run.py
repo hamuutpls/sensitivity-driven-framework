@@ -140,7 +140,7 @@ def profile_key(ctx: RunContext, cand: dict[str, Any], score: str | None = None)
     if score == "layer_quant":  # the per-layer compression depends on these too
         key.update(bits=cfg.stage0.compressed_bits, group_size=cand["gptq_groupsize"])
     extra = {"taylor_ema": {"ema_beta": cfg.stage0.taylor_ema_beta}, "movement": {"lr": cfg.stage0.movement_lr},
-             "hessian": {"eps": cfg.stage0.hessian_eps}}
+             "hessian": {"eps": cfg.stage0.hessian_eps, "probes": cfg.stage0.hessian_probes, "clamp": True}}
     key.update(extra.get(score, {}))
     return key
 
@@ -219,7 +219,8 @@ def load_profile(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandl
             prof = profile_sensitivity(handle.model(s0.profile_dtype), batches, device=handle.device,
                                        meta=profile_key(ctx, candidate, score), method=score,
                                        ema_beta=s0.taylor_ema_beta, movement_lr=s0.movement_lr,
-                                       hessian_eps=s0.hessian_eps, seed=cfg.run.seed)
+                                       hessian_eps=s0.hessian_eps,
+                                       hessian_probes=s0.hessian_probes, seed=cfg.run.seed)
         elif score in ("layer_removal", "layer_quant"):
             prof = profile_by_ablation(handle.model(s0.profile_dtype), batches, score, device=handle.device,
                                        bits=s0.compressed_bits, group_size=candidate["gptq_groupsize"],

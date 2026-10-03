@@ -156,8 +156,10 @@ def outlier_layers(raw_scores: list[float], cutoff: float = 3.5) -> list[int]:
 #   fisher         mean_b 0.5 sum_w (g w)^2             second-order Taylor, Hessian ~ empirical Fisher (g g^T diag)
 #   taylor_ema     EMA_b |sum_w g w|, beta=taylor_ema_beta   whole-layer Taylor importance, moving average over
 #                                                       batches (as LLM-Pruner does for groups)
-#   hessian        mean_b 0.5 sum_w diag(H)_w w^2       Optimal Brain Damage saliency; diag(H) by Hutchinson,
-#                                                       diag(H) ~ z * Hz with z = +-1 noise, one probe per batch
+#   hessian        0.5 sum_w max(diag(H)_w, 0) w^2      Optimal Brain Damage saliency; diag(H) by Hutchinson,
+#                                                       diag(H) ~ mean z * Hz with z = +-1 noise, hessian_probes
+#                                                       probes per batch, averaged over all batches per weight
+#                                                       before the negative part (noise) is dropped
 #   movement       sum_w |sum_b g_b w_b|                movement pruning (Sanh et al. 2020): per-weight score
 #                                                       accumulated over a short SGD fine-tune on the batches
 GRADIENT_SCORES = ("grad_x_weight", "fisher", "taylor_ema", "hessian", "movement")
@@ -169,6 +171,28 @@ def _rademacher(p: torch.Tensor, seed: int, batch: int, index: int) -> torch.Ten
     return torch.randint(0, 2, p.shape, generator=g, device=p.device).float() * 2 - 1
 
 
+def _hessian_probes(flat, backward, input_ids, originals, diag, probes, rel_eps, seed, batch) -> None:
+    """Add z * Hz per weight to `diag` for `probes` noise vectors z, with Hz by a forward difference of gradients,
+    (g(w + eps z) - g(w)) / eps, so no second-order graph is kept. g(w) is the gradient already in p.grad."""
+    with torch.no_grad():
+        g0 = [None if p.grad is None else p.grad.detach().to("cpu", torch.float32, copy=True) for _, p in flat]
+        eps = [None if g is None else rel_eps * p.float().pow(2).mean().sqrt().clamp(min=1e-12).item()
+               for g, (_, p) in zip(g0, flat)]
+    for k in range(probes):
+        with torch.no_grad():
+            for j, (_, p) in enumerate(flat):
+                if eps[j] is not None:
+                    p.add_((_rademacher(p, seed, batch * probes + k, j) * eps[j]).to(p.dtype))
+        backward(input_ids)
+        with torch.no_grad():
+            for j, (_, p) in enumerate(flat):
+                if eps[j] is None:
+                    continue
+                hz = (p.grad.float() - g0[j].to(p.device)) / eps[j]
+                diag[j] += (_rademacher(p, seed, batch * probes + k, j) * hz).cpu()
+                p.copy_(originals[j].to(p.device))
+
+
 def profile_sensitivity(
     model: nn.Module,
     batches: Iterable[torch.Tensor],
@@ -178,6 +202,7 @@ def profile_sensitivity(
     ema_beta: float = 0.9,
     movement_lr: float = 1e-4,
     hessian_eps: float = 1e-3,
+    hessian_probes: int = 8,
     seed: int = 0,
 ) -> SensitivityProfile:
     """Run the calibration batches through `model` and score every decoder layer with a gradient score
@@ -187,6 +212,7 @@ def profile_sensitivity(
     memory, and every parameter's requires_grad flag is restored afterwards. `movement` updates the weights
     (plain SGD, `movement_lr`, one step per batch) and `hessian` perturbs them; both restore the originals
     from a CPU copy, and keep their extra per-weight state on the CPU so GPU memory stays as for one backward.
+    `hessian` runs 1 + `hessian_probes` backward passes per batch.
     """
     if method not in GRADIENT_SCORES:
         raise ValueError(f"unknown gradient score {method!r}; choose from {GRADIENT_SCORES}")
@@ -201,6 +227,7 @@ def profile_sensitivity(
         p.requires_grad_(id(p) in in_layers)
     originals = [p.detach().to("cpu", copy=True) for _, p in flat] if method in ("movement", "hessian") else None
     moves = [torch.zeros_like(o, dtype=torch.float32) for o in originals] if method == "movement" else None
+    diag = [torch.zeros_like(o, dtype=torch.float32) for o in originals] if method == "hessian" else None
 
     was_training = model.training
     model.eval()
@@ -219,34 +246,13 @@ def profile_sensitivity(
             input_ids = input_ids.to(device)
             backward(input_ids)
             per = torch.zeros(len(layers), dtype=torch.float64)
-            with torch.no_grad():
-                if method == "hessian":
-                    # Hz by a forward difference of gradients, (g(w + eps z) - g(w)) / eps, so no second-order
-                    # graph is kept; only the per-tensor sums sum(z g w^2) are needed, before and after.
-                    before, eps = [], []  # per tensor: sum(z g w^2) at w, and the step size
-                    for j, (i, p) in enumerate(flat):
-                        if p.grad is None:
-                            before.append(None), eps.append(None)
-                            continue
-                        z, w = _rademacher(p, seed, b, j), p.float()
-                        before.append((z * p.grad.float() * w * w).sum().item())
-                        eps.append(hessian_eps * w.pow(2).mean().sqrt().clamp(min=1e-12).item())
-                        p.add_((z * eps[-1]).to(p.dtype))
             if method == "hessian":
-                backward(input_ids)
+                _hessian_probes(flat, backward, input_ids, originals, diag, hessian_probes, hessian_eps, seed, b)
             with torch.no_grad():
                 for j, (i, p) in enumerate(flat):
-                    if p.grad is None:
+                    if p.grad is None or method == "hessian":
                         continue
                     g = p.grad.float()
-                    if method == "hessian":
-                        if eps[j] is None:
-                            continue
-                        w = originals[j].to(device=p.device, dtype=torch.float32)
-                        after = (_rademacher(p, seed, b, j) * g * w * w).sum().item()
-                        per[i] += 0.5 * (after - before[j]) / eps[j]  # 0.5 sum_w (z Hz)_w w^2
-                        p.copy_(originals[j].to(p.device))
-                        continue
                     gw = g * p.float()
                     if method == "grad_x_weight":
                         per[i] += gw.abs().sum().item()
@@ -275,12 +281,16 @@ def profile_sensitivity(
 
     if n_batches == 0:
         raise ValueError("no calibration batches given")
-    if method in ("fisher", "hessian"):
+    if method == "fisher":
         raw /= n_batches
     if method == "movement":
         raw = torch.zeros(len(layers), dtype=torch.float64)
         for (i, _), m in zip(flat, moves):
             raw[i] += m.abs().sum().item()
+    if method == "hessian":  # curvature can't be negative at a trained minimum: keep the positive part per weight
+        raw = torch.zeros(len(layers), dtype=torch.float64)
+        for (i, _), d, o in zip(flat, diag, originals):
+            raw[i] += 0.5 * ((d / (n_batches * hessian_probes)).clamp(min=0) * o.float().pow(2)).sum().item()
     if not torch.isfinite(raw).all():
         raise FloatingPointError("non-finite sensitivity scores; profile in float32 (stage0.profile_dtype)")
 

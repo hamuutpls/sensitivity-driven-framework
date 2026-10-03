@@ -37,7 +37,7 @@ SENSITIVITY_SCORE = "layer_removal"  # how a layer's sensitivity is measured:
 #   "layer_quant":   perplexity rise when only that layer is compressed to COMPRESSED_BITS
 #   "fisher":        0.5 x (gradient x number)^2 per layer, averaged over passages (second-order, Fisher estimate)
 #   "taylor_ema":    |sum of gradient x number| per layer, as a moving average over passages
-#   "hessian":       0.5 x curvature x number^2 per layer (curvature estimated with random probes)
+#   "hessian":       0.5 x curvature x number^2 per layer (curvature from 8 random probes per passage, negatives -> 0)
 #   "movement":      how far each number is pushed away from zero over a short fine-tune, per layer
 NORMALIZATION = "rank"  # rank | minmax: how raw sensitivity scores are put on the 0-1 scale
 PROTECTED_BITS = 8  # bits per number in protected layers

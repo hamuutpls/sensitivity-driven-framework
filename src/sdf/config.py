@@ -75,6 +75,7 @@ class Stage0Config:
     taylor_ema_beta: float = 0.9  # taylor_ema: weight of the running average against each new batch
     movement_lr: float = 1e-4  # movement: SGD step per calibration batch of the short fine-tune
     hessian_eps: float = 1e-3  # hessian: probe step, as a share of each weight tensor's RMS
+    hessian_probes: int = 8  # hessian: random probes per calibration batch (each costs one extra backward)
     protected_bits: int = 8
     compressed_bits: int = 4
     # Same-size plan without pruning: robust layers drop to this many bits instead, so the size match comes
