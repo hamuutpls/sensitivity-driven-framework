@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-04: Downstream tasks and the master report
+
+- `eval/downstream.py`: multiple-choice accuracy through lm-evaluation-harness (`pip install -e .[downstream]`),
+  set with `DOWNSTREAM_TASKS` / `DOWNSTREAM_LIMIT` in `main.py` (off by default). Stages 1-3 measure it on every
+  row; the FP16 result is cached on its own key, and the FP16 perplexity cache key no longer includes the
+  downstream settings, so existing cache entries stay valid.
+- `reporting/master.py`: `all_stages_comparison.xlsx` and `master_report.md` from every `stage_<N>/results.json`,
+  written at the end of `MODE = "stages"` (or any time with `write_master(run_dir)`).
+
 ## 2026-10-04: Groundwork for Stages 1-3
 
 - **`MODE = "stages"`** (`src/sdf/stages/`): one runner for Stages 1-3. It loads the Stage 0 plans
