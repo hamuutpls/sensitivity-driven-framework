@@ -814,9 +814,9 @@ _MEASURE_PLAIN = {
                "that number is moved (the *curvature*), using a few random test nudges per passage. Half the "
                "curvature times the number squared, added up over a layer, is that layer's raw sensitivity "
                "score; negative curvature estimates are treated as noise and set to zero.",
-    "movement": "The model is briefly fine-tuned on the passages, and for every number we record how far that "
-                "training pushes it away from zero. Adding these up over a layer gives its raw sensitivity "
-                "score: layers whose numbers the training wants to keep are the sensitive ones.",
+    "movement": "The model is briefly fine-tuned on the passages, and for every number we record how strongly that "
+                "training pushes it towards or away from zero. Adding the size of these pushes up over a layer "
+                "gives its raw sensitivity score: layers whose numbers training keeps moving are the sensitive ones.",
 }
 
 
