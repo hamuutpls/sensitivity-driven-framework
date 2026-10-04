@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-04: Protection threshold sweep
+
+- `MODE = "threshold_sweep"` (src/sdf/stage0/threshold_sweep.py): builds the Stage 0 plan at every threshold in
+  `THRESHOLD_SWEEP` (0.1 to 0.9) and guard size in `GUARD_SWEEP` (0, 3, 5, 8), applies it to the real weights and
+  measures perplexity, next to the standard method and the same-size plans. The report marks the best trade-offs
+  (no other version both smaller and more accurate). Measurements are cached per plan and shared with
+  `prune_sweep` (`prune_sweep.make_evaluator`).
+
 ## 2026-10-04: Report text for every sensitivity score
 
 - Stage 0's report explained only `grad_x_weight`, `layer_removal` and `layer_quant`, so a single run with

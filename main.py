@@ -11,6 +11,7 @@ MODE = "single"  # "single": one Stage 0 run with the settings in section 2
 #                  "sweep":  try every combination of the values in section 5 and write one comparison report
 #                  "compare_scores": measure sensitivity every way (section 3) and compare how they rank layers
 #                  "prune_sweep": really prune at every level in section 6 and measure the error (standard vs framework, and the fair same-size test)
+#                  "threshold_sweep": build and measure the plan at every protection threshold and guard size in section 6
 #                  "stages": Stages 1-3 with the methods in section 7, on top of a Stage 0 plan
 
 MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
@@ -100,6 +101,8 @@ SWEEP = {
 PRUNE_SWEEP_RATIOS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]  # shares removed from each pruned layer
 PRUNE_SWEEP_QUANTIZE = True  # True: also store the rest at the plan's bits (4 / 8); False: pruning only
 PRUNE_SWEEP_SAME_SIZE = True  # True: also the fair test, same size and share removed, pruning placed by sensitivity
+THRESHOLD_SWEEP = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]  # MODE "threshold_sweep": protection thresholds to measure
+GUARD_SWEEP = [0, 3, 5, 8]  # MODE "threshold_sweep": never-pruned layer counts to measure with each threshold
 
 # =====================================================================================================
 # 7. Stages 1-3 (MODE = "stages"). Each stage starts from the uncompressed model and follows the Stage 0 plan.
@@ -160,6 +163,8 @@ def build_config():
         "stage0.prune_sweep_ratios": PRUNE_SWEEP_RATIOS,
         "stage0.prune_sweep_quantize": PRUNE_SWEEP_QUANTIZE,
         "stage0.prune_sweep_same_size": PRUNE_SWEEP_SAME_SIZE,
+        "stage0.threshold_sweep": THRESHOLD_SWEEP,
+        "stage0.guard_sweep": GUARD_SWEEP,
         "calibration.seq_len": CALIB_SEQ_LEN,
         "eval.seq_len": EVAL_SEQ_LEN,
         "eval.max_windows": EVAL_MAX_WINDOWS,
@@ -194,6 +199,10 @@ def main():
         from sdf.stage0.prune_sweep import run_prune_sweep
 
         outputs = run_prune_sweep(start_run(cfg), candidate)
+    elif MODE == "threshold_sweep":
+        from sdf.stage0.threshold_sweep import run_threshold_sweep
+
+        outputs = run_threshold_sweep(start_run(cfg), candidate)
     elif MODE == "stages":
         from sdf.stage0.run import run_stage0
         from sdf.stages.runner import run_stages
@@ -209,7 +218,7 @@ def main():
 
         outputs.update(write_master(ctx.run_dir))
     else:
-        raise SystemExit(f"MODE must be 'single', 'sweep', 'compare_scores', 'prune_sweep' or 'stages', not {MODE!r}")
+        raise SystemExit(f"MODE must be 'single', 'sweep', 'compare_scores', 'prune_sweep', 'threshold_sweep' or 'stages', not {MODE!r}")
     for name, path in outputs.items():
         print(f"{name}: {path}")
 

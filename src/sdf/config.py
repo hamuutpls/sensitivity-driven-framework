@@ -123,6 +123,10 @@ class Stage0Config:
     # also measure the fair test: same bits, size and share removed as the standard method, pruning placed by
     # sensitivity (planner.same_size_pruning_plan)
     prune_sweep_same_size: bool = True
+    # Threshold study (MODE "threshold_sweep", stage0/threshold_sweep.py): measure the plan at every threshold and
+    # guard size (rounding follows prune_sweep_quantize)
+    threshold_sweep: list[float] = field(default_factory=lambda: [round(0.1 * i, 1) for i in range(1, 10)])
+    guard_sweep: list[int] = field(default_factory=lambda: [0, 3, 5, 8])
 
 
 @dataclass
