@@ -803,6 +803,20 @@ _MEASURE_PLAIN = {
     "layer_quant": "Then one layer at a time is compressed on its own, the way the plan would compress it (fewer "
                    "bits per number), and the passages are read again. How much the prediction error "
                    "(perplexity) rises is that layer's raw sensitivity score.",
+    "fisher": "For every number inside the model we multiply its size by how much the model's mistakes would "
+              "change if it were nudged (the *gradient*), and square the result. Half of that, added up over a "
+              "layer's numbers and averaged over the passages, is the layer's raw sensitivity score (an estimate "
+              "of the damage from removing those numbers).",
+    "taylor_ema": "For every passage we multiply each number by its gradient and add the results up over the "
+                  "whole layer, keeping the size of the total. A running average of that total over the passages "
+                  "is the layer's raw sensitivity score.",
+    "hessian": "For every number inside the model we estimate how sharply the model's mistakes curve upwards if "
+               "that number is moved (the *curvature*), using a few random test nudges per passage. Half the "
+               "curvature times the number squared, added up over a layer, is that layer's raw sensitivity "
+               "score; negative curvature estimates are treated as noise and set to zero.",
+    "movement": "The model is briefly fine-tuned on the passages, and for every number we record how strongly that "
+                "training pushes it towards or away from zero. Adding the size of these pushes up over a layer "
+                "gives its raw sensitivity score: layers whose numbers training keeps moving are the sensitive ones.",
 }
 
 

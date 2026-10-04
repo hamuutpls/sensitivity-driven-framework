@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-04: Report text for every sensitivity score
+
+- Stage 0's report explained only `grad_x_weight`, `layer_removal` and `layer_quant`, so a single run with
+  `fisher`, `taylor_ema`, `hessian` or `movement` crashed with a `KeyError` after the profile was computed. All
+  seven scores now have a plain-language description, and a test checks every score in `SCORES` has one.
+
 ## 2026-10-04: Downstream tasks and the master report
 
 - `eval/downstream.py`: multiple-choice accuracy through lm-evaluation-harness (`pip install -e .[downstream]`),

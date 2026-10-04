@@ -14,8 +14,8 @@ from sdf.stage0.activation import (ActivationPlan, ActivationProfile, activation
 from sdf.stage0.kv_cache import KVPlan
 from sdf.stage0.planner import (CompressionPlan, baseline_cost, budget_matched_plan, guarded_layers, plan_compression,
                                 predict_cost, uniform_plan)
-from sdf.stage0.run import profile_key, run_stage0
-from sdf.stage0.sensitivity import SensitivityProfile, normalize, outlier_layers, profile_sensitivity
+from sdf.stage0.run import _MEASURE_PLAIN, profile_key, run_stage0
+from sdf.stage0.sensitivity import SCORES, SensitivityProfile, normalize, outlier_layers, profile_sensitivity
 from sdf.utils.model_info import count_parameters
 from conftest import fake_texts
 
@@ -25,6 +25,11 @@ TOY_SCORES = [0.0, 0.3, 0.5, 1.0]
 
 def toy_profile():
     return SensitivityProfile(raw_scores=[1, 2, 3, 4], layer_numel=[1000] * 4, layer_rows=[10] * 4, other_numel=500)
+
+
+def test_every_score_has_a_plain_explanation():
+    # the report's "how this stage works" text looks the score up; a missing one crashed a finished hessian run
+    assert set(SCORES) <= set(_MEASURE_PLAIN)
 
 
 def test_normalize():
