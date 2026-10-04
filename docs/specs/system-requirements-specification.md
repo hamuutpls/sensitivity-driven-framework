@@ -143,7 +143,7 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | ID | Requirement | Pri | Status | Ver | Source | Design |
 |---|---|---|---|---|---|---|
 | PIPE-01 | The system shall run the pipeline as Stage 0 (plan), Stages 1, 2 and 3 (compression), and Stage 4 (evaluation). | M | Partial | I | SPEC | SDD §3 |
-| PIPE-02 | Stages 1, 2 and 3 shall each apply independently on top of the same Stage 0 plan; no one of them shall require another's output. | M | Planned | I, T | SPEC | SDD §3.2 |
+| PIPE-02 | Stages 1, 2 and 3 shall each apply independently on top of the same Stage 0 plan; no one of them shall require another's output. | M | Implemented | I, T | SPEC | SDD §3.2, §4.8 |
 | PIPE-03 | Stage 0 shall hand its plan to later stages as a serialised `CompressionPlan` (JSON), so a later stage can run in a separate process from a saved plan. | M | Implemented | T | DEC | SDD §5.4 |
 | PIPE-04 | The reference model shall be TinyLlama-1.1B-Chat-v1.0; the model shall be a configuration value, not a constant in stage code. | M | Implemented | I | SPEC | SDD §4.1 |
 

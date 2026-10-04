@@ -7,7 +7,7 @@
 | System | Sensitivity-Driven Framework (`sdf`), MSc thesis codebase |
 | Owner | Mohammad (GitHub `hamuutpls`) |
 | Version | 0.2 (draft), 2026-09-30 |
-| Status of design | SS-CORE and SS-0 implemented (on `main`); SS-1 to SS-4 and SS-SRCH designed, not implemented |
+| Status of design | SS-CORE and SS-0 implemented (on `main`); the shared Stages 1-3 runner (§4.8) implemented with baselines only; SS-1 to SS-4 methods and SS-SRCH designed, not implemented |
 | Requirements | [System Requirements Specification](system-requirements-specification.md) (ISO/IEC/IEEE 29148) |
 | Diagrams | [`docs/diagrams/`](../diagrams/README.md) (Mermaid class and sequence diagrams) |
 
@@ -19,6 +19,7 @@
 | 0.2 | 2026-09-30 | §5.3: layer removal is the default sensitivity score; one-layer compression and gradient × weight selectable. New §5.8: the Stage 0 KV cache plan. §8 follows that plan. |
 | 0.3 | 2026-09-30 | §5.4: pruning guard. New §5.9: activation plan for Stage 2; §7.3 follows it. §5.2: `Stage0Result` returns every plan and each plan class loads its JSON. |
 | 0.4 | 2026-10-01 | §5.9: activation plan measured by default. New §5.10: `handoff.md`. §4.3: one-off costs out of the verdict; "no targets set". |
+| 0.5 | 2026-10-04 | New §4.8: the shared Stages 1-3 runner and method table (implemented, with round-to-nearest baselines); §6.2, §7.2, §8.2 use it. |
 
 ---
 
@@ -358,6 +359,22 @@ in any window, and the split never changes between runs.
 (plain-language overview first, then the tables) (REP-07). **Interface** *(proposed)*:
 `MasterReport.write(run_dir) -> dict[str, Path]`. **Rationale.** Reading the per-stage JSON rather than holding
 objects in memory means the master report can be rebuilt at any time, even after a disconnect.
+
+### 4.8 Stages 1-3 runner (`stages/runner.py`, `stages/methods.py`)
+
+**Purpose.** One runner for Stages 1-3, so every method is built, measured and reported the same way.
+**Interface.** `run_stage(ctx, stage, method_names, candidate, stage0_dir, model_factory=None, ...)` and
+`run_stages(ctx, candidate, stage0_dir)` (methods from `cfg.stages`). `Stage0Plans.load(stage0_dir)` reads the plans
+listed in `handoff.md`. A `Method` (`name`, `stage`, `plans`, `apply`, `params`, `calibrated`, `simulated`, `version`)
+is applied as a context manager on a fresh FP16 model: `with method.apply(MethodCall(model, plan, candidate, cfg,
+batches)) as extra_metrics`. **Behaviour.** Rows: `baseline/fp16` (the Stage 0 cache entry), `<method>/original` (the
+method on the uniform plan from the Stage 0 "original method" settings; cached by method, version, plan, its search
+parameters, calibration when used, and the FP16 key), `<method>[_suffix]/framework` (one per Stage 0 plan the
+method accepts, compared with the method's original row). A method whose `apply` is `None` is a failed row saying
+"not implemented yet". Predicted plan costs (weight memory, activation bits, KV memory) sit next to the measured
+metrics. **Rationale.** Original and framework run the same code and differ only in the plan, which is exactly
+the comparison the thesis makes; fresh models keep the stages independent (PIPE-02). Library choices per method:
+[`stage-methods-feasibility.md`](../stage-methods-feasibility.md).
 
 ---
 
