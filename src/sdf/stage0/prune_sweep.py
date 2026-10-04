@@ -156,7 +156,8 @@ def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, toke
                                   "placed by sensitivity")
         for key_, (plan, name, desc) in plans.items():
             method, variant = (f"same_{pct:03d}", "framework") if key_ == "same_size" else (f"prune_{pct:03d}", key_)
-            with rep.method(method, variant, label=name, key_term=False, description=desc) as row:
+            with rep.method(method, variant, label=name, key_term=False, description=desc,
+                            compare_to=f"prune_{pct:03d}") as row:
                 row.metrics.update(_cost_metrics(predict(plan)), protected_layers=len(plan.protected_layers))
                 key = {**fp16_key(ctx, device), "group_size": gs, "quantize": s0.prune_sweep_quantize,
                        "pruning": "magnitude_per_row", "layers": [[lp.bit_width, lp.pruning_ratio] for lp in plan.layers]}
@@ -207,10 +208,11 @@ def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, 
         summary.append(f"The framework has the lower error at {len(wins)} of {len(both)} levels, but it removes "
                        "less and is bigger at each level.")
     fair = _fair(curves) if "same_size" in curves else []
-    fair_wins = [p for p, a, f, _ in fair if f["ppl_val"] < a["ppl_val"]]
-    if fair:
+    matched = [(p, a, f) for p, a, f, same in fair if same]
+    fair_wins = [p for p, a, f in matched if f["ppl_val"] < a["ppl_val"]]
+    if matched:
         summary.append(f"In the fair test (same size, same share removed) the framework has the lower error at "
-                       f"{len(fair_wins)} of {len(fair)} levels.")
+                       f"{len(fair_wins)} of the {len(matched)} levels where the sizes match.")
     rep.plain_summary = " ".join(summary)
 
     rep.plain_intro = (
@@ -246,11 +248,13 @@ def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, 
             "differs: the layers that matter least lose the most, the fragile ones less, the never-pruned ones "
             "nothing.")
         unequal = [p for p, _, _, same in fair if not same]
+        cap = fair[-1][2]["sparsity"] if unequal else None
         rep.plain_why.append(
             "The same-size version is the fair test: it has exactly the standard method's size and share removed, "
             "so any difference in error comes only from where the numbers are deleted."
-            + (f" At {', '.join(f'{p}%' for p in unequal)} the never-pruned layers make it impossible to delete "
-               "as much, so there it stays bigger than the standard method." if unequal else ""))
+            + (f" From {unequal[0]}% on, the never-pruned layers cap it at {cap:.0%} of the model removed, so "
+               "those levels are one and the same version, bigger than the standard method, and are left out of "
+               "the count." if unequal else ""))
 
     header = ["Removed", "Standard: error", "Framework: error", "Standard: error (held-out)",
               "Framework: error (held-out)", "Standard: memory (GB)", "Framework: memory (GB)",
@@ -276,11 +280,12 @@ def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, 
         header = ["Removed", "Standard: error", "Same size: error", "Standard: error (held-out)",
                   "Same size: error (held-out)", "Memory (GB), standard / same size", "Lower error"]
         t = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
-        for p, a, f, _ in fair:
+        for p, a, f, same in fair:
             t.append(f"| {p}% | {a['ppl_val']:.4g} | {f['ppl_val']:.4g} | {a['ppl_heldout']:.4g} | "
                      f"{f['ppl_heldout']:.4g} | {a['predicted_weight_memory_gb']:.4g} / "
                      f"{f['predicted_weight_memory_gb']:.4g} | "
-                     + ("same size" if f["ppl_val"] < a["ppl_val"] else "standard") + " |")
+                     + ("sizes differ (capped)" if not same else "same size" if f["ppl_val"] < a["ppl_val"]
+                        else "standard") + " |")
         fair_notes = [
             "- **Removed**: the share of all the decoder's numbers deleted; the same for both versions unless the "
             "never-pruned layers stop the same-size version from deleting as much (then its memory is higher).",
@@ -288,7 +293,9 @@ def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, 
             "- **Error (held-out)**: the same on the held-out half, which nothing is tuned on; lower is better.",
             "- **Memory (GB)**: predicted memory of each version; equal unless the never-pruned layers stop the "
             "same-size version from deleting as much.",
-            "- **Lower error**: which version predicts the text better at that level.",
+            "- **Lower error**: which version predicts the text better at that level; \"sizes differ (capped)\" "
+            "where the never-pruned layers stopped the same-size version from deleting as much, so it is not a "
+            "fair pair.",
         ]
         rep.sections.append(("Fair test: same size, same share removed",
                              "\n".join(t + ["", "**What each column means**", ""] + fair_notes)))
