@@ -93,6 +93,29 @@ def _validated(ratios: list[float]) -> list[float]:
     return out
 
 
+def make_evaluator(ctx: RunContext, handle, text_loader, device) -> Callable[[CompressionPlan, int], tuple[dict, bool]]:
+    """plan, group size -> ({ppl_val, ppl_heldout} with the plan really applied, cached?). Cached per plan, so
+    any study that builds the same plan reuses the measurement."""
+    cfg, s0 = ctx.cfg, ctx.cfg.stage0
+    windows: list[torch.Tensor] = []  # (validation, held-out), tokenised on the first cache miss
+
+    def measure(plan: CompressionPlan, gs: int) -> dict[str, Any]:
+        if not windows:
+            windows.extend(eval_windows(text_loader(cfg.eval.dataset, "test"), handle.tokenizer,
+                                        cfg.eval.seq_len, cfg.eval.max_windows))
+        m = handle.model(cfg.model.dtype)
+        with apply_plan(m, plan, gs, s0.prune_sweep_quantize, s0.baseline_bits):
+            return {"ppl_val": perplexity(m, windows[0], device)[0],
+                    "ppl_heldout": perplexity(m, windows[1], device)[0]}
+
+    def evaluate(plan: CompressionPlan, gs: int) -> tuple[dict[str, Any], bool]:
+        key = {**fp16_key(ctx, device), "group_size": gs, "quantize": s0.prune_sweep_quantize,
+               "pruning": "magnitude_per_row", "layers": [[lp.bit_width, lp.pruning_ratio] for lp in plan.layers]}
+        return ctx.cache.get_or_compute("prune_eval", key, lambda: measure(plan, gs))
+
+    return evaluate
+
+
 def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, tokenizer=None,
                     text_loader: Callable[[str, str], list[str]] | None = None) -> dict[str, Any]:
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
@@ -130,16 +153,7 @@ def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, toke
         row.metrics.update(_cost_metrics(baseline_cost(profile, s0.baseline_bits)), protected_layers=0)
         row.info["cached"] = cached
 
-    windows: list[torch.Tensor] = []  # (validation, held-out), tokenised on the first cache miss
-
-    def measure(plan: CompressionPlan) -> dict[str, Any]:
-        if not windows:
-            windows.extend(eval_windows(text_loader(cfg.eval.dataset, "test"), handle.tokenizer,
-                                        cfg.eval.seq_len, cfg.eval.max_windows))
-        m = handle.model(cfg.model.dtype)
-        with apply_plan(m, plan, gs, s0.prune_sweep_quantize, s0.baseline_bits):
-            return {"ppl_val": perplexity(m, windows[0], device)[0],
-                    "ppl_heldout": perplexity(m, windows[1], device)[0]}
+    evaluate = make_evaluator(ctx, handle, text_loader, device)
 
     for r in ratios:
         pct = round(r * 100)
@@ -159,9 +173,7 @@ def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, toke
             with rep.method(method, variant, label=name, key_term=False, description=desc,
                             compare_to=f"prune_{pct:03d}") as row:
                 row.metrics.update(_cost_metrics(predict(plan)), protected_layers=len(plan.protected_layers))
-                key = {**fp16_key(ctx, device), "group_size": gs, "quantize": s0.prune_sweep_quantize,
-                       "pruning": "magnitude_per_row", "layers": [[lp.bit_width, lp.pruning_ratio] for lp in plan.layers]}
-                result, row.info["cached"] = ctx.cache.get_or_compute("prune_eval", key, lambda: measure(plan))
+                result, row.info["cached"] = evaluate(plan, gs)
                 row.metrics.update(result)
                 log.info("prune %d%% %s: ppl_val %.3f", pct, key_, result["ppl_val"])
 

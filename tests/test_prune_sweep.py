@@ -65,3 +65,18 @@ def test_same_size_pruning_plan_moves_pruning_to_robust_layers():
     assert all(lp.bit_width == 4 for lp in plan.layers)
     full = same_size_pruning_plan(scores, 4, 1.0, numel, frozenset({4}))  # guard can't be pruned: capped
     assert [lp.pruning_ratio for lp in full.layers] == [1.0, 1.0, 1.0, 1.0, 0.0]
+
+
+def test_run_threshold_sweep(tiny_llama, tokenizer, small_cfg):
+    from sdf.stage0.threshold_sweep import run_threshold_sweep
+
+    cfg = small_cfg.with_overrides({"stage0.threshold_sweep": [0.2, 0.9], "stage0.guard_sweep": [0, 1]})
+    out = run_threshold_sweep(start_run(cfg), SEARCH_SPACE.make({"calib_samples": 16}), model=tiny_llama,
+                              tokenizer=tokenizer, text_loader=fake_texts)
+    rows = {r["method"]: r for r in json.loads(out["json"].read_text())["rows"]}
+    assert all(r["status"] == "ok" for r in rows.values()) and len(rows) == 2 + 2 * 4  # fp16, standard, 4 per guard
+    # a lower threshold protects more layers and needs more memory
+    lo, hi = rows["t020_k1"]["metrics"], rows["t090_k1"]["metrics"]
+    assert lo["protected_layers"] > hi["protected_layers"]
+    assert lo["predicted_weight_memory_gb"] > hi["predicted_weight_memory_gb"]
+    assert "## Threshold sweep" in out["report"].read_text(encoding="utf-8")
