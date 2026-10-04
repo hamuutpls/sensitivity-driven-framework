@@ -150,9 +150,9 @@ def fig3_weight_plan():
     ax.annotate("Middle layers barely matter:\nskipping one adds 1.4 to 5.7",
                 (11, 0.07), (11.2, 0.68), fontsize=8.8, ha="center",
                 arrowprops=dict(arrowstyle="->", color=NOTE))
-    fig.legend(handles=[Patch(color=PROTECT, label="Protected: 8 bits, nothing removed (11 layers)"),
-                       Patch(color=COMPRESS, label="Compressed: 4 bits, 30% removed (11 layers)"),
-                       Patch(fc="white", ec=GUARD, lw=2, label="Never pruned in any plan (number = perplexity added if skipped)")],
+    fig.legend(handles=[Patch(color=PROTECT, label="Main plan, protected: 8 bits, nothing removed (11 layers)"),
+                       Patch(color=COMPRESS, label="Main plan, compressed: 4 bits, 30% removed (11 layers)"),
+                       Patch(fc="white", ec=GUARD, lw=2, label="Never pruned in any plan, even the smaller same-size plan\n(number = perplexity added if skipped)")],
               loc="lower left", fontsize=8.5, frameon=False, bbox_to_anchor=(0.03, 0.0), ncol=3)
 
     names = ["Original\n(16-bit)", "Standard\n4-bit", "Stage 0\nmain plan", "Stage 0\nsame size", "Same size,\nno removal"]
@@ -166,7 +166,9 @@ def fig3_weight_plan():
     ax2.set_title("Predicted size of each version", fontsize=10.5, loc="left")
     ax2.text(2, 1350, "Same-size plans fit in the\nstandard method's memory,\nso accuracy is compared\nsize for size in Stage 1",
              ha="center", fontsize=8.5, color=NOTE)
-    fig.text(0.02, -0.03, "Higher score = more fragile layer; for size, smaller is better. The score is the layer's rank by damage, not the damage itself: the five 'never pruned' layers "
+    fig.text(0.02, -0.03, "Bar colours show the main plan: all 11 blue layers keep 8 bits and lose nothing. The orange border matters in the smaller "
+             "same-size plan, which protects only the 5 bordered layers; there the other blue layers drop to 4 bits with 30% removed.\n"
+             "Higher score = more fragile layer; for size, smaller is better. The score is the layer's rank by damage, not the damage itself: the five 'never pruned' layers "
              "are where removing one layer hurts by far the most. Sizes are predictions; Stage 1 measures the real ones.",
              fontsize=8.8, color=NOTE)
     fig.tight_layout(rect=(0, 0.05, 1, 0.9))
