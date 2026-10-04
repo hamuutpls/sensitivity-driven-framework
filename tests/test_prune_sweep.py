@@ -5,7 +5,7 @@ from torch import nn
 
 from sdf.run import start_run
 from sdf.search_space import SEARCH_SPACE
-from sdf.stage0.planner import uniform_plan
+from sdf.stage0.planner import same_size_pruning_plan, uniform_plan
 from sdf.stage0.prune_sweep import apply_plan, magnitude_mask, run_prune_sweep
 from conftest import fake_texts
 
@@ -35,15 +35,33 @@ def test_run_prune_sweep(tiny_llama, tokenizer, small_cfg):
     out = run_prune_sweep(ctx, cand, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts)
     data = json.loads(out["json"].read_text())
     keys = [r["method"] + "/" + r["variant"] for r in data["rows"]]
-    assert keys[0] == "baseline/fp16" and keys[1:3] == ["prune_010/original", "prune_010/framework"]
-    assert len(keys) == 7 and all(r["status"] == "ok" for r in data["rows"])
+    assert keys[0] == "baseline/fp16" and keys[1:4] == ["prune_010/original", "prune_010/framework",
+                                                         "same_010/framework"]
+    assert len(keys) == 10 and all(r["status"] == "ok" for r in data["rows"])
     rows = {k: r["metrics"] for k, r in zip(keys, data["rows"])}
     # more pruning, less memory; the framework never prunes its guarded layer, so it removes less
     assert rows["prune_100/original"]["predicted_weight_memory_gb"] < rows["prune_010/original"]["predicted_weight_memory_gb"]
     assert rows["prune_100/framework"]["sparsity"] < rows["prune_100/original"]["sparsity"]
+    # the fair test matches the standard method's size and share removed where the guard allows it
+    for lvl in ("prune_010", "prune_050"):
+        assert abs(rows[f"same_{lvl[6:]}/framework"]["predicted_weight_memory_gb"]
+                   - rows[f"{lvl}/original"]["predicted_weight_memory_gb"]) < 1e-9
+        assert abs(rows[f"same_{lvl[6:]}/framework"]["sparsity"] - rows[f"{lvl}/original"]["sparsity"]) < 1e-9
     report = out["report"].read_text(encoding="utf-8")
+    assert "## Fair test: same size, same share removed" in report
     assert "## Pruning curve" in report and "## Original model" in report and "What each column means" in report
     assert out["report"].parent.name == "stage_0_prune_sweep"
     # second run is served from the cache
     again = run_prune_sweep(ctx, cand, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts)
     assert all(r["info"]["cached"] for r in json.loads(again["json"].read_text())["rows"])
+
+
+def test_same_size_pruning_plan_moves_pruning_to_robust_layers():
+    scores, numel = [0.0, 0.25, 0.5, 0.75, 1.0], [100, 100, 100, 100, 200]
+    plan = same_size_pruning_plan(scores, 4, 0.3, numel, frozenset({4}))
+    ratios = [lp.pruning_ratio for lp in plan.layers]
+    assert abs(sum(r * m for r, m in zip(ratios, numel)) - 0.3 * sum(numel)) < 1e-6  # same weights removed
+    assert ratios == sorted(ratios, reverse=True) and ratios[4] == 0.0 and ratios[3] > 0  # robust lose most
+    assert all(lp.bit_width == 4 for lp in plan.layers)
+    full = same_size_pruning_plan(scores, 4, 1.0, numel, frozenset({4}))  # guard can't be pruned: capped
+    assert [lp.pruning_ratio for lp in full.layers] == [1.0, 1.0, 1.0, 1.0, 0.0]

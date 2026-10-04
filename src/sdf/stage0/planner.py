@@ -33,7 +33,7 @@ class LayerPlan:
 @dataclass(frozen=True)
 class CompressionPlan:
     layers: tuple[LayerPlan, ...]
-    kind: str  # "sensitivity" | "budget" | "uniform"
+    kind: str  # "sensitivity" | "budget" | "uniform" | "same_size_pruning"
     sensitive_threshold: float | None
     prune_ratio_aggressive: float
 
@@ -141,6 +141,38 @@ def budget_matched_plan(
                                             guarded) for i, s in enumerate(scores)),
                                "budget", None, prune_ratio_aggressive)
     return best
+
+
+def same_size_pruning_plan(
+    scores: list[float],
+    bits: int,
+    prune_ratio: float,
+    layer_numel: list[int],
+    guarded: frozenset[int] = frozenset(),
+) -> CompressionPlan:
+    """The fair pruning test: every layer at `bits` like `uniform_plan(scores, bits, prune_ratio)`, and the same
+    total number of weights removed, but placed by sensitivity instead of evenly.
+
+    Layer l is pruned at min(1, c * (1 - s_l + 1/(n-1))), guarded layers not at all, with c chosen so that the
+    weights removed equal prune_ratio * all decoder weights. Same bits and same weights kept means the same
+    predicted size and the same share removed as the uniform plan, so any accuracy difference comes only from
+    where the pruning goes. When the unguarded layers can't absorb it all (high ratios), they are emptied and
+    the plan stays bigger than uniform; the caller sees that in the predicted cost.
+    """
+    _check_ratio(prune_ratio)
+    n = len(scores)
+    weight = [0.0 if i in guarded else 1.0 - s + 1.0 / max(n - 1, 1) for i, s in enumerate(scores)]
+    target = prune_ratio * sum(layer_numel)
+    removed = lambda c: sum(min(1.0, c * w) * m for w, m in zip(weight, layer_numel))  # noqa: E731
+    lo, hi = 0.0, 1.0
+    while removed(hi) < target and hi < 1e6:
+        hi *= 2
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if removed(mid) < target else (lo, mid)
+    layers = tuple(LayerPlan(layer=i, bit_width=bits, pruning_ratio=min(1.0, hi * w), protected=False,
+                             sensitivity=s, guarded=i in guarded) for i, (s, w) in enumerate(zip(scores, weight)))
+    return CompressionPlan(layers, "same_size_pruning", None, prune_ratio)
 
 
 @dataclass(frozen=True)

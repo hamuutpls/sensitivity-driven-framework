@@ -5,7 +5,11 @@ measures perplexity, for every ratio in `stage0.prune_sweep_ratios` (10% to 100%
 
 - original (standard method): every layer at `uniform_bits`, every layer pruned at the ratio.
 - framework: the Stage 0 plan at the run's threshold, pruned at the ratio. Protected layers keep
-  `protected_bits` and are not pruned; guarded layers are not pruned.
+  `protected_bits` and are not pruned; guarded layers are not pruned. It removes less and is bigger than
+  the original at the same ratio, so this pair is not a fair comparison.
+- same_size (the fair test, `prune_sweep_same_size`): `uniform_bits` everywhere and the same number of weights
+  removed as the original, so the same predicted size and share removed, but placed by sensitivity
+  (`same_size_pruning_plan`): robust layers lose more, sensitive ones less, guarded ones nothing.
 
 Pruning is unstructured magnitude pruning per output row (each row loses its smallest |w|), the usual
 baseline; rounding is round-to-nearest at the plan's bits and group size (`prune_sweep_quantize`). Both are
@@ -29,7 +33,8 @@ from sdf.data import eval_windows, load_texts
 from sdf.eval.metrics import perplexity
 from sdf.reporting.reporter import StageReporter
 from sdf.run import RunContext
-from sdf.stage0.planner import CompressionPlan, baseline_cost, plan_compression, predict_cost, uniform_plan
+from sdf.stage0.planner import (CompressionPlan, baseline_cost, plan_compression, predict_cost,
+                                same_size_pruning_plan, uniform_plan)
 from sdf.stage0.run import (_cost_metrics, _ModelHandle, fp16_key, load_fp16, load_guard, load_profile,
                             original_model_info)
 from sdf.stage0.sensitivity import fake_quantize_, find_decoder_layers, normalize
@@ -144,14 +149,20 @@ def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, toke
                  "framework": (plan_compression(scores, threshold, r, s0.protected_bits, s0.compressed_bits, guarded),
                                f"Sensitivity-guided framework, {pct}% removed",
                                f"Stage 0 plan (threshold {threshold:g}), {pct}% pruned on unprotected layers")}
-        for variant, (plan, name, desc) in plans.items():
-            with rep.method(f"prune_{pct:03d}", variant, label=name, key_term=False, description=desc) as row:
+        if s0.prune_sweep_same_size:
+            plans["same_size"] = (same_size_pruning_plan(scores, s0.uniform_bits, r, profile.layer_numel, guarded),
+                                  f"Framework, same size, {pct}% removed",
+                                  f"every layer at {s0.uniform_bits} bits, {pct}% of all weights pruned, "
+                                  "placed by sensitivity")
+        for key_, (plan, name, desc) in plans.items():
+            method, variant = (f"same_{pct:03d}", "framework") if key_ == "same_size" else (f"prune_{pct:03d}", key_)
+            with rep.method(method, variant, label=name, key_term=False, description=desc) as row:
                 row.metrics.update(_cost_metrics(predict(plan)), protected_layers=len(plan.protected_layers))
                 key = {**fp16_key(ctx, device), "group_size": gs, "quantize": s0.prune_sweep_quantize,
                        "pruning": "magnitude_per_row", "layers": [[lp.bit_width, lp.pruning_ratio] for lp in plan.layers]}
                 result, row.info["cached"] = ctx.cache.get_or_compute("prune_eval", key, lambda: measure(plan))
                 row.metrics.update(result)
-                log.info("prune %d%% %s: ppl_val %.3f", pct, variant, result["ppl_val"])
+                log.info("prune %d%% %s: ppl_val %.3f", pct, key_, result["ppl_val"])
 
     _write_plain(rep, ratios, s0, threshold, guarded, rounding)
     return rep.finalize()
@@ -159,16 +170,25 @@ def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, toke
 
 # --- report text -------------------------------------------------------------------------------------------------
 
+def _fair(curves) -> list[tuple[int, dict, dict, bool]]:
+    """(level, standard, same size, sizes equal) for each level both measured."""
+    return [(p, a, f, abs(f["predicted_weight_memory_gb"] - a["predicted_weight_memory_gb"]) < 1e-6)
+            for (p, a), (_, f) in zip(curves["original"], curves["same_size"]) if a and f]
+
+
 def _curve(rep: StageReporter, variant: str) -> list[tuple[int, dict[str, Any] | None]]:
-    rows = {r.method: r for r in rep.rows if r.variant == variant}
-    return [(int(m[6:]), rows[m].metrics if rows[m].status == "ok" else None) for m in sorted(rows)]
+    """(level, metrics or None if failed) per level; variant "same_size" is the framework's same_NNN rows."""
+    prefix, variant = ("same_", "framework") if variant == "same_size" else ("prune_", variant)
+    rows = {r.method: r for r in rep.rows if r.variant == variant and r.method.startswith(prefix)}
+    return [(int(m[len(prefix):]), rows[m].metrics if rows[m].status == "ok" else None) for m in sorted(rows)]
 
 
 def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, guarded, rounding: str) -> None:
     fp16 = next((r.metrics for r in rep.rows if r.variant == "fp16" and r.status == "ok"), {})
     base = fp16.get("ppl_val")
-    curves = {v: _curve(rep, v) for v in ("original", "framework")}
-    names = {"original": "the standard method", "framework": "the framework"}
+    curves = {v: c for v in ("original", "framework", "same_size") if (c := _curve(rep, v))}
+    names = {"original": "the standard method", "framework": "the framework",
+             "same_size": "the framework at the same size"}
 
     def breaks(v: str) -> int | None:
         return next((p for p, m in curves[v] if m is None or (base and m["ppl_val"] > BROKEN * base)), None)
@@ -184,7 +204,13 @@ def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, 
     both = [(p, a, f) for (p, a), (_, f) in zip(curves["original"], curves["framework"]) if a and f]
     wins = [p for p, a, f in both if f["ppl_val"] < a["ppl_val"]]
     if both:
-        summary.append(f"The framework has the lower error at {len(wins)} of {len(both)} levels.")
+        summary.append(f"The framework has the lower error at {len(wins)} of {len(both)} levels, but it removes "
+                       "less and is bigger at each level.")
+    fair = _fair(curves) if "same_size" in curves else []
+    fair_wins = [p for p, a, f, _ in fair if f["ppl_val"] < a["ppl_val"]]
+    if fair:
+        summary.append(f"In the fair test (same size, same share removed) the framework has the lower error at "
+                       f"{len(fair_wins)} of {len(fair)} levels.")
     rep.plain_summary = " ".join(summary)
 
     rep.plain_intro = (
@@ -213,6 +239,18 @@ def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, 
             "removed and memory columns, not just the level.")
     if base and wins:
         rep.plain_why.append(f"The framework is more accurate at {', '.join(f'{p}%' for p in wins)} removed.")
+    if fair:
+        rep.glossary["Framework, same size, N% removed"] = (
+            f"The fair comparison: every layer at {s0.uniform_bits} bits like the standard method, and N% of all "
+            "the numbers deleted, so the same size and the same share removed. Only where the deleting happens "
+            "differs: the layers that matter least lose the most, the fragile ones less, the never-pruned ones "
+            "nothing.")
+        unequal = [p for p, _, _, same in fair if not same]
+        rep.plain_why.append(
+            "The same-size version is the fair test: it has exactly the standard method's size and share removed, "
+            "so any difference in error comes only from where the numbers are deleted."
+            + (f" At {', '.join(f'{p}%' for p in unequal)} the never-pruned layers make it impossible to delete "
+               "as much, so there it stays bigger than the standard method." if unequal else ""))
 
     header = ["Removed", "Standard: error", "Framework: error", "Standard: error (held-out)",
               "Framework: error (held-out)", "Standard: memory (GB)", "Framework: memory (GB)",
@@ -234,6 +272,26 @@ def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, 
         "lower because it leaves protected and guarded layers whole.",
     ]
     rep.sections.append(("Pruning curve", "\n".join(table + ["", "**What each column means**", ""] + notes)))
+    if fair:
+        header = ["Removed", "Standard: error", "Same size: error", "Standard: error (held-out)",
+                  "Same size: error (held-out)", "Memory (GB), standard / same size", "Lower error"]
+        t = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+        for p, a, f, _ in fair:
+            t.append(f"| {p}% | {a['ppl_val']:.4g} | {f['ppl_val']:.4g} | {a['ppl_heldout']:.4g} | "
+                     f"{f['ppl_heldout']:.4g} | {a['predicted_weight_memory_gb']:.4g} / "
+                     f"{f['predicted_weight_memory_gb']:.4g} | "
+                     + ("same size" if f["ppl_val"] < a["ppl_val"] else "standard") + " |")
+        fair_notes = [
+            "- **Removed**: the share of all the decoder's numbers deleted; the same for both versions unless the "
+            "never-pruned layers stop the same-size version from deleting as much (then its memory is higher).",
+            "- **Error**: perplexity on the validation half; lower is better.",
+            "- **Error (held-out)**: the same on the held-out half, which nothing is tuned on; lower is better.",
+            "- **Memory (GB)**: predicted memory of each version; equal unless the never-pruned layers stop the "
+            "same-size version from deleting as much.",
+            "- **Lower error**: which version predicts the text better at that level.",
+        ]
+        rep.sections.append(("Fair test: same size, same share removed",
+                             "\n".join(t + ["", "**What each column means**", ""] + fair_notes)))
     rep.next_steps += [
         "Pick the pruning range for the search (prune_ratio_aggressive, now 0 to 0.6) from where the error "
         "starts to climb.",

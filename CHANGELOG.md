@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-04: Fair pruning test
+
+- `prune_sweep` adds the fair comparison (`stage0.prune_sweep_same_size`, on by default; rows `same_NNN`): every
+  layer at `uniform_bits` and the same number of weights removed as the standard method, so the same predicted
+  size and share removed, but placed by sensitivity (`planner.same_size_pruning_plan`: robust layers lose more,
+  fragile ones less, guarded ones nothing). Its own report section, "Fair test: same size, same share removed".
+  Where the guarded layers can't absorb the pruning (high levels) the plan stays bigger and the report says so.
+
 ## 2026-10-04: Run on Google Colab
 
 - `notebooks/colab_run.ipynb`: mounts Drive, clones or pulls `main`, installs, runs the tests, then runs `main.py`
