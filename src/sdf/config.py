@@ -62,6 +62,10 @@ class EvalConfig:
     latency_decode_tokens: int = 64
     latency_warmup: int = 3
     latency_repeats: int = 10
+    # Downstream multiple-choice tasks (lm-evaluation-harness task names); empty = not measured.
+    downstream_tasks: list[str] = field(default_factory=list)
+    downstream_limit: int | None = None  # questions per task (None = all)
+    downstream_batch_size: int = 8
 
 
 @dataclass

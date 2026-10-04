@@ -82,3 +82,35 @@ def test_run_stages_uses_config_methods(stage0_dir, tiny_llama, tokenizer, small
     out = run_stages(start_run(cfg), SEARCH_SPACE.make({"calib_samples": 16}), stage0_dir,
                      model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
     assert set(out) == {"stage_1_report", "stage_1_xlsx", "stage_1_json"}
+
+
+def test_downstream_tasks_and_master_report(stage0_dir, tiny_llama, tokenizer, small_cfg, monkeypatch):
+    from openpyxl import load_workbook
+
+    from sdf.eval import downstream
+    from sdf.reporting.master import write_master
+    from sdf.reporting.metrics import METRICS
+
+    calls = []
+
+    def fake_accuracy(model, tok, tasks, limit, batch_size, seed):
+        calls.append(tasks)
+        return {**{downstream.task_metric(t): 0.5 for t in tasks}, "downstream_acc_mean": 0.5}
+
+    monkeypatch.setattr(downstream, "downstream_accuracy", fake_accuracy)
+    cfg = small_cfg.with_overrides({"eval.downstream_tasks": ["piqa"], "stages.stage2_methods": [],
+                                    "stages.stage3_methods": []})
+    ctx = start_run(cfg)
+    run_stages(ctx, SEARCH_SPACE.make({"calib_samples": 16}), stage0_dir,
+               model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
+    rows = json.loads((ctx.run_dir / "stage_1" / "results.json").read_text())["rows"]
+    assert all(r["metrics"]["acc_piqa"] == 0.5 for r in rows if r["status"] == "ok")
+    assert METRICS["acc_piqa"].better == "higher"
+
+    out = write_master(ctx.run_dir)  # the fixture's Stage 0 ran in the same run folder
+    text = out["master_report"].read_text()
+    assert "Stage 1: Weight compression" in text and "(lower is better)" in text and "(higher is better)" in text
+    ws = load_workbook(out["all_stages_xlsx"])["All stages"]
+    s0_rows = json.loads((stage0_dir / "results.json").read_text())["rows"]
+    assert ws.max_row == 1 + len(s0_rows) + len(rows)
+    assert "Stage 0:" in text

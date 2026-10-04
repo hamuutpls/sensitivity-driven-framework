@@ -148,7 +148,10 @@ def profile_key(ctx: RunContext, cand: dict[str, Any], score: str | None = None)
 def fp16_key(ctx: RunContext, device: torch.device) -> dict[str, Any]:
     cfg = ctx.cfg
     hw = torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu"
-    return {"model": cfg.model.name, "dtype": cfg.model.dtype, "eval": asdict(cfg.eval), "hardware": hw,
+    # Downstream settings are left out: the FP16 perplexity and latency do not depend on them (and existing cache
+    # entries stay valid); downstream results are cached under their own key.
+    ev = {k: v for k, v in asdict(cfg.eval).items() if not k.startswith("downstream")}
+    return {"model": cfg.model.name, "dtype": cfg.model.dtype, "eval": ev, "hardware": hw,
             "backend": "hf-transformers", "seed": cfg.run.seed}
 
 

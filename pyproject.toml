@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+downstream = ["lm-eval>=0.4"]  # eval.downstream_tasks
 
 [project.scripts]
 sdf-stage0 = "sdf.cli:stage0_main"

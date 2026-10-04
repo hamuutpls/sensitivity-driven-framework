@@ -22,6 +22,7 @@ import torch
 from torch import nn
 
 from sdf.data import calibration_batches, eval_windows, load_texts
+from sdf.eval import downstream
 from sdf.eval.metrics import measure_model
 from sdf.reporting.reporter import StageReporter
 from sdf.run import RunContext
@@ -226,6 +227,16 @@ def run_stage(
                                    candidate["calib_samples"], cfg.calibration.seq_len, cfg.calibration.batch_size,
                                    cfg.run.seed)
 
+    for t in cfg.eval.downstream_tasks:
+        downstream.task_metric(t)  # register before any cached row is reported
+
+    def tasks(model: nn.Module) -> dict[str, float]:
+        ev = cfg.eval
+        if not ev.downstream_tasks:
+            return {}
+        return downstream.downstream_accuracy(model, handle.tokenizer, ev.downstream_tasks, ev.downstream_limit,
+                                              ev.downstream_batch_size, cfg.run.seed)
+
     def build_and_measure(method: Method, plan: Any) -> dict[str, Any]:
         model = model_factory()
         try:
@@ -234,6 +245,7 @@ def run_stage(
                 build_s = time.perf_counter() - t0
                 val, held = windows()
                 metrics, raw = measure_model(model, val, held, cfg.eval, device, seed=cfg.run.seed)
+                metrics.update(tasks(model))
         finally:
             del model
             _free_memory()
@@ -252,6 +264,11 @@ def run_stage(
             row.metrics.update(fp16["metrics"])
             row.info["cached"] = cached
             rep.add_raw("baseline", "fp16", fp16["raw"])
+            if cfg.eval.downstream_tasks:
+                key = {**fp16_key(ctx, device), "tasks": list(cfg.eval.downstream_tasks),
+                       "limit": cfg.eval.downstream_limit}
+                acc, _ = ctx.cache.get_or_compute("fp16_downstream", key, lambda: tasks(model_factory()))
+                row.metrics.update(acc)
 
     simulated_any = False
     for m in methods:
@@ -261,7 +278,8 @@ def run_stage(
                         simulated=m.simulated) as row:
             _require(m)
             key = {"stage": stage, "method": m.name, "version": m.version, "plan": orig.to_dict(),
-                   "params": {p: candidate[p] for p in m.params}, **fp16_key(ctx, device)}
+                   "params": {p: candidate[p] for p in m.params}, **fp16_key(ctx, device),
+                   "downstream": [list(cfg.eval.downstream_tasks), cfg.eval.downstream_limit]}
             if m.calibrated:
                 key["calibration"] = {"dataset": candidate["calib_dataset"], "samples": candidate["calib_samples"],
                                       "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size}

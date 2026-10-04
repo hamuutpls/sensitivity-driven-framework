@@ -19,7 +19,7 @@
 | 0.2 | 2026-09-30 | §5.3: layer removal is the default sensitivity score; one-layer compression and gradient × weight selectable. New §5.8: the Stage 0 KV cache plan. §8 follows that plan. |
 | 0.3 | 2026-09-30 | §5.4: pruning guard. New §5.9: activation plan for Stage 2; §7.3 follows it. §5.2: `Stage0Result` returns every plan and each plan class loads its JSON. |
 | 0.4 | 2026-10-01 | §5.9: activation plan measured by default. New §5.10: `handoff.md`. §4.3: one-off costs out of the verdict; "no targets set". |
-| 0.5 | 2026-10-04 | New §4.8: the shared Stages 1-3 runner and method table (implemented, with round-to-nearest baselines); §6.2, §7.2, §8.2 use it. |
+| 0.5 | 2026-10-04 | §4.7 master report implemented; new §4.9 downstream tasks. New §4.8: the shared Stages 1-3 runner and method table (implemented, with round-to-nearest baselines); §6.2, §7.2, §8.2 use it. |
 
 ---
 
@@ -352,13 +352,22 @@ with the same seed.
 **Rationale.** A contiguous split (rather than random) means the held-out half is text the search never saw
 in any window, and the split never changes between runs.
 
-### 4.7 Master report *(planned)*
+### 4.7 Master report (`reporting/master.py`)
 
-**Purpose.** After a full run, read every `stage_<N>/results.json` and `search/` output and write
-`all_stages_comparison.xlsx` (one Summary sheet per stage plus a cross-stage summary) and `master_report.md`
-(plain-language overview first, then the tables) (REP-07). **Interface** *(proposed)*:
-`MasterReport.write(run_dir) -> dict[str, Path]`. **Rationale.** Reading the per-stage JSON rather than holding
-objects in memory means the master report can be rebuilt at any time, even after a disconnect.
+**Purpose.** After a full run, read every `stage_<N>/results.json` and write `all_stages_comparison.xlsx` (sheets
+All stages, with win/loss colouring of validation perplexity vs the standard method; Columns, each column's meaning
+and better direction; Findings) and `master_report.md` (original model, each stage's findings and failed rows, then
+every row with "lower/higher is better" in each column header) (REP-07). Search results join it once the search
+exists. **Interface.** `write_master(run_dir) -> dict[str, Path]`, called at the end of `MODE = "stages"`.
+**Rationale.** Reading the per-stage JSON rather than holding objects in memory means the master report can be
+rebuilt at any time, even after a disconnect.
+
+### 4.9 Downstream tasks (`eval/downstream.py`)
+
+`downstream_accuracy(model, tokenizer, tasks, limit, batch_size, seed)` runs lm-evaluation-harness tasks on the model
+as the method left it; metrics `acc_<task>` (normalised accuracy where reported) and `downstream_acc_mean`, both
+higher-is-better. Off unless `eval.downstream_tasks` is set (suite still open, SyRS open issue #1). The FP16 result is
+cached separately (`fp16_downstream`), so the FP16 perplexity cache stays valid.
 
 ### 4.8 Stages 1-3 runner (`stages/runner.py`, `stages/methods.py`)
 

@@ -50,6 +50,9 @@ GUARD_TOP_K = 5  # never prune the layers whose removal hurts most, this many of
 CALIB_SEQ_LEN = 512  # tokens per calibration passage
 EVAL_SEQ_LEN = 512  # tokens per perplexity window
 EVAL_MAX_WINDOWS = None  # cap on perplexity windows (None = the whole WikiText-2 test split)
+DOWNSTREAM_TASKS = []  # multiple-choice tests for Stages 1-3 (needs `pip install lm-eval`), e.g.
+#                        ["arc_easy", "hellaswag", "piqa", "winogrande"]; [] = not measured
+DOWNSTREAM_LIMIT = None  # questions per test (None = all; e.g. 500 for a quicker run)
 
 # =====================================================================================================
 # 4. KV cache plan (the model's short-term memory while writing). Stage 0 measures it and plans, per layer:
@@ -160,6 +163,8 @@ def build_config():
         "calibration.seq_len": CALIB_SEQ_LEN,
         "eval.seq_len": EVAL_SEQ_LEN,
         "eval.max_windows": EVAL_MAX_WINDOWS,
+        "eval.downstream_tasks": DOWNSTREAM_TASKS,
+        "eval.downstream_limit": DOWNSTREAM_LIMIT,
     })
 
 
@@ -200,6 +205,9 @@ def main():
             outputs = run_stage0(ctx, candidate, measure_fp16=MEASURE_FP16).outputs
             stage0_dir = outputs["report"].parent
         outputs.update(run_stages(ctx, candidate, stage0_dir, measure_fp16=MEASURE_FP16))
+        from sdf.reporting.master import write_master
+
+        outputs.update(write_master(ctx.run_dir))
     else:
         raise SystemExit(f"MODE must be 'single', 'sweep', 'compare_scores', 'prune_sweep' or 'stages', not {MODE!r}")
     for name, path in outputs.items():

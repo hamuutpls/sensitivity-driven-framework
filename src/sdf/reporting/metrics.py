@@ -41,6 +41,11 @@ METRICS: dict[str, MetricSpec] = {
         "Perplexity (held-out half)", "", "lower", "prediction error on unseen test text (held-out half)",
         _PPL_MEANING + " The held-out half is never used for tuning, so it is the honest check that results "
         "were not tuned to one particular piece of text."),
+    "downstream_acc_mean": MetricSpec(
+        "Downstream accuracy (mean)", "", "higher", "share of test questions answered correctly",
+        "The average, over the multiple-choice tests listed in the report, of the share of questions the model "
+        "answers correctly (0 to 1). These tests check common sense and reasoning rather than raw word prediction. "
+        "Higher is better."),
     # memory
     "model_size_gb": MetricSpec(
         "Model size on disk", "GB", "lower", "file size of the model",
