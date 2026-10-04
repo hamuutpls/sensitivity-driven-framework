@@ -166,7 +166,7 @@ def fig3_weight_plan():
     ax2.set_title("Predicted size of each version", fontsize=10.5, loc="left")
     ax2.text(2, 1350, "Same-size plans fit in the\nstandard method's memory,\nso accuracy is compared\nsize for size in Stage 1",
              ha="center", fontsize=8.5, color=NOTE)
-    fig.text(0.02, -0.03, "The score is the layer's rank by damage, not the damage itself: the five 'never pruned' layers "
+    fig.text(0.02, -0.03, "Higher score = more fragile layer; for size, smaller is better. The score is the layer's rank by damage, not the damage itself: the five 'never pruned' layers "
              "are where removing one layer hurts by far the most. Sizes are predictions; Stage 1 measures the real ones.",
              fontsize=8.8, color=NOTE)
     fig.tight_layout(rect=(0, 0.05, 1, 0.9))
@@ -190,7 +190,7 @@ def fig4_activation_plan():
     ax.text(21.5, 0.5, "Average 6 bits per layer\n\nPredicted perplexity rise\n  this plan:  0.56\n"
             "  copied from weight plan:  0.67\n  standard 8-bit everywhere:  0.009",
             ha="right", fontsize=9, family="monospace", bbox=dict(boxstyle="round,pad=0.6", fc="white", ec=NOTE))
-    fig.text(0.02, -0.02, "Activations are the numbers one layer hands to the next while the model runs. Rises are added "
+    fig.text(0.02, -0.02, "Lower perplexity rise is better. Activations are the numbers one layer hands to the next while the model runs. Rises are added "
              "up per layer, which assumes they add; Stage 2 measures the real effect.", fontsize=8.8, color=NOTE)
     fig.tight_layout(rect=(0, 0, 1, 0.9))
     save(fig, "fig4_activation_plan")
@@ -216,12 +216,12 @@ def fig5_kv_plan():
     ax2.bar(range(3), mb, color=[PLANNED, DONE, DONE])
     for i, v in enumerate(mb):
         ax2.text(i, v + 0.3, f"{v} MB", ha="center", fontsize=9)
-    ax2.set(xticks=range(3), ylabel="Predicted cache for one 2,048-token text (MB)", ylim=(0, 16))
+    ax2.set(xticks=range(3), ylabel="Predicted cache for one 2,048-token text\n(MB, smaller is better)", ylim=(0, 16))
     ax2.set_xticklabels(names, fontsize=8.6)
     ax2.set_title("Predicted memory", fontsize=10.5, loc="left")
     ax2.annotate("4x smaller, mostly\nfrom forgetting;\nkept words still get\n96.7% of attention",
                  (2, 4.4), (2, 8.5), fontsize=8.6, ha="center", arrowprops=dict(arrowstyle="->", color=NOTE))
-    fig.text(0.02, -0.04, "The KV cache is the model's notes on every earlier word, kept while it writes. Choosing bits "
+    fig.text(0.02, -0.04, "Smaller memory is better. The KV cache is the model's notes on every earlier word, kept while it writes. Choosing bits "
              "per layer predicts no accuracy gain at a 4-bit average; Stage 3 must confirm the forgetting with a real "
              "method (H2O, SnapKV).", fontsize=8.8, color=NOTE)
     fig.tight_layout(rect=(0, 0, 1, 0.9))
