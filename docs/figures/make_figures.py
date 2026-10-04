@@ -142,7 +142,7 @@ def fig3_weight_plan():
     ax.text(10, 0.515, "threshold 0.5", ha="center", fontsize=8.5, color=NOTE)
     for i in GUARDED:
         ax.text(i, SENS[i] + 0.02, f"+{REMOVAL_RISE[i]:,}", ha="center", fontsize=8, color=GUARD, weight="bold")
-    ax.set(xticks=LAYERS, xlabel="Layer (0 = where the text comes in)", ylabel="Sensitivity score (rank, 0 to 1)",
+    ax.set(xticks=LAYERS, xlabel="Layer (0 = where the text comes in)", ylabel="Sensitivity score (rank, 0 to 1;\nhigher = more fragile)",
            ylim=(0, 1.18))
     ax.annotate("Without layer 0 the model stops working:\nperplexity goes from 14 to about 1,190",
                 (0, 1.06), (3.2, 1.08), fontsize=8.8, color=GUARD, va="center",
@@ -161,7 +161,7 @@ def fig3_weight_plan():
     ax2.bar(range(5), mb, color=c)
     for i, v in enumerate(mb):
         ax2.text(i, v + 30, f"{v:,.0f} MB", ha="center", fontsize=8.8)
-    ax2.set(xticks=range(5), ylabel="Predicted size of the model's numbers (MB)", ylim=(0, 2550))
+    ax2.set(xticks=range(5), ylabel="Predicted size of the model's numbers\n(MB, smaller is better)", ylim=(0, 2550))
     ax2.set_xticklabels(names, fontsize=8.3)
     ax2.set_title("Predicted size of each version", fontsize=10.5, loc="left")
     ax2.text(2, 1350, "Same-size plans fit in the\nstandard method's memory,\nso accuracy is compared\nsize for size in Stage 1",
@@ -179,7 +179,7 @@ def fig4_activation_plan():
                  x=0.02, ha="left", fontsize=14, weight="bold")
     fig.text(0.02, 0.905, RUN, fontsize=9, color=NOTE)
     ax.bar(LAYERS, ACT_DMG4, color=[PROTECT if b == 8 else COMPRESS for b in ACT_BITS])
-    ax.set(xticks=LAYERS, xlabel="Layer", ylabel="Perplexity added when only this layer's\ninputs are rounded to 4 bits",
+    ax.set(xticks=LAYERS, xlabel="Layer", ylabel="Perplexity added when only this layer's\ninputs are rounded to 4 bits (lower is better)",
            ylim=(0, 0.85))
     ax.annotate("Layer 1 is by far the most fragile:\n+0.73 at 4 bits, +0.002 at 8 bits",
                 (1, 0.73), (4, 0.7), fontsize=9, va="center", arrowprops=dict(arrowstyle="->", color=NOTE))
