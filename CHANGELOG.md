@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-04: Groundwork for Stages 1-3
+
+- **`MODE = "stages"`** (`src/sdf/stages/`): one runner for Stages 1-3. It loads the Stage 0 plans
+  (`STAGE0_DIR`, or runs Stage 0 first), then for each method builds the uncompressed row (Stage 0's cache entry),
+  the standard method on the uniform plan (cached by config) and the framework on each Stage 0 plan, every one from
+  a fresh FP16 model, and reports to `stage_<N>/` through `StageReporter`.
+- `stages/methods.py` lists every method in the spec. Round-to-nearest baselines work now (`rtn`, `rtn_act`,
+  `rtn_kv`); the rest are failed rows saying "not implemented yet" until they are written.
+- Search space: `smoothquant_alpha` (0-1, default 0.5) and `quarot_k_bits` (2/3/4/8, default 4). The Stage 0 sweep's
+  default grid only covers the Stage 0/1 parameters.
+- `docs/stage-methods-feasibility.md`: which library each method needs and whether it runs on the Windows PC and
+  Colab.
+
 ## 2026-10-04: Fair pruning test
 
 - `prune_sweep` adds the fair comparison (`stage0.prune_sweep_same_size`, on by default; rows `same_NNN`): every

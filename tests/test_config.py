@@ -7,7 +7,8 @@ from sdf.search_space import PER_CHANNEL, SEARCH_SPACE, Param, SearchSpace
 
 def test_search_space_has_spec_parameters():
     assert [p.name for p in SEARCH_SPACE.params] == ["sensitive_threshold", "prune_ratio_aggressive", "calib_dataset",
-                                                     "calib_samples", "gptq_groupsize"]
+                                                     "calib_samples", "gptq_groupsize", "smoothquant_alpha",
+                                                     "quarot_k_bits"]
 
 
 def test_candidate_validation():

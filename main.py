@@ -11,6 +11,7 @@ MODE = "single"  # "single": one Stage 0 run with the settings in section 2
 #                  "sweep":  try every combination of the values in section 5 and write one comparison report
 #                  "compare_scores": measure sensitivity every way (section 3) and compare how they rank layers
 #                  "prune_sweep": really prune at every level in section 6 and measure the error (standard vs framework, and the fair same-size test)
+#                  "stages": Stages 1-3 with the methods in section 7, on top of a Stage 0 plan
 
 MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 OUTPUT_ROOT = "thesis_compression/results"  # local folder, relative to where you run; results/<run_id>/stage_0/
@@ -97,6 +98,18 @@ PRUNE_SWEEP_RATIOS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]  # share
 PRUNE_SWEEP_QUANTIZE = True  # True: also store the rest at the plan's bits (4 / 8); False: pruning only
 PRUNE_SWEEP_SAME_SIZE = True  # True: also the fair test, same size and share removed, pruning placed by sensitivity
 
+# =====================================================================================================
+# 7. Stages 1-3 (MODE = "stages"). Each stage starts from the uncompressed model and follows the Stage 0 plan.
+#    Methods: src/sdf/stages/methods.py. Not-yet-written methods show up as failed rows that say so.
+# =====================================================================================================
+STAGE0_DIR = None  # a finished run's stage_0 folder, e.g. "thesis_compression/results/<run_id>/stage_0";
+#                    None = run Stage 0 first with the settings above, in the same run
+STAGE1_METHODS = ["rtn"]  # weights: rtn | gptq | awq | structured_prune | unstructured_prune | low_rank
+STAGE2_METHODS = ["rtn_act"]  # activations: rtn_act | smoothquant | quarot | rptq | spinquant
+STAGE3_METHODS = ["rtn_kv"]  # KV cache: rtn_kv | quarot_kv | kvquant | h2o | snapkv | infinigen
+SMOOTHQUANT_ALPHA = 0.5  # 0.0-1.0: how much of the activation outliers SmoothQuant moves into the weights
+QUAROT_K_BITS = 4  # 2 | 3 | 4 | 8: key bits for QuaRot KV (standard method)
+
 
 # =====================================================================================================
 def build_config():
@@ -110,6 +123,12 @@ def build_config():
         "hyperparams.calib_dataset": CALIB_DATASET,
         "hyperparams.calib_samples": CALIB_SAMPLES,
         "hyperparams.gptq_groupsize": GPTQ_GROUPSIZE,
+        "hyperparams.smoothquant_alpha": SMOOTHQUANT_ALPHA,
+        "hyperparams.quarot_k_bits": QUAROT_K_BITS,
+        "stages.stage0_dir": STAGE0_DIR,
+        "stages.stage1_methods": STAGE1_METHODS,
+        "stages.stage2_methods": STAGE2_METHODS,
+        "stages.stage3_methods": STAGE3_METHODS,
         "stage0.score": SENSITIVITY_SCORE,
         "stage0.normalization": NORMALIZATION,
         "stage0.protected_bits": PROTECTED_BITS,
@@ -170,8 +189,19 @@ def main():
         from sdf.stage0.prune_sweep import run_prune_sweep
 
         outputs = run_prune_sweep(start_run(cfg), candidate)
+    elif MODE == "stages":
+        from sdf.stage0.run import run_stage0
+        from sdf.stages.runner import run_stages
+
+        ctx = start_run(cfg)
+        outputs = {}
+        stage0_dir = cfg.stages.stage0_dir
+        if stage0_dir is None:
+            outputs = run_stage0(ctx, candidate, measure_fp16=MEASURE_FP16).outputs
+            stage0_dir = outputs["report"].parent
+        outputs.update(run_stages(ctx, candidate, stage0_dir, measure_fp16=MEASURE_FP16))
     else:
-        raise SystemExit(f"MODE must be 'single', 'sweep', 'compare_scores' or 'prune_sweep', not {MODE!r}")
+        raise SystemExit(f"MODE must be 'single', 'sweep', 'compare_scores', 'prune_sweep' or 'stages', not {MODE!r}")
     for name, path in outputs.items():
         print(f"{name}: {path}")
 

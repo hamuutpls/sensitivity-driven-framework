@@ -122,6 +122,16 @@ class Stage0Config:
 
 
 @dataclass
+class StagesConfig:
+    """Stages 1-3 (sdf.stages.runner). Method names are keys of sdf.stages.methods.METHODS."""
+
+    stage0_dir: str | None = None  # a finished run's stage_0/ folder; None = run Stage 0 first, in the same run
+    stage1_methods: list[str] = field(default_factory=lambda: ["rtn"])
+    stage2_methods: list[str] = field(default_factory=lambda: ["rtn_act"])
+    stage3_methods: list[str] = field(default_factory=lambda: ["rtn_kv"])
+
+
+@dataclass
 class FrameworkConfig:
     run: RunConfig = field(default_factory=RunConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -129,6 +139,7 @@ class FrameworkConfig:
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
     stage0: Stage0Config = field(default_factory=Stage0Config)
+    stages: StagesConfig = field(default_factory=StagesConfig)
     requirement: DeploymentRequirement = field(default_factory=DeploymentRequirement)
     # Default hyperparameters for single (non-search) runs; keys are SEARCH_SPACE names.
     hyperparams: dict[str, Any] = field(default_factory=dict)
