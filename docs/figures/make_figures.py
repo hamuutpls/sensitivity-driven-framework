@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch, Patch
 
 OUT = Path(__file__).parent
-RUN = "Stage 0 run 20261001-184158_781ac2, TinyLlama-1.1B-Chat (22 layers, 1.10 B parameters, 2.20 GB at 16 bits)"
+RUN = "Stage 0 run 20261003-144910_3df5df (same on Colab, 20261004-120724_3c2a04), TinyLlama-1.1B-Chat (22 layers, 1.10 B parameters, 2.20 GB at 16 bits)"
 
 # Colour-blind-safe (Okabe-Ito) roles used in every figure.
 PROTECT, COMPRESS, GUARD, DONE, PLANNED, NOTE = "#0072B2", "#E69F00", "#D55E00", "#009E73", "#999999", "#444444"
@@ -156,7 +156,7 @@ def fig3_weight_plan():
               loc="lower left", fontsize=8.5, frameon=False, bbox_to_anchor=(0.03, 0.0), ncol=3)
 
     names = ["Original\n(16-bit)", "Standard\n4-bit", "Stage 0\nmain plan", "Stage 0\nsame size", "Same size,\nno removal"]
-    mb = [2200, 777.0, 946.6, 774.8, 766.0]
+    mb = [2200, 777.0, 942.0, 768.0, 766.0]
     c = [NOTE, PLANNED, DONE, DONE, DONE]
     ax2.bar(range(5), mb, color=c)
     for i, v in enumerate(mb):
@@ -233,7 +233,7 @@ def fig6_handoff():
                      "Every plan is a JSON file next to the Stage 0 report; later stages load it instead of measuring again.")
     box(ax, 36, 40, 28, 22, "Stage 0 results\nTinyLlama, 22 layers\nPerplexity 10.18 (tuning half)\n10.62 (held-out half, never tuned on)", DONE)
     targets = [
-        (2, 72, "Stage 1: weights\ncompression_plan.json\n11 layers protected at 8 bits;\n0, 1, 2, 7, 21 never pruned\n947 MB plan vs 777 MB standard\n(+ two 775 / 766 MB same-size plans)", (36, 56)),
+        (2, 72, "Stage 1: weights\ncompression_plan.json\n11 layers protected at 8 bits;\n0, 1, 2, 7, 21 never pruned\n942 MB plan vs 777 MB standard\n(+ two 768 / 766 MB same-size plans)", (36, 56)),
         (66, 72, "Stage 2: activations\nactivation_plan.json\n8 or 4 bits per layer, average 6\nPredicted rise 0.56 vs 0.67 copied\nLayer 1 most fragile", (64, 56)),
         (2, 6, "Stage 3: KV cache\nkv_cache_plan.json\nKeys/values 4 bits (layer 0 values 2)\nWords kept 10-100% per layer\n13.0 MB -> 3.2 MB predicted", (36, 46)),
         (66, 6, "Stage 4 and search\nresults.json, sensitivity_profile.json\nReference: 47 ms to read a prompt,\n46 ms per word, 2.45 GB peak memory\nCached profile: trials re-plan in ms", (64, 46)),
