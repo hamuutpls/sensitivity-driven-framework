@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-04: Run on Google Colab
+
+- `notebooks/colab_run.ipynb`: mounts Drive, clones or pulls `main`, installs, runs the tests, then runs `main.py`
+  with `MODE` and the output / cache folders set in the notebook (`MyDrive/thesis_compression/results` and
+  `cache`). No code changes were needed: every path was already a setting.
+
 ## 2026-10-03: Hessian score fixed
 
 - `hessian` came out negative for some TinyLlama layers (one probe per passage is mostly noise). It now uses

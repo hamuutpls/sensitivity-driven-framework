@@ -29,6 +29,13 @@ python main.py
 comparison report; `MODE = "prune_sweep"` really prunes the model at every level in `PRUNE_SWEEP_RATIOS`
 (10% to 100% by default) and measures the error, standard method vs framework (`stage_0_prune_sweep/`). The command-line tools below do the same with `--set` overrides.
 
+### On Google Colab
+
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hamuutpls/sensitivity-driven-framework/blob/main/notebooks/colab_run.ipynb)
+
+`notebooks/colab_run.ipynb` pulls `main`, installs the package, runs the tests and then `main.py` on the Colab
+GPU, with results and caches in `MyDrive/thesis_compression/` so they survive the session.
+
 ## Layout
 
 ```
