@@ -273,9 +273,9 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     report = (stage_dir / "report.md").read_text(encoding="utf-8")
     assert "also includes a budget plan" in report and "Size floor" in report
     assert "## Sensitivity of every layer" in report
-    assert "Unused budget: same-size plan without pruning" in report
+    assert "Unused budget: budget plan without pruning" in report
     assert "## KV cache plan" in report and "Key bits (cache)" in report and "short-term memory" in report
-    assert "Share removed (same-size plan)" in report and "pruning caveat" in report
+    assert "Share removed (budget plan)" in report and "pruning caveat" in report
     assert "Perplexity (held-out half)" in report.split("# Technical details")[1]
     assert report.split("## Summary")[1].split("##")[0].count("\n\n") <= 2  # one paragraph
     assert data2["original_model"]["num_parameters"] == n_params
