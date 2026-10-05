@@ -37,7 +37,7 @@ from sdf.stage0.planner import (CompressionPlan, baseline_cost, plan_compression
                                 same_size_pruning_plan, uniform_plan)
 from sdf.stage0.run import (_cost_metrics, _ModelHandle, fp16_key, load_fp16, load_guard, load_profile,
                             original_model_info)
-from sdf.stage0.sensitivity import fake_quantize_, find_decoder_layers, normalize
+from sdf.stage0.sensitivity import fake_quantize_, find_decoder_layers, int_zero, normalize, zero_key
 from sdf.utils.env import environment_info, resolve_device
 from sdf.utils.logging import get_logger
 
@@ -86,17 +86,6 @@ def apply_plan(model: nn.Module, plan: CompressionPlan, group_size: int, quantiz
             m.weight.data.copy_(w)
 
 
-def int_zero(s0) -> bool:
-    if s0.weight_zero_point not in ("int", "float"):
-        raise ValueError(f"stage0.weight_zero_point must be 'int' or 'float', got {s0.weight_zero_point!r}")
-    return s0.weight_zero_point == "int"
-
-
-def zero_key(s0) -> dict[str, str]:
-    """Cache-key part for the rounding grid; empty for "float" so measurements made before it existed stay valid."""
-    return {} if s0.weight_zero_point == "float" else {"zero_point": s0.weight_zero_point}
-
-
 def _validated(ratios: list[float]) -> list[float]:
     out = sorted({float(r) for r in ratios})
     if not out or not all(0.0 <= r <= 1.0 for r in out):
@@ -140,7 +129,8 @@ def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, toke
     scores = normalize(profile.raw_scores, s0.normalization)
     guarded, _ = load_guard(ctx, candidate, handle, text_loader, profile)
     predict = functools.partial(predict_cost, profile=profile, group_size=gs,
-                                group_overhead_bits=s0.group_overhead_bits, baseline_bits=s0.baseline_bits)
+                                group_overhead_bits=s0.group_overhead_bits, baseline_bits=s0.baseline_bits,
+                                sparse_storage=s0.sparse_storage)
     rounding = (f"weights rounded to the plan's bits (group size {gs})" if s0.prune_sweep_quantize
                 else "no rounding (pruning only)")
     rep = StageReporter(
@@ -195,8 +185,10 @@ def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, toke
 # --- report text -------------------------------------------------------------------------------------------------
 
 def _fair(curves) -> list[tuple[int, dict, dict, bool]]:
-    """(level, standard, same size, sizes equal) for each level both measured."""
-    return [(p, a, f, abs(f["predicted_weight_memory_gb"] - a["predicted_weight_memory_gb"]) < 1e-6)
+    """(level, standard, same size, matched) for each level both measured. Matched = same share removed (with
+    "free" storage that is also the same size; a bitmask makes the same-size plan slightly smaller, since its
+    unpruned and emptied layers need no mask)."""
+    return [(p, a, f, abs(f["sparsity"] - a["sparsity"]) < 1e-6)
             for (p, a), (_, f) in zip(curves["original"], curves["same_size"]) if a and f]
 
 
@@ -294,7 +286,8 @@ def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, 
         "- **Error**: perplexity on the validation half of the test text; lower is better"
         + (f" (uncompressed model: {base:.4g})." if base else "."),
         "- **Error (held-out)**: the same on the held-out half, which nothing is tuned on.",
-        "- **Memory (GB)**: predicted memory to store the model, assuming deleted numbers take no space.",
+        f"- **Memory (GB)**: predicted memory to store the model; deleted numbers stored as: {s0.sparse_storage} "
+        "(bitmask = 1 bit per weight of a pruned layer, dense = no saving, free = no cost).",
         "- **Share removed**: the share of all the model's numbers deleted (0.1 means 10%); the framework's is "
         "lower because it leaves protected and guarded layers whole.",
     ]

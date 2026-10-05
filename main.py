@@ -47,6 +47,7 @@ COMPRESSED_BITS = 4  # bits per number in unprotected layers
 NO_PRUNE_COMPRESSED_BITS = 3  # bits for unprotected layers in the same-size plan that removes nothing
 UNIFORM_BITS = 4  # the standard method: every layer at this many bits ...
 UNIFORM_PRUNE_RATIO = 0.0  # ... with this share removed
+SPARSE_STORAGE = "bitmask"  # size of pruned weights: "bitmask" +1 bit/weight, "dense" no saving, "free" ideal (old)
 WEIGHT_ZERO_POINT = "int"  # weight rounding grid: "int" keeps 0 representable (GPTQ/AWQ); "float" = before 2026-10-05
 GUARD_TOP_K = 5  # never prune the layers whose removal hurts most, this many of them (0 = no guard)
 CALIB_SEQ_LEN = 512  # tokens per calibration passage
@@ -144,6 +145,7 @@ def build_config():
         "stage0.uniform_bits": UNIFORM_BITS,
         "stage0.uniform_prune_ratio": UNIFORM_PRUNE_RATIO,
         "stage0.weight_zero_point": WEIGHT_ZERO_POINT,
+        "stage0.sparse_storage": SPARSE_STORAGE,
         "stage0.guard_top_k": GUARD_TOP_K,
         "stage0.act_plan": ACT_PLAN,
         "stage0.act_bits_options": ACT_BITS_OPTIONS,

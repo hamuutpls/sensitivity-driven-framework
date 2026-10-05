@@ -360,6 +360,17 @@ def round_to_nearest(x: torch.Tensor, bits: int, group_size: int, int_zero: bool
     return q.reshape(x.shape).to(x.dtype)
 
 
+def int_zero(s0) -> bool:
+    if s0.weight_zero_point not in ("int", "float"):
+        raise ValueError(f"stage0.weight_zero_point must be 'int' or 'float', got {s0.weight_zero_point!r}")
+    return s0.weight_zero_point == "int"
+
+
+def zero_key(s0) -> dict[str, str]:
+    """Cache-key part for the rounding grid; empty for "float" so measurements made before it existed stay valid."""
+    return {} if s0.weight_zero_point == "float" else {"zero_point": s0.weight_zero_point}
+
+
 def fake_quantize_(weight: torch.Tensor, bits: int, group_size: int, int_zero: bool = True) -> None:
     """Round `weight` (out, in) in place to `bits` with one scale per group of `group_size` inputs."""
     weight.data.copy_(round_to_nearest(weight.data, bits, group_size, int_zero))

@@ -135,7 +135,7 @@ def plan_metrics(plan: Any, plans: Stage0Plans, cfg, candidate: dict[str, Any]) 
     s0 = cfg.stage0
     if isinstance(plan, CompressionPlan):
         return _cost_metrics(predict_cost(plan, plans.profile, candidate["gptq_groupsize"], s0.group_overhead_bits,
-                                          s0.baseline_bits))
+                                          s0.baseline_bits, s0.sparse_storage))
     if isinstance(plan, ActivationPlan):
         return {"avg_activation_bits": plan.avg_bits}
     if isinstance(plan, KVPlan) and plans.kv_profile is not None:

@@ -59,7 +59,8 @@ def plan_rows(profile: SensitivityProfile, calib: dict[str, Any], grid: dict[str
     rows = []
     for gs in grid["gptq_groupsize"]:
         cost = functools.partial(predict_cost, profile=profile, group_size=gs,
-                                 group_overhead_bits=s0.group_overhead_bits, baseline_bits=s0.baseline_bits)
+                                 group_overhead_bits=s0.group_overhead_bits, baseline_bits=s0.baseline_bits,
+                                sparse_storage=s0.sparse_storage)
         uni = cost(uniform_plan(scores, s0.uniform_bits, s0.uniform_prune_ratio))
         no_prune = budget_matched_plan(scores, uni.weight_memory_gb, 0.0, s0.protected_bits,
                                        s0.no_prune_compressed_bits, cost, guard)

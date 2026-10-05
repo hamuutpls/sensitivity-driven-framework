@@ -90,6 +90,9 @@ class Stage0Config:
     uniform_prune_ratio: float = 0.0
     # Per quantisation group GPTQ stores a scale and a zero point; bits each, for the memory prediction.
     group_overhead_bits: int = 32
+    # How pruned (unstructured) weights are stored in the size prediction: "bitmask" (+1 bit per weight of a pruned
+    # layer), "dense" (zeros stored, no saving) or "free" (no cost; the only mode before 2026-10-05)
+    sparse_storage: str = "bitmask"
     # Weight rounding grid: "int" = integer zero point, 0 always representable (GPTQ/AWQ format); "float" = grid
     # starts at the group minimum (before 2026-10-05; magnitude pruning then got an extra exact-zero value free)
     weight_zero_point: str = "int"

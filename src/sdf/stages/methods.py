@@ -27,6 +27,7 @@ from sdf.stage0.activation import ActivationPlan, quantize_inputs
 from sdf.stage0.kv_cache import KVPlan, kv_projections, quantize_output
 from sdf.stage0.planner import CompressionPlan
 from sdf.stage0.prune_sweep import apply_plan
+from sdf.stage0.sensitivity import int_zero
 from sdf.stage0.sensitivity import find_decoder_layers
 
 
@@ -64,7 +65,7 @@ def _rtn_weights(call: MethodCall) -> Iterator[dict[str, Any]]:
     plan: CompressionPlan = call.plan
     with apply_plan(call.model, plan, call.candidate["gptq_groupsize"], quantize=True,
                     baseline_bits=call.cfg.stage0.baseline_bits,
-                    int_zero=call.cfg.stage0.weight_zero_point == "int"):
+                    int_zero=int_zero(call.cfg.stage0)):
         yield {}
 
 

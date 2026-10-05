@@ -160,12 +160,13 @@ def test_predict_cost():
     fp16 = baseline_cost(prof, 16)
     assert fp16.weight_memory_gb == pytest.approx(4500 * 2 / 1e9)
     uni = predict_cost(uniform_plan(TOY_SCORES, 4, 0.0), prof, group_size=100, group_overhead_bits=32, baseline_bits=16)
+    assert predict_cost(uniform_plan(TOY_SCORES, 4, 0.0), prof, 100, 32, 16, "free") == uni  # unpruned: mode irrelevant
     # per layer: 1000 * 4 bits + 10 groups * 32 bits = 4320 bits; + 500 * 16 bits outside the layers
     assert uni.weight_memory_gb == pytest.approx((4 * 4320 + 500 * 16) / 8 / 1e9)
     assert uni.sensitivity_exposure == pytest.approx(0.75)
     per_ch = predict_cost(uniform_plan(TOY_SCORES, 4, 0.0), prof, PER_CHANNEL, 32, 16)
     assert per_ch.per_layer_mb[0] == pytest.approx((4000 + 10 * 32) / 8 / 1e6)
-    fw = predict_cost(plan_compression(TOY_SCORES, 0.5, 0.3, 8, 4), prof, 100, 32, 16)
+    fw = predict_cost(plan_compression(TOY_SCORES, 0.5, 0.3, 8, 4), prof, 100, 32, 16, "free")
     assert fw.sensitivity_exposure < uni.sensitivity_exposure  # sensitive layers are spared
     assert fw.sparsity == pytest.approx(2 * 300 / 4500)
 
@@ -408,3 +409,56 @@ def test_hessian_score_matches_exact_diagonal():
     exact = 0.5 * (diag * w * w).sum().item()
     est = prof_fn(toy, [torch.zeros(1, 1, dtype=torch.long)] * 50, method="hessian").raw_scores[0]
     assert est == pytest.approx(exact, rel=0.1)
+
+
+def test_sparse_storage_modes():
+    """Unstructured pruning saves only what the file format realises (review 2026-10-05, item 3)."""
+    prof = toy_profile()
+    plan = uniform_plan(TOY_SCORES, 4, 0.3)
+    cost = {m: predict_cost(plan, prof, 100, 32, 16, m).per_layer_mb[0] * 8e6 for m in ("free", "bitmask", "dense")}
+    assert cost["free"] == pytest.approx(700 * 4 + 7 * 32)
+    assert cost["bitmask"] == pytest.approx(700 * 4 + 7 * 32 + 1000)  # + 1 bit per original weight
+    assert cost["dense"] == pytest.approx(1000 * 4 + 10 * 32)  # zeros stored: no saving
+    gone = uniform_plan(TOY_SCORES, 4, 1.0)
+    assert all(predict_cost(gone, prof, 100, 32, 16, m).per_layer_mb[0] == 0 for m in ("free", "bitmask", "dense"))
+
+
+def test_same_layer_counts_same_size_whichever_layers():
+    """Equal-shaped layers: size depends only on how many are protected / pruned / guarded (item 4). A guarded
+    layer that is not protected stays 4-bit unpruned, which is why the Hessian main plan (layer 0 guarded by
+    removal, not protected by Hessian) is bigger than the removal plan with the same 11 protected layers."""
+    prof = SensitivityProfile(raw_scores=[0.0] * 6, layer_numel=[1000] * 6, layer_rows=[10] * 6, other_numel=500)
+    size = lambda plan: predict_cost(plan, prof, 100, 32, 16).weight_memory_gb  # noqa: E731
+    a = plan_compression([1, 1, 1, 0, 0, 0], 0.5, 0.3, 8, 4, frozenset({0}))
+    b = plan_compression([0, 0, 0, 1, 1, 1], 0.5, 0.3, 8, 4, frozenset({3}))
+    assert size(a) == pytest.approx(size(b))
+    c = plan_compression([0, 0, 0, 1, 1, 1], 0.5, 0.3, 8, 4, frozenset({0}))  # guard outside the protected set
+    assert size(c) > size(a)
+
+
+def test_exposure_needs_a_shared_reference():
+    """With rank scores every measure protecting k layers gets the same exposure against its own ranks, so the
+    0.58 = 0.58 Hessian/removal match was true by construction (item 4)."""
+    prof = toy_profile()
+    removal, other = [0.0, 1 / 3, 2 / 3, 1.0], [1.0, 2 / 3, 1 / 3, 0.0]
+    own = [predict_cost(plan_compression(s, 0.5, 0.3, 8, 4), prof, 100, 32, 16).sensitivity_exposure
+           for s in (removal, other)]
+    assert own[0] == pytest.approx(own[1])
+    vs_removal = predict_cost(plan_compression(other, 0.5, 0.3, 8, 4), prof, 100, 32, 16,
+                              reference_scores=removal).sensitivity_exposure
+    assert vs_removal > own[0]  # protecting the wrong layers shows up once scored against removal
+
+
+def test_compare_report_counts_overlap_with_the_never_pruned_set():
+    """Item 6: Hessian's top 5 (2, 1, 3, 7, 4) shares 1, 2 and 7 with removal's (0, 2, 7, 21, 1): 3 of 5."""
+    from sdf.stage0.compare import _report
+
+    names = ["layer_removal", "hessian"]
+    res = {"scores": names, "threshold": 0.5, "per_layer": [], "protected": {s: [] for s in names},
+           "top": {"layer_removal": [0, 2, 7, 21, 1], "hessian": [2, 1, 3, 7, 4]},
+           "agreement": {a: {b: 0.0 for b in names} for a in names}, "overlap": {a: {b: 0 for b in names} for a in names},
+           "time_s": {}, "peak_memory_gb": {}, "outliers": {s: [] for s in names}, "baseline_ppl": None}
+    rows = {line.split(" | ")[0].strip("| "): line for line in _report(res, {"calib_dataset": "w", "calib_samples": 1,
+                                                                            "gptq_groupsize": 128}).splitlines()
+            if " of 5 " in line}
+    assert "3 of 5" in rows["Hessian"] and "5 of 5" in rows["remove the layer"]
