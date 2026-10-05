@@ -63,7 +63,8 @@ class Method:
 def _rtn_weights(call: MethodCall) -> Iterator[dict[str, Any]]:
     plan: CompressionPlan = call.plan
     with apply_plan(call.model, plan, call.candidate["gptq_groupsize"], quantize=True,
-                    baseline_bits=call.cfg.stage0.baseline_bits):
+                    baseline_bits=call.cfg.stage0.baseline_bits,
+                    int_zero=call.cfg.stage0.weight_zero_point == "int"):
         yield {}
 
 
@@ -100,7 +101,7 @@ _WEIGHT_PLANS = ("weights", "weights_same_size", "weights_same_size_no_prune")
 METHODS: dict[str, Method] = {m.name: m for m in [
     # Stage 1: weights
     Method("rtn", 1, "Round-to-nearest + magnitude pruning", _WEIGHT_PLANS, _rtn_weights,
-           params=("gptq_groupsize",), library="in repo (torch)",
+           params=("gptq_groupsize",), library="in repo (torch)", version=2,  # 2: integer zero point
            notes="baseline; same rounding and pruning as the Stage 0 pruning-levels study"),
     Method("gptq", 1, "GPTQ", _WEIGHT_PLANS, params=("gptq_groupsize",), calibrated=True,
            library="in repo (torch), checked against gptqmodel",

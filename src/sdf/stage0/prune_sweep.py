@@ -62,7 +62,7 @@ def magnitude_mask(weight: torch.Tensor, ratio: float) -> torch.Tensor:
 
 @contextmanager
 def apply_plan(model: nn.Module, plan: CompressionPlan, group_size: int, quantize: bool,
-               baseline_bits: int = 16) -> Iterator[None]:
+               baseline_bits: int = 16, int_zero: bool = True) -> Iterator[None]:
     """Prune (and round, if `quantize`) every decoder Linear weight as `plan` says; restore on exit.
     Originals are kept on the CPU, so this needs no extra GPU memory."""
     saved = []
@@ -77,13 +77,24 @@ def apply_plan(model: nn.Module, plan: CompressionPlan, group_size: int, quantiz
                 if mask is not None:
                     m.weight.data.mul_(mask)
                 if rounds:
-                    fake_quantize_(m.weight, lp.bit_width, group_size)
-                    if mask is not None:  # rounding moves zeros off zero (min/max scale); keep them pruned
+                    fake_quantize_(m.weight, lp.bit_width, group_size, int_zero)
+                    if mask is not None:  # only the float-zero grid moves zeros off zero; keep them pruned
                         m.weight.data.mul_(mask)
         yield
     finally:
         for m, w in saved:
             m.weight.data.copy_(w)
+
+
+def int_zero(s0) -> bool:
+    if s0.weight_zero_point not in ("int", "float"):
+        raise ValueError(f"stage0.weight_zero_point must be 'int' or 'float', got {s0.weight_zero_point!r}")
+    return s0.weight_zero_point == "int"
+
+
+def zero_key(s0) -> dict[str, str]:
+    """Cache-key part for the rounding grid; empty for "float" so measurements made before it existed stay valid."""
+    return {} if s0.weight_zero_point == "float" else {"zero_point": s0.weight_zero_point}
 
 
 def _validated(ratios: list[float]) -> list[float]:
@@ -104,13 +115,13 @@ def make_evaluator(ctx: RunContext, handle, text_loader, device) -> Callable[[Co
             windows.extend(eval_windows(text_loader(cfg.eval.dataset, "test"), handle.tokenizer,
                                         cfg.eval.seq_len, cfg.eval.max_windows))
         m = handle.model(cfg.model.dtype)
-        with apply_plan(m, plan, gs, s0.prune_sweep_quantize, s0.baseline_bits):
+        with apply_plan(m, plan, gs, s0.prune_sweep_quantize, s0.baseline_bits, int_zero(s0)):
             return {"ppl_val": perplexity(m, windows[0], device)[0],
                     "ppl_heldout": perplexity(m, windows[1], device)[0]}
 
     def evaluate(plan: CompressionPlan, gs: int) -> tuple[dict[str, Any], bool]:
         key = {**fp16_key(ctx, device), "group_size": gs, "quantize": s0.prune_sweep_quantize,
-               "pruning": "magnitude_per_row", "layers": [[lp.bit_width, lp.pruning_ratio] for lp in plan.layers]}
+               "pruning": "magnitude_per_row", **zero_key(s0), "layers": [[lp.bit_width, lp.pruning_ratio] for lp in plan.layers]}
         return ctx.cache.get_or_compute("prune_eval", key, lambda: measure(plan, gs))
 
     return evaluate

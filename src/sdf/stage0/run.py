@@ -139,6 +139,8 @@ def profile_key(ctx: RunContext, cand: dict[str, Any], score: str | None = None)
            "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size, "seed": cfg.run.seed}
     if score == "layer_quant":  # the per-layer compression depends on these too
         key.update(bits=cfg.stage0.compressed_bits, group_size=cand["gptq_groupsize"])
+        if cfg.stage0.weight_zero_point != "float":  # older cache entries were made with the float grid
+            key["zero_point"] = cfg.stage0.weight_zero_point
     extra = {"taylor_ema": {"ema_beta": cfg.stage0.taylor_ema_beta}, "movement": {"lr": cfg.stage0.movement_lr},
              "hessian": {"eps": cfg.stage0.hessian_eps, "probes": cfg.stage0.hessian_probes, "clamp": True}}
     key.update(extra.get(score, {}))
@@ -227,7 +229,8 @@ def load_profile(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandl
         elif score in ("layer_removal", "layer_quant"):
             prof = profile_by_ablation(handle.model(s0.profile_dtype), batches, score, device=handle.device,
                                        bits=s0.compressed_bits, group_size=candidate["gptq_groupsize"],
-                                       meta=profile_key(ctx, candidate, score))
+                                       meta=profile_key(ctx, candidate, score),
+                                       int_zero=s0.weight_zero_point == "int")
         else:
             raise ValueError(f"unknown stage0.score {score!r}; choose from {SCORES}")
         return prof.to_dict()

@@ -338,31 +338,41 @@ def skip_layer(layer: nn.Module) -> Iterator[None]:
             h.remove()
 
 
-def round_to_nearest(x: torch.Tensor, bits: int, group_size: int) -> torch.Tensor:
+def round_to_nearest(x: torch.Tensor, bits: int, group_size: int, int_zero: bool = False) -> torch.Tensor:
     """`x` rounded to `bits` with one min/max scale per group of `group_size` along the last dimension
-    (group_size <= 0 or not dividing that dimension: one group per row)."""
+    (group_size <= 0 or not dividing that dimension: one group per row).
+
+    int_zero=False: the grid starts at the group minimum (float offset), so 0 is usually not on it.
+    int_zero=True: the offset is rounded to a whole step (integer zero point, the GPTQ/AWQ storage format), so
+    0 is always on the grid. Weights use True: with False, magnitude pruning (which keeps pruned weights at
+    exactly 0) gives pruned layers a 17th value for free and makes pruning look like it improves accuracy."""
     n = x.shape[-1]
     g = group_size if 0 < group_size and n % group_size == 0 else n
     w = x.float().reshape(*x.shape[:-1], n // g, g)
     lo, hi = w.amin(dim=-1, keepdim=True), w.amax(dim=-1, keepdim=True)
-    scale = ((hi - lo) / (2 ** bits - 1)).clamp(min=1e-12)
-    q = ((w - lo) / scale).round().clamp(0, 2 ** bits - 1) * scale + lo
+    top = 2 ** bits - 1
+    scale = ((hi - lo) / top).clamp(min=1e-12)
+    if int_zero:
+        zero = (-lo / scale).round().clamp(0, top)
+        q = ((w / scale).round() + zero).clamp(0, top).sub(zero) * scale
+    else:
+        q = ((w - lo) / scale).round().clamp(0, top) * scale + lo
     return q.reshape(x.shape).to(x.dtype)
 
 
-def fake_quantize_(weight: torch.Tensor, bits: int, group_size: int) -> None:
+def fake_quantize_(weight: torch.Tensor, bits: int, group_size: int, int_zero: bool = True) -> None:
     """Round `weight` (out, in) in place to `bits` with one scale per group of `group_size` inputs."""
-    weight.data.copy_(round_to_nearest(weight.data, bits, group_size))
+    weight.data.copy_(round_to_nearest(weight.data, bits, group_size, int_zero))
 
 
 @contextmanager
-def quantize_layer(layer: nn.Module, bits: int, group_size: int) -> Iterator[None]:
+def quantize_layer(layer: nn.Module, bits: int, group_size: int, int_zero: bool = True) -> Iterator[None]:
     """Temporarily round every Linear weight in `layer`; the original weights are restored afterwards."""
     linears = [m for m in layer.modules() if isinstance(m, nn.Linear)]
     saved = [m.weight.data.clone() for m in linears]
     try:
         for m in linears:
-            fake_quantize_(m.weight, bits, group_size)
+            fake_quantize_(m.weight, bits, group_size, int_zero)
         yield
     finally:
         for m, w in zip(linears, saved):
@@ -383,6 +393,7 @@ def profile_by_ablation(
     bits: int = 4,
     group_size: int = 128,
     meta: dict[str, Any] | None = None,
+    int_zero: bool = True,
 ) -> SensitivityProfile:
     """Score each decoder layer by the rise in calibration perplexity when that layer alone is removed
     (`layer_removal`) or compressed to `bits` (`layer_quant`). The raw score is perplexity with the change
@@ -403,7 +414,7 @@ def profile_by_ablation(
         base = math.exp(_mean_loss(model, batches, device))
         layer_ppl = []
         for layer in layers:
-            change = skip_layer(layer) if method == "layer_removal" else quantize_layer(layer, bits, group_size)
+            change = skip_layer(layer) if method == "layer_removal" else quantize_layer(layer, bits, group_size, int_zero)
             with change:
                 layer_ppl.append(math.exp(_mean_loss(model, batches, device)))
     finally:
