@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-05: Realistic size for pruned weights; comparable fragile-parts score; code version in reports
+
+- Pruning is unstructured, so deleted weights only save space in a sparse file. `stage0.sparse_storage`:
+  "bitmask" (default, +1 bit per weight of a partly pruned layer), "dense" (no saving), "free" (old ideal).
+  The fair pruning test now pairs versions by share removed (a bitmask makes its plan slightly smaller).
+- The fragile-parts score (exposure) of a non-removal plan is scored against the layer-removal ranks: against
+  its own ranks every measure protecting k layers scores the same (Hessian 0.58 = removal 0.58 by construction).
+- `environment` in every results.json records `git_commit` and `git_dirty`.
+
 ## 2026-10-05: Weight rounding keeps 0 on the grid (integer zero point)
 
 - `round_to_nearest` offset its grid by the group minimum (a float), so 0 was usually not one of the 16 values.

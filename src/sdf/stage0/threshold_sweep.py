@@ -43,7 +43,8 @@ def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, 
     removal = profile if profile.method == "layer_removal" else load_profile(ctx, candidate, handle, text_loader,
                                                                              score="layer_removal")[0]
     predict = functools.partial(predict_cost, profile=profile, group_size=gs,
-                                group_overhead_bits=s0.group_overhead_bits, baseline_bits=s0.baseline_bits)
+                                group_overhead_bits=s0.group_overhead_bits, baseline_bits=s0.baseline_bits,
+                                sparse_storage=s0.sparse_storage)
     rep = StageReporter(
         stage=0, run_dir=ctx.run_dir, subdir="stage_0_threshold_sweep",
         title="Protection thresholds: how many layers to protect",

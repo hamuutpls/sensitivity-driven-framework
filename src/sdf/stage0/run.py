@@ -286,8 +286,13 @@ def run_stage0(
         main_metrics=MAIN_METRICS,
         original_model=original_model_info(ctx, handle, profile),
     )
+    # Exposure is always scored against layer removal when that profile exists (it does whenever the guard is
+    # on), so plans built from different measures are comparable; against its own ranks every measure that
+    # protects k layers scores the same.
+    reference = (normalize(load_profile(ctx, candidate, handle, text_loader, score="layer_removal")[0].raw_scores,
+                           s0.normalization) if profile.method != "layer_removal" and s0.guard_top_k else None)
     predict = lambda plan: predict_cost(plan, profile, candidate["gptq_groupsize"],  # noqa: E731
-                                        s0.group_overhead_bits, s0.baseline_bits)
+                                        s0.group_overhead_bits, s0.baseline_bits, s0.sparse_storage, reference)
 
     # --- FP16 baseline: measured once per (model, eval settings, hardware) and cached ----------------------
     with rep.method("baseline", "fp16", description="uncompressed model") as row:

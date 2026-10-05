@@ -193,34 +193,48 @@ def predict_cost(
     group_size: int,
     group_overhead_bits: int,
     baseline_bits: int,
+    sparse_storage: str = "bitmask",
+    reference_scores: list[float] | None = None,
 ) -> PlanCost:
-    """Ideal storage of a plan.
+    """Predicted storage of a plan.
 
     Per compressed layer: kept weights x bits, plus one scale/zero pair (`group_overhead_bits`) per quantisation
-    group of kept weights (group_size weights, or one per output channel when group_size == PER_CHANNEL). Pruned weights are
-    assumed to be stored for free, which holds for structured pruning; unstructured sparsity needs a sparse
-    format to realise it. Parameters outside the decoder Linear weights stay at `baseline_bits`.
+    group of kept weights (group_size weights, or one per output channel when group_size == PER_CHANNEL).
+    Pruning here is unstructured (smallest weights per row), so where the pruned weights are depends on
+    `sparse_storage`: "bitmask" adds 1 bit per original weight of a partly pruned layer (a realistic sparse file),
+    "dense" stores them as zeros (no saving, as in a plain checkpoint), "free" costs them nothing (the ideal,
+    only real for structured pruning). A fully pruned layer (ratio 1) is stored as nothing in every mode.
+    Parameters outside the decoder Linear weights stay at `baseline_bits`.
+
+    The exposure uses `reference_scores` (0-1, one per layer) when given, else the plan's own sensitivities.
+    Plans built from different measures must share a reference to be compared: with rank scores, protecting
+    the top k layers of any measure gives the same exposure against that measure's own ranks.
     """
+    if sparse_storage not in ("bitmask", "dense", "free"):
+        raise ValueError(f"sparse_storage must be bitmask, dense or free, got {sparse_storage!r}")
+    sens = reference_scores if reference_scores is not None else [lp.sensitivity for lp in plan.layers]
     if not profile.layer_numel:
         raise ValueError("profile has no layer sizes; re-run profiling with this version")
     per_layer_bits = []
     exposure_num = 0.0
     total_pruned = 0.0
-    for lp, numel, rows in zip(plan.layers, profile.layer_numel, profile.layer_rows):
+    for lp, numel, rows, s in zip(plan.layers, profile.layer_numel, profile.layer_rows, sens):
         kept = numel * (1.0 - lp.pruning_ratio)
-        bits = kept * lp.bit_width
+        stored = numel if sparse_storage == "dense" and lp.pruning_ratio < 1.0 else kept
+        bits = stored * lp.bit_width
         if lp.bit_width < baseline_bits:
-            # Scales for kept weights only: pruned rows/columns are gone (structured), so their groups are too.
             groups = rows if group_size == PER_CHANNEL else numel / group_size
-            bits += groups * (1.0 - lp.pruning_ratio) * group_overhead_bits
+            bits += groups * (stored / numel) * group_overhead_bits
+        if sparse_storage == "bitmask" and 0.0 < lp.pruning_ratio < 1.0:
+            bits += numel  # which weights are kept: 1 bit each
         per_layer_bits.append(bits)
         total_pruned += numel - kept
         eff_bits = lp.bit_width * (1.0 - lp.pruning_ratio)
-        exposure_num += lp.sensitivity * (1.0 - eff_bits / baseline_bits)
+        exposure_num += s * (1.0 - eff_bits / baseline_bits)
 
     total_numel = sum(profile.layer_numel) + profile.other_numel
     total_bits = sum(per_layer_bits) + profile.other_numel * baseline_bits
-    sens_total = sum(lp.sensitivity for lp in plan.layers)
+    sens_total = sum(sens)
     return PlanCost(
         weight_memory_gb=total_bits / 8 / 1e9,
         avg_bits_per_weight=total_bits / total_numel,
