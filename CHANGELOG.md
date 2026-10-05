@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-05: "Budget plan" instead of "same size"
+
+- The two plans that protect as many layers as fit in the standard method's memory were called "same size", but
+  they come out 1-1.4% smaller (0.768 / 0.766 GB against 0.777 GB). Report text, labels and figures 3 and 6 now
+  call them the budget plan and the budget plan with nothing removed. Internal keys (`allocation_same_size`, ...)
+  are unchanged, so caches and saved plans still load. The fair pruning test keeps "same size": there the sizes match.
+
 ## 2026-10-04: Protection threshold sweep
 
 - `MODE = "threshold_sweep"` (src/sdf/stage0/threshold_sweep.py): builds the Stage 0 plan at every threshold in

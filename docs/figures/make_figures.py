@@ -152,10 +152,10 @@ def fig3_weight_plan():
                 arrowprops=dict(arrowstyle="->", color=NOTE))
     fig.legend(handles=[Patch(color=PROTECT, label="Main plan, protected: 8 bits, nothing removed (11 layers)"),
                        Patch(color=COMPRESS, label="Main plan, compressed: 4 bits, 30% removed (11 layers)"),
-                       Patch(fc="white", ec=GUARD, lw=2, label="Never pruned in any plan, even the smaller same-size plan\n(number = perplexity added if skipped)")],
+                       Patch(fc="white", ec=GUARD, lw=2, label="Never pruned in any plan, even the smaller budget plan\n(number = perplexity added if skipped)")],
               loc="lower left", fontsize=8.5, frameon=False, bbox_to_anchor=(0.03, 0.0), ncol=3)
 
-    names = ["Original\n(16-bit)", "Standard\n4-bit", "Stage 0\nmain plan", "Stage 0\nsame size", "Same size,\nno removal"]
+    names = ["Original\n(16-bit)", "Standard\n4-bit", "Stage 0\nmain plan", "Stage 0\nbudget plan", "Budget plan,\nnothing removed"]
     mb = [2200, 777.0, 942.0, 768.0, 766.0]
     c = [NOTE, PLANNED, DONE, DONE, DONE]
     ax2.bar(range(5), mb, color=c)
@@ -164,10 +164,10 @@ def fig3_weight_plan():
     ax2.set(xticks=range(5), ylabel="Predicted size of the model's numbers\n(MB, smaller is better)", ylim=(0, 2550))
     ax2.set_xticklabels(names, fontsize=8.3)
     ax2.set_title("Predicted size of each version", fontsize=10.5, loc="left")
-    ax2.text(2, 1350, "Same-size plans fit in the\nstandard method's memory,\nso accuracy is compared\nsize for size in Stage 1",
+    ax2.text(2, 1350, "Budget plans fit within the\nstandard method's memory,\nso Stage 1 compares accuracy\nat no extra memory",
              ha="center", fontsize=8.5, color=NOTE)
     fig.text(0.02, -0.03, "Bar colours show the main plan: all 11 blue layers keep 8 bits and lose nothing. The orange border matters in the smaller "
-             "same-size plan, which protects only the 5 bordered layers; there the other blue layers drop to 4 bits with 30% removed.\n"
+             "budget plan, which protects only the 5 bordered layers; there the other blue layers drop to 4 bits with 30% removed.\n"
              "Higher score = more fragile layer; for size, smaller is better. The score is the layer's rank by damage, not the damage itself: the five 'never pruned' layers "
              "are where removing one layer hurts by far the most. Sizes are predictions; Stage 1 measures the real ones.",
              fontsize=8.8, color=NOTE)
@@ -235,7 +235,7 @@ def fig6_handoff():
                      "Every plan is a JSON file next to the Stage 0 report; later stages load it instead of measuring again.")
     box(ax, 36, 40, 28, 22, "Stage 0 results\nTinyLlama, 22 layers\nPerplexity 10.18 (tuning half)\n10.62 (held-out half, never tuned on)", DONE)
     targets = [
-        (2, 72, "Stage 1: weights\ncompression_plan.json\n11 layers protected at 8 bits;\n0, 1, 2, 7, 21 never pruned\n942 MB plan vs 777 MB standard\n(+ two 768 / 766 MB same-size plans)", (36, 56)),
+        (2, 72, "Stage 1: weights\ncompression_plan.json\n11 layers protected at 8 bits;\n0, 1, 2, 7, 21 never pruned\n942 MB plan vs 777 MB standard\n(+ two 768 / 766 MB budget plans)", (36, 56)),
         (66, 72, "Stage 2: activations\nactivation_plan.json\n8 or 4 bits per layer, average 6\nPredicted rise 0.56 vs 0.67 copied\nLayer 1 most fragile", (64, 56)),
         (2, 6, "Stage 3: KV cache\nkv_cache_plan.json\nKeys/values 4 bits (layer 0 values 2)\nWords kept 10-100% per layer\n13.0 MB -> 3.2 MB predicted", (36, 46)),
         (66, 6, "Stage 4 and search\nresults.json, sensitivity_profile.json\nReference: 47 ms to read a prompt,\n46 ms per word, 2.45 GB peak memory\nCached profile: trials re-plan in ms", (64, 46)),
