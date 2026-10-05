@@ -37,7 +37,7 @@ from sdf.stage0.planner import (CompressionPlan, baseline_cost, plan_compression
                                 same_size_pruning_plan, uniform_plan)
 from sdf.stage0.run import (_cost_metrics, _ModelHandle, fp16_key, load_fp16, load_guard, load_profile,
                             original_model_info)
-from sdf.stage0.sensitivity import fake_quantize_, find_decoder_layers, normalize
+from sdf.stage0.sensitivity import fake_quantize_, find_decoder_layers, int_zero, normalize, zero_key
 from sdf.utils.env import environment_info, resolve_device
 from sdf.utils.logging import get_logger
 
@@ -84,17 +84,6 @@ def apply_plan(model: nn.Module, plan: CompressionPlan, group_size: int, quantiz
     finally:
         for m, w in saved:
             m.weight.data.copy_(w)
-
-
-def int_zero(s0) -> bool:
-    if s0.weight_zero_point not in ("int", "float"):
-        raise ValueError(f"stage0.weight_zero_point must be 'int' or 'float', got {s0.weight_zero_point!r}")
-    return s0.weight_zero_point == "int"
-
-
-def zero_key(s0) -> dict[str, str]:
-    """Cache-key part for the rounding grid; empty for "float" so measurements made before it existed stay valid."""
-    return {} if s0.weight_zero_point == "float" else {"zero_point": s0.weight_zero_point}
 
 
 def _validated(ratios: list[float]) -> list[float]:

@@ -39,10 +39,12 @@ from sdf.stage0.sensitivity import (
     GRADIENT_SCORES,
     SCORES,
     SensitivityProfile,
+    int_zero,
     normalize,
     outlier_layers,
     profile_by_ablation,
     profile_sensitivity,
+    zero_key,
 )
 from sdf.utils.env import environment_info, resolve_device
 from sdf.utils.model_info import count_parameters, describe_model
@@ -139,8 +141,7 @@ def profile_key(ctx: RunContext, cand: dict[str, Any], score: str | None = None)
            "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size, "seed": cfg.run.seed}
     if score == "layer_quant":  # the per-layer compression depends on these too
         key.update(bits=cfg.stage0.compressed_bits, group_size=cand["gptq_groupsize"])
-        if cfg.stage0.weight_zero_point != "float":  # older cache entries were made with the float grid
-            key["zero_point"] = cfg.stage0.weight_zero_point
+        key.update(zero_key(cfg.stage0))
     extra = {"taylor_ema": {"ema_beta": cfg.stage0.taylor_ema_beta}, "movement": {"lr": cfg.stage0.movement_lr},
              "hessian": {"eps": cfg.stage0.hessian_eps, "probes": cfg.stage0.hessian_probes, "clamp": True}}
     key.update(extra.get(score, {}))
@@ -230,7 +231,7 @@ def load_profile(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandl
             prof = profile_by_ablation(handle.model(s0.profile_dtype), batches, score, device=handle.device,
                                        bits=s0.compressed_bits, group_size=candidate["gptq_groupsize"],
                                        meta=profile_key(ctx, candidate, score),
-                                       int_zero=s0.weight_zero_point == "int")
+                                       int_zero=int_zero(s0))
         else:
             raise ValueError(f"unknown stage0.score {score!r}; choose from {SCORES}")
         return prof.to_dict()
