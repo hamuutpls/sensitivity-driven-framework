@@ -7,7 +7,7 @@ real weights (as in prune_sweep: magnitude pruning per row + round-to-nearest, s
 measured, for every threshold in `stage0.threshold_sweep` and guard size in `stage0.guard_sweep`.
 
 Reference rows: the uncompressed model, the standard method (every layer at `uniform_bits`) and, per guard size,
-the two same-size plans (they do not depend on the threshold). Measurements are cached per plan and shared with
+the two budget plans (fit in the standard method's memory) (they do not depend on the threshold). Measurements are cached per plan and shared with
 prune_sweep, so identical plans (e.g. guard layers already protected) are measured once.
 
 Outputs under <run_dir>/stage_0_threshold_sweep/: report.md, stage_0_comparison.xlsx, results.json.
@@ -80,12 +80,12 @@ def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, 
         guarded = guarded_layers(removal.raw_scores, k)
         row(f"same_k{k}", "framework", budget_matched_plan(scores, budget, pr, s0.protected_bits, s0.compressed_bits,
                                                            predict, guarded),
-            label=f"Same size, guard {k}", guard=k, description="as many top layers protected as fit in the "
+            label=f"Budget plan, guard {k}", guard=k, description="as many top layers protected as fit in the "
                                                                  "standard method's size")
         row(f"noprune_k{k}", "framework", budget_matched_plan(scores, budget, 0.0, s0.protected_bits,
                                                               s0.no_prune_compressed_bits, predict, guarded),
-            label=f"Same size, nothing removed, guard {k}", guard=k,
-            description=f"same size, robust layers at {s0.no_prune_compressed_bits} bits, nothing removed")
+            label=f"Budget plan, nothing removed, guard {k}", guard=k,
+            description=f"budget plan, robust layers at {s0.no_prune_compressed_bits} bits, nothing removed")
         for t in thresholds:
             row(f"t{round(t * 100):03d}_k{k}", "framework",
                 plan_compression(scores, t, pr, s0.protected_bits, s0.compressed_bits, guarded),

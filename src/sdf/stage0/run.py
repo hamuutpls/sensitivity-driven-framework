@@ -324,7 +324,7 @@ def run_stage0(
     # making the comparison size-for-size fair.
     budget = None
     with rep.method(METHOD_BUDGET, "framework", compare_to=METHOD,
-                    label="Sensitivity-guided framework, same size as the standard method",
+                    label="Sensitivity-guided framework, budget plan (fits in the standard method's memory)",
                     plain_desc="the same approach, but limited to exactly the memory the standard method uses. "
                                "It protects as many of the most sensitive layers as fit in that budget, so the "
                                "two can be compared fairly, size for size.",
@@ -343,8 +343,8 @@ def run_stage0(
     # comparison mixes two effects. Here the robust layers pay with fewer bits instead and nothing is pruned.
     no_prune = None
     with rep.method(METHOD_NO_PRUNE, "framework", compare_to=METHOD,
-                    label="Sensitivity-guided framework, same size, nothing removed",
-                    plain_desc=f"the same-size approach without removing any numbers: the less sensitive layers "
+                    label="Sensitivity-guided framework, budget plan, nothing removed",
+                    plain_desc=f"the budget plan without removing any numbers: the less sensitive layers "
                                f"drop to {s0.no_prune_compressed_bits} bits per number instead, to pay for "
                                "protecting the sensitive ones. This separates the effect of choosing where to "
                                "spend the bits from the effect of removing numbers.",
@@ -553,7 +553,7 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
             "separately before trusting the plan for it.")
 
     if budget is not None and not budget.protected_layers:
-        rep.anomalies.append("The same-size plan could not protect any layer within the uniform plan's memory; "
+        rep.anomalies.append("The budget plan could not protect any layer within the uniform plan's memory; "
                              "raise prune_ratio_aggressive to free room for protection.")
 
     # sanity checks
@@ -573,8 +573,8 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
         ratio = budget.prune_ratio_aggressive
         if pruned and ratio > 0 and uniform.prune_ratio_aggressive == 0:
             bits = budget.layers[pruned[0]].bit_width
-            rep.sections.append(("Same-size plan: pruning caveat", (
-                f"The same-size plan protects layers {budget.protected_layers or 'none'} at full protected precision "
+            rep.sections.append(("Budget plan: pruning caveat", (
+                f"The budget plan protects layers {budget.protected_layers or 'none'} at full protected precision "
                 f"and prunes the other {len(pruned)} layers by {ratio:.0%}, while the uniform plan prunes nothing: "
                 "the size match is bought with pruning. Sensitivity exposure treats pruning as a linear loss of "
                 f"bits ({bits} x {1 - ratio:.2g} = {bits * (1 - ratio):.3g} effective bits), which likely understates "
@@ -582,7 +582,7 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
                 f"`{METHOD_NO_PRUNE}` row matches the size without pruning to isolate the effect of the "
                 "sensitivity guidance itself.")))
 
-    for name, bp in (("same-size plan", budget), ("same-size plan without pruning", no_prune)):
+    for name, bp in (("budget plan", budget), ("budget plan without pruning", no_prune)):
         if bp is not None:
             rep.sections.append((f"Unused budget: {name}", _unused_budget(bp, un_cost.weight_memory_gb,
                                                                                rep.config["stage0"]["protected_bits"], predict)))
@@ -624,8 +624,8 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         f"protects roughly the most sensitive {1 - hp['sensitive_threshold']:.0%} of layers.\n"
         f"4. **Allocate.** Protected layers keep {s0['protected_bits']} bits per number and lose nothing. "
         f"Compressed layers get {s0['compressed_bits']} bits per number and have "
-        f"{hp['prune_ratio_aggressive']:.0%} of their numbers removed. For a fair comparison, two same-size "
-        "versions are also made: they protect as many of the top-ranked layers as fit in the standard "
+        f"{hp['prune_ratio_aggressive']:.0%} of their numbers removed. For a fair comparison, two budget "
+        "plans are also made: they protect as many of the top-ranked layers as fit in the standard "
         "method's memory, paying for it either by removing numbers from the other layers or, in the version "
         f"that removes nothing, by storing the other layers with {s0['no_prune_compressed_bits']} bits.\n\n"
         "The idea being tested is simple: spend the memory where damage hurts most. Whether it works is "
@@ -670,23 +670,23 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         why.append("Because the framework's plan is bigger, comparing its accuracy with the standard method "
                    "would not be fair: some of any gain would come simply from using more memory.")
     if budget is not None and budget_cost is not None:
-        why.append(f"That is why the report also includes a same-size version of the framework. It gets exactly "
-                   f"the standard method's memory budget ({budget_cost.weight_memory_gb:.3g} GB against "
+        why.append(f"That is why the report also includes a budget plan. It gets "
+                   f"the standard method's memory as its budget ({budget_cost.weight_memory_gb:.3g} GB against "
                    f"{mem_un:.3g} GB) and spends it on protecting {_top(len(budget.protected_layers))}, "
                    f"paid for by trimming the others. Its fragile-parts score is "
                    f"{budget_cost.sensitivity_exposure:.2f} against {exp_un:.2f} for the standard method. This "
-                   "is the fair head-to-head: same size, different choice of where to spend the bits.")
+                   "is the fair head-to-head: no more memory, a different choice of where to spend the bits.")
         if budget.compressed_layers and budget.prune_ratio_aggressive > 0 and un_cost.sparsity == 0:
             bits = s0["compressed_bits"]
             ratio = budget.prune_ratio_aggressive
-            why.append(f"There is a catch. The same-size plan saves its space by removing {ratio:.0%} of the numbers "
+            why.append(f"There is a catch. The budget plan saves its space by removing {ratio:.0%} of the numbers "
                        f"in the other {len(budget.compressed_layers)} layers, while the standard method removes "
                        "nothing. The fragile-parts score counts removing numbers as if it were just a milder "
                        f"form of rounding ({bits} bits with {ratio:.0%} removed is scored like "
                        f"{bits * (1 - ratio):.3g} bits). In practice, deleting numbers outright probably does more "
-                       "harm than that, so this score likely makes the same-size plan look safer than it is.")
+                       "harm than that, so this score likely makes the budget plan look safer than it is.")
     if no_prune is not None and np_cost is not None:
-        why.append(f"To check the guidance on its own, the report also includes a same-size version that removes "
+        why.append(f"To check the guidance on its own, the report also includes a budget plan that removes "
                    f"nothing. It pays for protecting {_top(len(no_prune.protected_layers))} by storing the other "
                    f"layers with {s0['no_prune_compressed_bits']} bits instead of {s0['uniform_bits']}. It needs "
                    f"{np_cost.weight_memory_gb:.3g} GB and its fragile-parts score is "
@@ -722,7 +722,7 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
     if budget is not None and budget_cost is not None:
         summary += (
             f"Because {'that plan is bigger than' if mem_fw > mem_un else 'plans of different sizes are hard to compare with'} "
-            f"the standard method, a same-size version was also made: at {budget_cost.weight_memory_gb:.2f} GB it "
+            f"the standard method, a budget plan that fits in its memory was also made: at {budget_cost.weight_memory_gb:.2f} GB it "
             f"protects {_top(len(budget.protected_layers))} and puts "
             f"{'less' if budget_cost.sensitivity_exposure < exp_un else 'no less'} of the compression on fragile "
             f"layers than the standard method ({budget_cost.sensitivity_exposure:.2f} against {exp_un:.2f}, "
@@ -744,7 +744,7 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         "Sensitivity runs from 0 (least sensitive layer) to 1 (most sensitive). The raw score is the measurement "
         "before it is put on that scale. \"Protected\" layers keep high precision; the others are compressed "
         "and have the listed share of their numbers removed. The last column gives the bits per number in the "
-        "same-size plan that removes nothing.",
+        "budget plan that removes nothing.",
         [("layer", "Layer", "The layer's position in the model, counting from 0 at the input end."),
          ("sensitivity", "Sensitivity (0 to 1)", "The layer's rank among all layers: 0 is the least sensitive "
           "layer, 1 the most. The plans compare this with the threshold."),
@@ -761,12 +761,12 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
          ("activation_rise_low_bits", "Activation damage at fewest bits", "How much the prediction error "
           "(perplexity) rose when only this layer's incoming numbers were rounded to the fewest bits allowed. "
           "Bigger means the layer needs more bits. Empty when activations were not measured."),
-         ("same_size_protected", "Protected (same-size plan)", "\"yes\" if the plan that fits in the standard "
+         ("same_size_protected", "Protected (budget plan)", "\"yes\" if the plan that fits in the standard "
           "method's memory protects this layer. It protects the most sensitive layers first, as many as fit."),
-         ("same_size_prune_ratio", "Share removed (same-size plan)", "Share of the layer's numbers the "
-          "same-size plan deletes."),
-         ("no_prune_bits", "Bits (same-size, nothing removed)", "Bits per number for this layer in the "
-          "same-size plan that deletes nothing: protected layers keep more bits, the rest drop to fewer."),
+         ("same_size_prune_ratio", "Share removed (budget plan)", "Share of the layer's numbers the "
+          "budget plan deletes."),
+         ("no_prune_bits", "Bits (budget plan, nothing removed)", "Bits per number for this layer in the "
+          "budget plan that deletes nothing: protected layers keep more bits, the rest drop to fewer."),
          ("outlier", "Unusual layer", "\"yes\" if the raw score is far from the other layers' (robust "
           "z-score above 3.5), so the layer stands out as much more (or less) sensitive than the rest.")],
     )

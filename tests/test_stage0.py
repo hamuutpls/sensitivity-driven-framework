@@ -271,7 +271,7 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     assert data2["rows"][0]["info"]["cached"] is True
     assert data2["rows"][2]["info"]["profile_cached"] is True
     report = (stage_dir / "report.md").read_text(encoding="utf-8")
-    assert "same-size version of the framework" in report and "Size floor" in report
+    assert "also includes a budget plan" in report and "Size floor" in report
     assert "## Sensitivity of every layer" in report
     assert "Unused budget: same-size plan without pruning" in report
     assert "## KV cache plan" in report and "Key bits (cache)" in report and "short-term memory" in report
