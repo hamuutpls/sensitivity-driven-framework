@@ -85,8 +85,7 @@ class Stage0Result:
     plan: CompressionPlan  # Stage 1: bits and pruning per layer (threshold plan)
     profile: SensitivityProfile
     outputs: dict[str, Path]
-    budget_plan: CompressionPlan | None = None  # same size as the uniform plan
-    no_prune_plan: CompressionPlan | None = None  # same size, nothing pruned
+    budget_plan: CompressionPlan | None = None  # fits in the uniform plan's memory
     activation_plan: ActivationPlan | None = None  # Stage 2: activation bits per layer
     activation_profile: ActivationProfile | None = None  # None when stage0.act_plan = "from_weights"
     kv_plan: KVPlan | None = None  # Stage 3: key/value bits and token budget per layer
@@ -347,16 +346,16 @@ def run_stage0(
         row.metrics["build_time_s"] = profiling_s + time.perf_counter() - t0
         row.info["budget_gb"] = predict(uniform).weight_memory_gb
 
-    # --- same size, no pruning ---------------------------------------------------------------------------------
-    # The same-size plan pays for its protected layers by pruning the rest, which uniform does not do, so its
+    # --- benchmark: budget size, no pruning (Stage 0 comparison only, not handed to later stages) -----------
+    # The budget plan pays for its protected layers by pruning the rest, which uniform does not do, so its
     # comparison mixes two effects. Here the robust layers pay with fewer bits instead and nothing is pruned.
     no_prune = None
     with rep.method(METHOD_NO_PRUNE, "framework", compare_to=METHOD,
-                    label="Sensitivity-guided framework, budget plan, nothing removed",
-                    plain_desc=f"the budget plan without removing any numbers: the less sensitive layers "
-                               f"drop to {s0.no_prune_compressed_bits} bits per number instead, to pay for "
-                               "protecting the sensitive ones. This separates the effect of choosing where to "
-                               "spend the bits from the effect of removing numbers.",
+                    label="Benchmark: budget size, nothing removed",
+                    plain_desc=f"a benchmark, not a plan for later stages: the budget plan without removing "
+                               f"any numbers: the less sensitive layers drop to {s0.no_prune_compressed_bits} "
+                               "bits per number instead, to pay for protecting the sensitive ones. This separates "
+                               "the effect of choosing where to spend the bits from the effect of removing numbers.",
                     description=f"sensitivity plan in the uniform plan's predicted memory, no pruning, robust "
                                 f"layers at {s0.no_prune_compressed_bits} bits") as row:
         t0 = time.perf_counter()
@@ -379,8 +378,6 @@ def run_stage0(
                         act_prof)
     if budget is not None:
         budget.save(rep.dir / "compression_plan_budget_matched.json")
-    if no_prune is not None:
-        no_prune.save(rep.dir / "compression_plan_budget_matched_no_prune.json")
     if kv is not None:
         _add_kv_details(rep, *kv)
         kv[0].save(rep.dir / "kv_profile.json")
@@ -394,13 +391,13 @@ def run_stage0(
     profile.save(rep.dir / "sensitivity_profile.json")
     fp16_row = next((r for r in rep.rows if r.variant == "fp16"), None)
     handoff = write_handoff(rep.dir / "handoff.md", cfg=cfg, candidate=candidate, original_model=rep.original_model,
-                            profile=profile, plan=plan, budget=budget, no_prune=no_prune, uniform=uniform,
+                            profile=profile, plan=plan, budget=budget, uniform=uniform,
                             predict=predict, fp16=fp16_row.metrics if fp16_row else {}, guarded=guarded, act=act,
                             act_prof=act_prof, kv=kv)
     rep.sections.append(("What later stages receive", f"See {handoff.name}: the plan each stage loads, layer by "
                                                       "layer, with its predicted cost."))
     return Stage0Result(plan=plan, profile=profile, outputs={**rep.finalize(), "handoff": handoff}, budget_plan=budget,
-                        no_prune_plan=no_prune, activation_plan=act, activation_profile=act_prof,
+                        activation_plan=act, activation_profile=act_prof,
                         kv_plan=kv[1] if kv is not None else None, kv_plan_bits_only=kv[2] if kv is not None else None)
 
 
@@ -588,10 +585,10 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
                 "the size match is bought with pruning. Sensitivity exposure treats pruning as a linear loss of "
                 f"bits ({bits} x {1 - ratio:.2g} = {bits * (1 - ratio):.3g} effective bits), which likely understates "
                 "the damage of removing weights outright, so its exposure advantage is optimistic. The "
-                f"`{METHOD_NO_PRUNE}` row matches the size without pruning to isolate the effect of the "
+                f"`{METHOD_NO_PRUNE}` benchmark row matches the size without pruning to isolate the effect of the "
                 "sensitivity guidance itself.")))
 
-    for name, bp in (("budget plan", budget), ("budget plan without pruning", no_prune)):
+    for name, bp in (("budget plan", budget), ("benchmark, nothing removed", no_prune)):
         if bp is not None:
             rep.sections.append((f"Unused budget: {name}", _unused_budget(bp, un_cost.weight_memory_gb,
                                                                                rep.config["stage0"]["protected_bits"], predict)))
@@ -633,10 +630,10 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         f"protects roughly the most sensitive {1 - hp['sensitive_threshold']:.0%} of layers.\n"
         f"4. **Allocate.** Protected layers keep {s0['protected_bits']} bits per number and lose nothing. "
         f"Compressed layers get {s0['compressed_bits']} bits per number and have "
-        f"{hp['prune_ratio_aggressive']:.0%} of their numbers removed. For a fair comparison, two budget "
-        "plans are also made: they protect as many of the top-ranked layers as fit in the standard "
-        "method's memory, paying for it either by removing numbers from the other layers or, in the version "
-        f"that removes nothing, by storing the other layers with {s0['no_prune_compressed_bits']} bits.\n\n"
+        f"{hp['prune_ratio_aggressive']:.0%} of their numbers removed. For a fair comparison, a budget "
+        "plan is also made: it protects as many of the top-ranked layers as fit in the standard "
+        "method's memory, paying for it by removing numbers from the other layers. A benchmark at the same "
+        f"budget removes nothing and stores the other layers with {s0['no_prune_compressed_bits']} bits instead.\n\n"
         "The idea being tested is simple: spend the memory where damage hurts most. Whether it works is "
         "decided by accuracy, which Stage 1 measures.\n\n"
         "Nothing is actually compressed yet. Stage 0 only makes the plan and predicts how big the model would "
@@ -695,9 +692,9 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
                        f"{bits * (1 - ratio):.3g} bits). In practice, deleting numbers outright probably does more "
                        "harm than that, so this score likely makes the budget plan look safer than it is.")
     if no_prune is not None and np_cost is not None:
-        why.append(f"To check the guidance on its own, the report also includes a budget plan that removes "
-                   f"nothing. It pays for protecting {_top(len(no_prune.protected_layers))} by storing the other "
-                   f"layers with {s0['no_prune_compressed_bits']} bits instead of {s0['uniform_bits']}. It needs "
+        why.append(f"To check the guidance on its own, the report also includes a benchmark at the same budget "
+                   f"that removes nothing. It pays for protecting {_top(len(no_prune.protected_layers))} by "
+                   f"storing the other layers with {s0['no_prune_compressed_bits']} bits instead of {s0['uniform_bits']}. It needs "
                    f"{np_cost.weight_memory_gb:.3g} GB and its fragile-parts score is "
                    f"{np_cost.sensitivity_exposure:.2f} against {exp_un:.2f} for the standard method. If it "
                    "matches or beats the standard method once Stage 1 measures accuracy, the gain comes from "
@@ -738,7 +735,7 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
             "lower is better). ")
         if budget.prune_ratio_aggressive > 0 and un_cost.sparsity == 0:
             summary += ("It makes room by removing numbers from the other layers, which the "
-                        "standard method does not do, so a version that removes nothing was added as well "
+                        "standard method does not do, so a benchmark that removes nothing was added as well "
                         + (f"({_top(len(no_prune.protected_layers))} protected, the rest at "
                            f"{s0['no_prune_compressed_bits']} bits, fragile-parts score "
                            f"{np_cost.sensitivity_exposure:.2f}). " if no_prune is not None and np_cost else ". "))
@@ -753,7 +750,7 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         "Sensitivity runs from 0 (least sensitive layer) to 1 (most sensitive). The raw score is the measurement "
         "before it is put on that scale. \"Protected\" layers keep high precision; the others are compressed "
         "and have the listed share of their numbers removed. The last column gives the bits per number in the "
-        "budget plan that removes nothing.",
+        "benchmark that removes nothing.",
         [("layer", "Layer", "The layer's position in the model, counting from 0 at the input end."),
          ("sensitivity", "Sensitivity (0 to 1)", "The layer's rank among all layers: 0 is the least sensitive "
           "layer, 1 the most. The plans compare this with the threshold."),
@@ -774,8 +771,8 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
           "method's memory protects this layer. It protects the most sensitive layers first, as many as fit."),
          ("same_size_prune_ratio", "Share removed (budget plan)", "Share of the layer's numbers the "
           "budget plan deletes."),
-         ("no_prune_bits", "Bits (budget plan, nothing removed)", "Bits per number for this layer in the "
-          "budget plan that deletes nothing: protected layers keep more bits, the rest drop to fewer."),
+         ("no_prune_bits", "Bits (benchmark, nothing removed)", "Bits per number for this layer in the "
+          "benchmark that deletes nothing: protected layers keep more bits, the rest drop to fewer."),
          ("outlier", "Unusual layer", "\"yes\" if the raw score is far from the other layers' (robust "
           "z-score above 3.5), so the layer stands out as much more (or less) sensitive than the rest.")],
     )

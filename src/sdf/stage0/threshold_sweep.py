@@ -85,8 +85,8 @@ def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, 
                                                                  "standard method's size")
         row(f"noprune_k{k}", "framework", budget_matched_plan(scores, budget, 0.0, s0.protected_bits,
                                                               s0.no_prune_compressed_bits, predict, guarded),
-            label=f"Budget plan, nothing removed, guard {k}", guard=k,
-            description=f"budget plan, robust layers at {s0.no_prune_compressed_bits} bits, nothing removed")
+            label=f"Benchmark: budget size, nothing removed, guard {k}", guard=k,
+            description=f"benchmark, robust layers at {s0.no_prune_compressed_bits} bits, nothing removed")
         for t in thresholds:
             row(f"t{round(t * 100):03d}_k{k}", "framework",
                 plan_compression(scores, t, pr, s0.protected_bits, s0.compressed_bits, guarded),

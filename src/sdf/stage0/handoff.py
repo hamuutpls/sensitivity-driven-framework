@@ -46,7 +46,6 @@ def write_handoff(
     profile: SensitivityProfile,
     plan: CompressionPlan,
     budget: CompressionPlan | None,
-    no_prune: CompressionPlan | None,
     uniform: CompressionPlan,
     predict: Callable[[CompressionPlan], PlanCost],
     fp16: dict[str, Any],
@@ -78,7 +77,7 @@ def write_handoff(
     # ---- at a glance --------------------------------------------------------------------------------------
     rows = [
         ["Stage 1: weights", "bits and share removed per layer; layers never to prune",
-         "`compression_plan.json` (+ `_budget_matched`, `_budget_matched_no_prune`)", "`CompressionPlan.load`"],
+         "`compression_plan.json` (+ `_budget_matched`)", "`CompressionPlan.load`"],
         ["Stage 2: activations", "bits per layer for the numbers passed between layers",
          "`activation_plan.json`" + (" (+ `activation_profile.json`)" if act_prof else ""), "`ActivationPlan.load`"],
         ["Stage 3: KV cache", "key bits, value bits and share of past words kept per layer",
@@ -105,21 +104,20 @@ def write_handoff(
         f"The main plan protects layers with sensitivity at or above {candidate['sensitive_threshold']:.2f} "
         f"({len(plan.protected_layers)} of {n}: kept at {s0.protected_bits} bits, nothing removed) and "
         f"compresses the rest to {s0.compressed_bits} bits with {candidate['prune_ratio_aggressive']:.0%} of "
-        "their numbers removed. Two same-size versions fit exactly in the standard method's memory, so accuracy "
-        "can be compared size for size. "
+        "their numbers removed. The budget plan fits in the standard method's memory, so accuracy can be "
+        "compared size for size. "
         + (f"Layers {', '.join(map(str, sorted(guarded)))} are never pruned in any plan, because removing any one of them alone "
            f"hurts the model most (the {s0.guard_top_k} highest layer-removal scores)."
            if guarded else "No layer is guarded against pruning (GUARD_TOP_K = 0)."),
         "",
     ]
     budget_layers = budget.layers if budget else [None] * n
-    no_prune_layers = no_prune.layers if no_prune else [None] * n
     rows = [[lp.layer, f"{lp.sensitivity:.2f}", _n(lp.protected), _n(lp.guarded), lp.bit_width,
              f"{lp.pruning_ratio:.0%}", "–" if bl is None else bl.bit_width,
-             "–" if bl is None else f"{bl.pruning_ratio:.0%}", "–" if nl is None else nl.bit_width]
-            for lp, bl, nl in zip(plan.layers, budget_layers, no_prune_layers)]
+             "–" if bl is None else f"{bl.pruning_ratio:.0%}"]
+            for lp, bl in zip(plan.layers, budget_layers)]
     lines += [_table(["Layer", "Sensitivity", "Protected", "Never pruned", "Bits", "Removed",
-                      "Bits (same size)", "Removed (same size)", "Bits (same size, nothing removed)"], rows), ""]
+                      "Bits (budget plan)", "Removed (budget plan)"], rows), ""]
     lines += _column_notes([
         ("Layer", "Position in the model, from 0 at the input end."),
         ("Sensitivity", f"How much the model suffers when this layer changes, from 0 (least) to 1 (most), "
@@ -128,18 +126,16 @@ def write_handoff(
         ("Never pruned", "\"yes\" if no plan may remove numbers from this layer, whatever its sensitivity."),
         ("Bits", "Bits per number for this layer's weights in the main plan."),
         ("Removed", "Share of this layer's numbers the main plan deletes."),
-        ("Bits (same size)", "Bits per number in the plan that fits in the standard method's memory."),
-        ("Removed (same size)", "Share deleted in that same-size plan."),
-        ("Bits (same size, nothing removed)", "Bits per number in the same-size plan that deletes nothing."),
+        ("Bits (budget plan)", "Bits per number in the plan that fits in the standard method's memory."),
+        ("Removed (budget plan)", "Share deleted in the budget plan."),
     ])
     rows = [["Original model (uncompressed)", _mb(fp16.get("predicted_weight_memory_gb")), "16", "0%"],
             [f"Standard method (uniform {s0.uniform_bits}-bit)", _mb(un.weight_memory_gb),
              f"{un.avg_bits_per_weight:.2f}", f"{un.sparsity:.0%}"],
             ["Main plan", _mb(fw.weight_memory_gb), f"{fw.avg_bits_per_weight:.2f}", f"{fw.sparsity:.0%}"]]
-    for name, p in (("Same size", budget), ("Same size, nothing removed", no_prune)):
-        if p is not None:
-            c = predict(p)
-            rows.append([name, _mb(c.weight_memory_gb), f"{c.avg_bits_per_weight:.2f}", f"{c.sparsity:.0%}"])
+    if budget is not None:
+        c = predict(budget)
+        rows.append(["Budget plan", _mb(c.weight_memory_gb), f"{c.avg_bits_per_weight:.2f}", f"{c.sparsity:.0%}"])
     gs = candidate["gptq_groupsize"]
     lines += [_table(["Version", "Predicted size", "Average bits per number", "Share removed"], rows), ""]
     lines += _column_notes([

@@ -240,7 +240,7 @@ def _report(res: dict[str, Any], s0) -> str:
           "safer. It counts removed numbers as a milder form of rounding, which probably flatters plans that "
           "remove numbers.",
           "- **Same-size plan**: protects as many of the most sensitive layers as fit in the standard method's "
-          "memory. The **no-removal** version stores the other layers at "
+          "memory. The **benchmark, nothing removed** stores the other layers at "
           f"{s0.no_prune_compressed_bits} bits instead of removing numbers.",
           "- **Rank agreement**: 1 means two calibration settings rank the layers in exactly the same order; 0 "
           "means no relation.", ""]
@@ -271,7 +271,7 @@ def _report(res: dict[str, Any], s0) -> str:
     L += ["## 3. Group size", "",
           f"Threshold {d['sensitive_threshold']}, prune ratio {d['prune_ratio_aggressive']}.", ""]
     L += _table(["Group size", "Standard method (GB)", "Framework (GB)", "Same-size: protected",
-                 "No-removal: protected", "No-removal: score"],
+                 "Benchmark: protected", "Benchmark: score"],
                 [[_gs(r["gptq_groupsize"]), r["uniform_gb"], r["fw_gb"], r["same_protected"],
                   r["noprune_protected"], r["noprune_exposure"]] for r in gs_rows])
 

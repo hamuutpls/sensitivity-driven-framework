@@ -41,7 +41,6 @@ log = get_logger(__name__)
 PLAN_FILES: dict[str, tuple[str, type]] = {
     "weights": ("compression_plan.json", CompressionPlan),
     "weights_same_size": ("compression_plan_budget_matched.json", CompressionPlan),
-    "weights_same_size_no_prune": ("compression_plan_budget_matched_no_prune.json", CompressionPlan),
     "activations": ("activation_plan.json", ActivationPlan),
     "kv": ("kv_cache_plan.json", KVPlan),
     "kv_bits_only": ("kv_cache_plan_bits_only.json", KVPlan),
@@ -51,13 +50,9 @@ PLAN_FILES: dict[str, tuple[str, type]] = {
 # Values: (method-name suffix, label, plain description) as in the Stage 0 report.
 _PLAN_ROWS = {
     "weights_same_size": (
-        "_same_size", "Sensitivity-guided framework, same size as the standard method",
+        "_same_size", "Sensitivity-guided framework, budget plan (fits in the standard method's memory)",
         "the framework limited to the memory the standard method uses: it protects as many of the most sensitive "
         "layers as fit in that budget, so the two can be compared fairly, size for size."),
-    "weights_same_size_no_prune": (
-        "_same_size_no_prune", "Sensitivity-guided framework, same size, nothing removed",
-        "the same-size framework without removing any numbers: the less sensitive layers get fewer bits instead, "
-        "which separates the effect of choosing where to spend bits from the effect of removing numbers."),
 }
 
 TITLES = {1: "Weight compression", 2: "Activation compression", 3: "KV-cache compression"}

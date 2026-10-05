@@ -207,10 +207,11 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
 
     stage_dir = ctx.run_dir / "stage_0"
     for name in ("report.md", "stage_0_comparison.xlsx", "results.json", "compression_plan.json",
-                 "compression_plan_budget_matched_no_prune.json", "sensitivity_profile.json",
+                 "compression_plan_budget_matched.json", "sensitivity_profile.json",
                  "kv_cache_plan.json", "kv_cache_plan_bits_only.json", "kv_profile.json", "activation_plan.json",
                  "activation_profile.json"):
         assert (stage_dir / name).exists(), name
+    assert not (stage_dir / "compression_plan_budget_matched_no_prune.json").exists()  # benchmark, not handed on
     data = json.loads((stage_dir / "results.json").read_text())
     rows = {f"{r['method']}/{r['variant']}": r for r in data["rows"]}
     assert set(rows) == {"baseline/fp16", "allocation/original", "allocation/framework",
@@ -223,7 +224,7 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     assert rows["baseline/fp16"]["metrics"]["predicted_kv_memory_gb"] > kv_un["predicted_kv_memory_gb"]
     assert "vs_original_abs" in rows["kv_cache_bits_only/framework"]["deltas"]["predicted_kv_ppl_rise"]
     no_prune = rows["allocation_same_size_no_prune/framework"]
-    assert no_prune["metrics"]["sparsity"] == 0
+    assert no_prune["metrics"]["sparsity"] == 0 and no_prune["info"]["label"].startswith("Benchmark")
     assert no_prune["metrics"]["predicted_weight_memory_gb"] <= rows["allocation/original"]["metrics"][
         "predicted_weight_memory_gb"] * (1 + 1e-9)
     same = rows["allocation_same_size/framework"]
@@ -238,7 +239,7 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
 
     # the plans later stages read: returned, and loadable from the JSON files
     assert len(res.plan.guarded_layers) == 1
-    for p in (res.plan, res.budget_plan, res.no_prune_plan):
+    for p in (res.plan, res.budget_plan):
         assert all(p.layers[i].pruning_ratio == 0 for i in p.guarded_layers)
     assert CompressionPlan.load(stage_dir / "compression_plan.json") == res.plan
     assert CompressionPlan.load(stage_dir / "compression_plan_budget_matched.json") == res.budget_plan
@@ -274,7 +275,7 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     report = (stage_dir / "report.md").read_text(encoding="utf-8")
     assert "also includes a budget plan" in report and "Size floor" in report
     assert "## Sensitivity of every layer" in report
-    assert "Unused budget: budget plan without pruning" in report
+    assert "Unused budget: benchmark, nothing removed" in report
     assert "## KV cache plan" in report and "Key bits (cache)" in report and "short-term memory" in report
     assert "Share removed (budget plan)" in report and "pruning caveat" in report
     assert "Perplexity (held-out half)" in report.split("# Technical details")[1]

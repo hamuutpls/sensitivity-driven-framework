@@ -97,7 +97,7 @@ def _rtn_kv(call: MethodCall) -> Iterator[dict[str, Any]]:
         yield {}
 
 
-_WEIGHT_PLANS = ("weights", "weights_same_size", "weights_same_size_no_prune")
+_WEIGHT_PLANS = ("weights", "weights_same_size")
 
 METHODS: dict[str, Method] = {m.name: m for m in [
     # Stage 1: weights
