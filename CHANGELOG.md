@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-05: Weight rounding keeps 0 on the grid (integer zero point)
+
+- `round_to_nearest` offset its grid by the group minimum (a float), so 0 was usually not one of the 16 values.
+  Magnitude pruning keeps pruned weights at exactly 0, so pruned layers got a 17th value for free: the standard
+  method scored 10.87 with 10% removed against 11.32 with nothing removed. Weights now use an integer zero point
+  (`stage0.weight_zero_point = "int"`, GPTQ/AWQ format); `"float"` reproduces the old numbers. Activations and the
+  KV cache keep the float grid (unchanged). Cache keys of pruning/threshold measurements and the one-layer
+  compression profile include the grid, and the RTN method version is 2, so nothing old is reused by mistake.
+
 ## 2026-10-05: "Budget plan" instead of "same size"
 
 - The two plans that protect as many layers as fit in the standard method's memory were called "same size", but

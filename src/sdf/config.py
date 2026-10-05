@@ -90,6 +90,9 @@ class Stage0Config:
     uniform_prune_ratio: float = 0.0
     # Per quantisation group GPTQ stores a scale and a zero point; bits each, for the memory prediction.
     group_overhead_bits: int = 32
+    # Weight rounding grid: "int" = integer zero point, 0 always representable (GPTQ/AWQ format); "float" = grid
+    # starts at the group minimum (before 2026-10-05; magnitude pruning then got an extra exact-zero value free)
+    weight_zero_point: str = "int"
     # Pruning guard: never prune the guard_top_k layers whose removal hurts most (layer-removal score, measured
     # even when another score picks the bits). 0 turns it off.
     guard_top_k: int = 5

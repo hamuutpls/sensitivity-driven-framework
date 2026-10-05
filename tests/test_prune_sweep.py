@@ -7,6 +7,7 @@ from sdf.run import start_run
 from sdf.search_space import SEARCH_SPACE
 from sdf.stage0.planner import same_size_pruning_plan, uniform_plan
 from sdf.stage0.prune_sweep import apply_plan, magnitude_mask, run_prune_sweep
+from sdf.stage0.sensitivity import round_to_nearest
 from conftest import fake_texts
 
 
@@ -14,6 +15,33 @@ def test_magnitude_mask_drops_smallest_per_row():
     w = torch.tensor([[0.1, -3.0, 0.5, 2.0], [4.0, 0.0, -1.0, 0.2]])
     assert magnitude_mask(w, 0.5).tolist() == [[False, True, False, True], [True, False, True, False]]
     assert magnitude_mask(w, 0.0).all() and not magnitude_mask(w, 1.0).any()
+
+
+def test_integer_zero_point_keeps_zero_on_the_grid():
+    torch.manual_seed(0)
+    w = torch.randn(64, 128) * 0.02 + 0.003  # off-centre groups: the float grid misses 0
+    floaty, inty = round_to_nearest(w, 4, 128), round_to_nearest(w, 4, 128, int_zero=True)
+    assert not (floaty == 0).any() and (inty == 0).any()
+    assert all(len(torch.unique(row)) <= 16 for row in inty)
+    # A pruned weight (exactly 0) survives integer-zero rounding unchanged, so re-zeroing after rounding adds no
+    # extra level: pruning cannot lower the rounding error of the weights it keeps.
+    mask = magnitude_mask(w, 0.1)
+    pruned = round_to_nearest(w * mask, 4, 128, int_zero=True)
+    assert torch.equal(pruned * mask, pruned)
+
+
+def test_pruning_only_helps_rounding_on_the_float_grid():
+    """Item 1 of the 2026-10-05 review: with the float grid, 10% magnitude pruning + re-zeroing lowered the
+    rounding error (so pruned 4-bit models scored better than unpruned ones); with an integer zero point it can't."""
+    torch.manual_seed(0)
+    w = torch.distributions.StudentT(5.0).sample((256, 512)) * 0.02
+
+    def err(ratio, int_zero):
+        m = magnitude_mask(w, ratio)
+        return ((round_to_nearest(w * m, 4, 128, int_zero) * m - w) ** 2).mean().item()
+
+    assert err(0.1, False) < err(0.0, False)
+    assert err(0.1, True) >= err(0.0, True) * 0.999
 
 
 def test_apply_plan_prunes_rounds_and_restores(tiny_llama):
