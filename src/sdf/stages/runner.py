@@ -186,7 +186,7 @@ def run_stage(
     handle.factory = model_factory  # an FP16 cache miss builds the model like every row
 
     use_llamacpp = stage == 1 and cfg.eval.llamacpp_dir is not None
-    lc_key = [cfg.eval.llamacpp_dir, cfg.eval.llamacpp_convert] if use_llamacpp else None
+    lc_key = [cfg.eval.llamacpp_dir, cfg.eval.llamacpp_convert, llamacpp.VERSION] if use_llamacpp else None
     calib = (f"{candidate['calib_dataset']}, {candidate['calib_samples']} x {cfg.calibration.seq_len} tokens")
     rep = stage_reporter(
         ctx, candidate, handle, plans.profile, ("stages", "stage0", "calibration", "eval", "model", "run"),

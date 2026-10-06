@@ -34,6 +34,10 @@ log = get_logger(__name__)
 
 # Plan bits -> llama.cpp tensor type. K-quants (256-weight blocks, scale and minimum) are closest to the plan's
 # asymmetric groups; 8 bits has no K-quant.
+# Bump when a change alters the measured numbers, so cached llama.cpp results are not reused.
+# 2: the GGUF keeps the SentencePiece tokenizer (version 1 had flat token scores and wrong perplexity).
+VERSION = 2
+
 BITS_TO_GGUF = {16: "f16", 8: "q8_0", 6: "q6_k", 5: "q5_k", 4: "q4_k", 3: "q3_k", 2: "q2_k"}
 
 _NOTE = (" Measured in llama.cpp, the program people use to run models on their own computers, after saving the "
@@ -74,6 +78,20 @@ def quantize_args(plan: CompressionPlan, baseline_bits: int) -> tuple[list[str],
         if lp.bit_width != common:
             opts += ["--tensor-type", rf"blk\.{lp.layer}\.={BITS_TO_GGUF[lp.bit_width]}"]
     return opts, BITS_TO_GGUF[common].upper()
+
+
+def _save_tokenizer(tokenizer: Any, out: Path) -> None:
+    """save_pretrained plus the model's own SentencePiece `tokenizer.model`. Transformers 5 writes only
+    tokenizer.json; without tokenizer.model the converter stores flat token scores, llama.cpp then splits text
+    differently, and perplexity is wrong (TinyLlama FP16: 17.8 instead of 8.1)."""
+    tokenizer.save_pretrained(out)
+    src = Path(tokenizer.name_or_path)
+    if not src.is_dir():
+        from huggingface_hub import snapshot_download
+
+        src = Path(snapshot_download(tokenizer.name_or_path, allow_patterns=["tokenizer.model"]))
+    if (src / "tokenizer.model").exists():
+        shutil.copy2(src / "tokenizer.model", out / "tokenizer.model")
 
 
 def _run(cmd: list[Any]) -> str:
@@ -117,7 +135,7 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
     with tempfile.TemporaryDirectory(prefix="sdf-gguf-") as tmp:
         d = Path(tmp)
         model.save_pretrained(d / "hf")
-        tokenizer.save_pretrained(d / "hf")
+        _save_tokenizer(tokenizer, d / "hf")
         gguf = d / "f16.gguf"
         _run([sys.executable, cfg.llamacpp_convert, d / "hf", "--outtype", "f16", "--outfile", gguf])
         shutil.rmtree(d / "hf")  # each copy is model-sized; keep at most two on disk
