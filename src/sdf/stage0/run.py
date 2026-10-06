@@ -191,7 +191,8 @@ def fp16_key(ctx: RunContext, device: torch.device) -> dict[str, Any]:
     # existing cache entries stay valid); their results are cached under their own keys.
     ev = {k: v for k, v in asdict(cfg.eval).items() if not k.startswith(("downstream", "llamacpp"))}
     return {"model": cfg.model.name, "dtype": cfg.model.dtype, "eval": ev, "hardware": hw,
-            "backend": "hf-transformers", "seed": cfg.run.seed}
+            "backend": "hf-transformers", "seed": cfg.run.seed,
+            "latency": 2}  # 2: timed with deterministic algorithms off (2026-10-06)
 
 
 def load_fp16(ctx: RunContext, handle: _ModelHandle,

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-06: Latency timed with deterministic algorithms off
+
+- The run's deterministic mode (`run.deterministic`) made HF decode 21% slower (4.12 -> 4.99 ms/token on the host
+  PC) through slower kernels. `measure_latency` now turns it off while timing and restores it after; perplexity and
+  everything else stay deterministic. The FP16 cache key has `latency: 2`, so cached rows are re-measured.
+
 ## 2026-10-06: Stage 4 llama.cpp backend (Stage 1 rows)
 
 - With `eval.llamacpp_dir` and `eval.llamacpp_convert` set, each Stage 1 row is also saved as a GGUF file with every

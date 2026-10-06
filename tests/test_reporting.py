@@ -115,3 +115,17 @@ def test_original_model_section(tmp_path):
     assert json.loads(outputs["json"].read_text())["original_model"]["num_layers"] == 4
     keys = [c.value for c in load_workbook(outputs["xlsx"])["Config"]["A"]]
     assert "original_model.hidden_size" in keys
+
+
+def test_measure_latency_restores_deterministic_mode(tiny_llama, small_cfg):
+    import torch
+
+    from sdf.eval.metrics import measure_latency
+
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    try:
+        measure_latency(tiny_llama, small_cfg.eval, torch.device("cpu"), 64)
+        assert torch.are_deterministic_algorithms_enabled()  # timing turns it off, then puts it back
+        assert torch.is_deterministic_algorithms_warn_only_enabled()
+    finally:
+        torch.use_deterministic_algorithms(False)
