@@ -15,12 +15,9 @@ fragile for weights is fragile for activations too.
 
 from __future__ import annotations
 
-import json
 import math
-import time
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field, fields
-from pathlib import Path
+from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Iterator
 
 import torch
@@ -28,11 +25,12 @@ from torch import nn
 
 from sdf.stage0.kv_cache import _monotone, allocate_bits
 from sdf.stage0.planner import CompressionPlan
-from sdf.stage0.sensitivity import _mean_loss, find_decoder_layers, round_to_nearest
+from sdf.stage0.sensitivity import _mean_loss, find_decoder_layers, profiling, round_to_nearest
+from sdf.utils.cache import JsonFile
 
 
 @dataclass
-class ActivationProfile:
+class ActivationProfile(JsonFile):
     bits_options: list[int]
     rise: list[list[float]]  # [layer][bits option] calibration perplexity rise
     cost: dict[str, Any] = field(default_factory=dict)
@@ -41,17 +39,6 @@ class ActivationProfile:
     @property
     def num_layers(self) -> int:
         return len(self.rise)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ActivationProfile":
-        known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in d.items() if k in known})
-
-    def save(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
 
 
 @dataclass(frozen=True)
@@ -62,7 +49,7 @@ class ActivationLayerPlan:
 
 
 @dataclass(frozen=True)
-class ActivationPlan:
+class ActivationPlan(JsonFile):
     layers: tuple[ActivationLayerPlan, ...]
     kind: str  # "uniform" | "measured" | "from_weight_plan"
 
@@ -74,16 +61,9 @@ class ActivationPlan:
     def to_dict(self) -> dict[str, Any]:
         return {"kind": self.kind, "avg_bits": self.avg_bits, "layers": [asdict(lp) for lp in self.layers]}
 
-    def save(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ActivationPlan":
         return cls(tuple(ActivationLayerPlan(**lp) for lp in d["layers"]), d["kind"])
-
-    @classmethod
-    def load(cls, path: str | Path) -> "ActivationPlan":
-        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 @contextmanager
@@ -108,12 +88,7 @@ def profile_activations(model: nn.Module, batches: Iterable[torch.Tensor], bits_
     batches = list(batches)
     if not batches:
         raise ValueError("no calibration batches given")
-    was_training = model.training
-    model.eval()
-    if device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats(device)
-    t0 = time.perf_counter()
-    try:
+    with profiling(model, device) as cost_so_far:
         base = math.exp(_mean_loss(model, batches, device))
         rise = []
         for layer in find_decoder_layers(model):
@@ -122,11 +97,7 @@ def profile_activations(model: nn.Module, batches: Iterable[torch.Tensor], bits_
                 with quantize_inputs(layer, bits, group_size):
                     row.append(math.exp(_mean_loss(model, batches, device)) - base)
             rise.append(row)
-    finally:
-        model.train(was_training)
-    cost = {"calibration_batches": len(batches), "calibration_tokens": sum(b.numel() for b in batches),
-            "wall_clock_s": time.perf_counter() - t0,
-            "peak_memory_gb": (torch.cuda.max_memory_allocated(device) / 1e9) if device.type == "cuda" else None}
+    cost = cost_so_far(len(batches), sum(b.numel() for b in batches))
     return ActivationProfile(list(bits_options), rise, cost, {**(meta or {}), "baseline_ppl": base})
 
 

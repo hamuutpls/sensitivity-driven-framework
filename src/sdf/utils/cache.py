@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Any, Callable
 
@@ -53,3 +54,23 @@ def atomic_write_text(path: str | Path, text: str) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+class JsonFile:
+    """Dataclass mixin: `save` (atomic) / `load` as JSON. `to_dict` / `from_dict` default to the dataclass fields
+    (unknown keys from older versions are ignored); plans with nested layers override them."""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]):
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in known})
+
+    def save(self, path: str | Path) -> None:
+        atomic_write_text(path, json.dumps(self.to_dict(), indent=2))
+
+    @classmethod
+    def load(cls, path: str | Path):
+        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))

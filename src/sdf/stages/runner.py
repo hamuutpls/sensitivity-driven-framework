@@ -14,25 +14,24 @@ from __future__ import annotations
 import functools
 import gc
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 import torch
 from torch import nn
 
-from sdf.data import calibration_batches, eval_windows, load_texts
+from sdf.data import eval_windows
 from sdf.eval import downstream
 from sdf.eval.metrics import measure_model
-from sdf.reporting.reporter import StageReporter
 from sdf.run import RunContext
 from sdf.stage0.activation import ActivationPlan, uniform_activation_plan
 from sdf.stage0.kv_cache import KVPlan, KVProfile, predict_kv, uniform_kv_plan
-from sdf.stage0.planner import CompressionPlan, baseline_cost, predict_cost, uniform_plan
-from sdf.stage0.run import _cost_metrics, _kv_metrics, _ModelHandle, fp16_key, load_fp16, original_model_info
+from sdf.stage0.planner import CompressionPlan, baseline_cost, uniform_plan
+from sdf.stage0.run import (_cost_metrics, _kv_metrics, calib_batches, fp16_key, load_fp16,
+                            setup, stage_reporter, weight_cost)
 from sdf.stage0.sensitivity import SensitivityProfile, normalize
 from sdf.stages.methods import Method, MethodCall, methods_for
-from sdf.utils.env import environment_info, resolve_device
 from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -101,18 +100,12 @@ class Stage0Plans:
             raise FileNotFoundError(f"{d} is not a Stage 0 output folder (no sensitivity_profile.json); point "
                                     "stages.stage0_dir at <run>/stage_0")
         plans = {k: cls_.load(d / f) for k, (f, cls_) in PLAN_FILES.items() if (d / f).exists()}
-        kv_prof = KVProfile.from_dict(_read(d / "kv_profile.json")) if (d / "kv_profile.json").exists() else None
+        kv_prof = KVProfile.load(d / "kv_profile.json") if (d / "kv_profile.json").exists() else None
         out = cls(d, plans, SensitivityProfile.load(d / "sensitivity_profile.json"), kv_prof)
         for k, p in plans.items():
             if len(p.layers) != out.num_layers:
                 raise ValueError(f"{PLAN_FILES[k][0]} has {len(p.layers)} layers, the profile {out.num_layers}")
         return out
-
-
-def _read(path: Path) -> dict[str, Any]:
-    import json
-
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def original_plan(stage: int, plans: Stage0Plans, s0) -> Any:
@@ -129,8 +122,7 @@ def plan_metrics(plan: Any, plans: Stage0Plans, cfg, candidate: dict[str, Any]) 
     """What the plan is predicted to cost (the same predictions Stage 0 reports), next to the measured metrics."""
     s0 = cfg.stage0
     if isinstance(plan, CompressionPlan):
-        return _cost_metrics(predict_cost(plan, plans.profile, candidate["gptq_groupsize"], s0.group_overhead_bits,
-                                          s0.baseline_bits, s0.sparse_storage))
+        return _cost_metrics(weight_cost(plans.profile, candidate["gptq_groupsize"], s0)(plan))
     if isinstance(plan, ActivationPlan):
         return {"avg_activation_bits": plan.avg_bits}
     if isinstance(plan, KVPlan) and plans.kv_profile is not None:
@@ -184,29 +176,24 @@ def run_stage(
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
     methods = methods_for(stage, method_names)
     plans = Stage0Plans.load(stage0_dir)
-    device = resolve_device(cfg.model.device)
-    text_loader = text_loader or functools.partial(load_texts, cfg.data.sources)
+    device, handle, text_loader = setup(ctx, None, tokenizer, text_loader)
     dtype = getattr(torch, cfg.model.dtype)
     if model_factory is None:
         def model_factory() -> nn.Module:
             from transformers import AutoModelForCausalLM
 
             return AutoModelForCausalLM.from_pretrained(cfg.model.name, torch_dtype=dtype).to(device)
-    handle = _ModelHandle(ctx, device, None, tokenizer)
+    handle.factory = model_factory  # an FP16 cache miss builds the model like every row
 
     calib = (f"{candidate['calib_dataset']}, {candidate['calib_samples']} x {cfg.calibration.seq_len} tokens")
-    rep = StageReporter(
-        stage=stage, run_dir=ctx.run_dir, title=TITLES[stage],
-        config={"hyperparams": dict(candidate), "stages": asdict(cfg.stages), "stage0": asdict(s0),
-                "calibration": asdict(cfg.calibration), "eval": asdict(cfg.eval), "model": asdict(cfg.model),
-                "run": asdict(cfg.run)},
-        environment=environment_info(),
+    rep = stage_reporter(
+        ctx, candidate, handle, plans.profile, ("stages", "stage0", "calibration", "eval", "model", "run"),
+        stage=stage, title=TITLES[stage],
         conditions={"model": cfg.model.name, "calibration": calib, "seed": cfg.run.seed,
                     "evaluation data": f"wikitext-2 test, {cfg.eval.seq_len}-token windows, validation/held-out halves",
                     "device": str(device), "backend": "HF Transformers", "Stage 0 plans": str(plans.dir),
                     "starting point": "the uncompressed model, for every row (stages are independent)"},
-        requirement=cfg.requirement, main_metrics=MAIN_METRICS[stage],
-        original_model=original_model_info(ctx, handle, plans.profile),
+        main_metrics=MAIN_METRICS[stage],
     )
     rep.plain_intro = INTROS[stage]
 
@@ -218,9 +205,7 @@ def run_stage(
 
     @functools.cache
     def batches() -> list[torch.Tensor]:
-        return calibration_batches(text_loader(candidate["calib_dataset"], "train"), handle.tokenizer,
-                                   candidate["calib_samples"], cfg.calibration.seq_len, cfg.calibration.batch_size,
-                                   cfg.run.seed)
+        return calib_batches(ctx, candidate, handle, text_loader, candidate["calib_samples"])
 
     for t in cfg.eval.downstream_tasks:
         downstream.task_metric(t)  # register before any cached row is reported
@@ -255,7 +240,7 @@ def run_stage(
         row.metrics.update(_fp16_plan_metrics(stage, plans, cfg, candidate))
         row.metrics["build_time_s"] = 0.0
         if measure_fp16:
-            fp16, cached = load_fp16(ctx, _FactoryHandle(handle, model_factory), text_loader)
+            fp16, cached = load_fp16(ctx, handle, text_loader)
             row.metrics.update(fp16["metrics"])
             row.info["cached"] = cached
             rep.add_raw("baseline", "fp16", fp16["raw"])
@@ -313,21 +298,6 @@ def run_stage(
 def _require(m: Method) -> None:
     if m.apply is None:
         raise NotImplementedError(f"{m.label} is not implemented yet ({m.library})")
-
-
-class _FactoryHandle:
-    """A _ModelHandle whose model, when the FP16 cache misses, comes from the stage's model factory."""
-
-    def __init__(self, handle: _ModelHandle, factory: Callable[[], nn.Module]):
-        self._h, self._factory = handle, factory
-        self.device = handle.device
-
-    @property
-    def tokenizer(self):
-        return self._h.tokenizer
-
-    def model(self, dtype: str) -> nn.Module:
-        return self._factory()
 
 
 def run_stages(ctx: RunContext, candidate: dict[str, Any], stage0_dir: str | Path, **kwargs: Any) -> dict[str, Path]:

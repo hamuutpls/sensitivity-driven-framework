@@ -58,10 +58,6 @@ METRICS: dict[str, MetricSpec] = {
     "peak_memory_gb": MetricSpec(
         "Peak GPU memory", "GB", "lower", "highest graphics-card memory used while running",
         "The most graphics-card memory the model needed at any moment while it was being tested."),
-    "kv_cache_gb": MetricSpec(
-        "KV-cache memory", "GB", "lower", "short-term memory used during a conversation",
-        "While writing a reply, the model keeps notes about the text so far. This is how much memory those "
-        "notes take; it grows with the length of the conversation."),
     "predicted_kv_memory_gb": MetricSpec(
         "Predicted KV-cache memory", "GB", "lower", "short-term memory needed for one long text",
         "While writing, the model keeps notes on every earlier word (the KV cache). This is how much memory "

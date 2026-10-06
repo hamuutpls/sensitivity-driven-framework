@@ -14,7 +14,7 @@ from openpyxl import Workbook
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.utils import get_column_letter
 
-from sdf.reporting.excel import GREEN, RED, _header
+from sdf.reporting.excel import GREEN, RED, _header, save_workbook
 from sdf.reporting.markdown import _column_notes, _table, original_model_lines, requirement_cell
 from sdf.reporting.metrics import METRICS, is_number, label
 from sdf.utils.cache import atomic_write_text
@@ -88,9 +88,7 @@ def _workbook(stages, rows, cols, path: Path) -> None:
     for st in stages:
         for f in st.get("findings", []):
             fs.append([st["stage"], f])
-    tmp = path.with_name(f".{path.name}.tmp")
-    wb.save(tmp)
-    tmp.replace(path)
+    save_workbook(wb, path)
 
 
 def _cell(v: Any, metric: str) -> str:

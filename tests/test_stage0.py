@@ -67,6 +67,7 @@ def test_budget_matched_plan_fits_uniform_size():
     assert set(plan.protected_layers) == set(sorted(range(22), key=lambda i: raw[i])[-k:])  # the most sensitive
     one_more = budget_matched_plan(scores, budget * 10, 0.3, 8, 4, cost)
     assert len(one_more.protected_layers) == 22  # a generous budget protects everything
+    assert budget_matched_plan(scores, 0.0, 0.3, 8, 4, cost).protected_layers == []  # over budget: the k = 0 plan
 
 
 def test_no_prune_budget_plan_matches_size_with_bits_only():

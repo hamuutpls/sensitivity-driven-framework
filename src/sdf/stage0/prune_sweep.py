@@ -21,24 +21,21 @@ Outputs under <run_dir>/stage_0_prune_sweep/: report.md, stage_0_comparison.xlsx
 
 from __future__ import annotations
 
-import functools
 from contextlib import contextmanager
-from dataclasses import asdict
 from typing import Any, Callable, Iterator
 
 import torch
 from torch import nn
 
-from sdf.data import eval_windows, load_texts
+from sdf.data import eval_windows
 from sdf.eval.metrics import perplexity
+from sdf.reporting.markdown import _table
 from sdf.reporting.reporter import StageReporter
 from sdf.run import RunContext
-from sdf.stage0.planner import (CompressionPlan, baseline_cost, plan_compression, predict_cost,
-                                same_size_pruning_plan, uniform_plan)
-from sdf.stage0.run import (_cost_metrics, _ModelHandle, fp16_key, load_fp16, load_guard, load_profile,
-                            original_model_info)
+from sdf.stage0.planner import (CompressionPlan, baseline_cost, plan_compression, same_size_pruning_plan, uniform_plan)
+from sdf.stage0.run import (_cost_metrics, fp16_key, load_fp16, load_guard, load_profile,
+                            setup, stage_reporter, weight_cost)
 from sdf.stage0.sensitivity import fake_quantize_, find_decoder_layers, int_zero, normalize, zero_key
-from sdf.utils.env import environment_info, resolve_device
 from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -119,33 +116,25 @@ def make_evaluator(ctx: RunContext, handle, text_loader, device) -> Callable[[Co
 def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, tokenizer=None,
                     text_loader: Callable[[str, str], list[str]] | None = None) -> dict[str, Any]:
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
-    device = resolve_device(cfg.model.device)
-    handle = _ModelHandle(ctx, device, model, tokenizer)
-    text_loader = text_loader or functools.partial(load_texts, cfg.data.sources)
+    device, handle, text_loader = setup(ctx, model, tokenizer, text_loader)
     ratios = _validated(s0.prune_sweep_ratios)
     gs, threshold = candidate["gptq_groupsize"], candidate["sensitive_threshold"]
 
     profile, _ = load_profile(ctx, candidate, handle, text_loader)
     scores = normalize(profile.raw_scores, s0.normalization)
     guarded, _ = load_guard(ctx, candidate, handle, text_loader, profile)
-    predict = functools.partial(predict_cost, profile=profile, group_size=gs,
-                                group_overhead_bits=s0.group_overhead_bits, baseline_bits=s0.baseline_bits,
-                                sparse_storage=s0.sparse_storage)
+    predict = weight_cost(profile, gs, s0)
     rounding = (f"weights rounded to the plan's bits (group size {gs})" if s0.prune_sweep_quantize
                 else "no rounding (pruning only)")
-    rep = StageReporter(
-        stage=0, run_dir=ctx.run_dir, subdir="stage_0_prune_sweep",
+    rep = stage_reporter(
+        ctx, candidate, handle, profile, ("stage0", "eval", "model", "run"), stage=0, subdir="stage_0_prune_sweep",
         title="Pruning levels: how much of the model can be removed",
-        config={"hyperparams": dict(candidate), "stage0": asdict(s0), "eval": asdict(cfg.eval),
-                "model": asdict(cfg.model), "run": asdict(cfg.run)},
-        environment=environment_info(),
         conditions={"model": cfg.model.name, "seed": cfg.run.seed, "device": str(device),
                     "backend": "HF Transformers", "pruning": "magnitude, per output row (simulated)",
                     "rounding": rounding, "levels": ", ".join(f"{r:.0%}" for r in ratios),
                     "framework threshold": threshold, "never pruned (guard)": sorted(guarded),
                     "evaluation data": f"wikitext-2 test, {cfg.eval.seq_len}-token windows, validation/held-out halves"},
-        requirement=cfg.requirement, main_metrics=METRICS,
-        original_model=original_model_info(ctx, handle, profile),
+        main_metrics=METRICS,
     )
 
     with rep.method("baseline", "fp16", description="uncompressed model") as row:
@@ -275,12 +264,9 @@ def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, 
               "Framework: error (held-out)", "Standard: memory (GB)", "Framework: memory (GB)",
               "Standard: share removed", "Framework: share removed"]
     fmt = lambda m, k: "failed" if m is None else f"{m[k]:.4g}"  # noqa: E731
-    table = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
-    for (p, a), (_, f) in zip(curves["original"], curves["framework"]):
-        table.append(f"| {p}% | " + " | ".join(fmt(m, k) for k in ("ppl_val",) for m in (a, f)) + " | "
-                     + " | ".join(fmt(m, "ppl_heldout") for m in (a, f)) + " | "
-                     + " | ".join(fmt(m, "predicted_weight_memory_gb") for m in (a, f)) + " | "
-                     + " | ".join(fmt(m, "sparsity") for m in (a, f)) + " |")
+    table = [_table(header, [[f"{p}%"] + [fmt(m, k) for k in ("ppl_val", "ppl_heldout", "predicted_weight_memory_gb",
+                                                               "sparsity") for m in (a, f)]
+                             for (p, a), (_, f) in zip(curves["original"], curves["framework"])])]
     notes = [
         "- **Removed**: the share of numbers deleted from each pruned layer.",
         "- **Error**: perplexity on the validation half of the test text; lower is better"
@@ -295,13 +281,10 @@ def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, 
     if fair:
         header = ["Removed", "Standard: error", "Same size: error", "Standard: error (held-out)",
                   "Same size: error (held-out)", "Memory (GB), standard / same size", "Lower error"]
-        t = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
-        for p, a, f, same in fair:
-            t.append(f"| {p}% | {a['ppl_val']:.4g} | {f['ppl_val']:.4g} | {a['ppl_heldout']:.4g} | "
-                     f"{f['ppl_heldout']:.4g} | {a['predicted_weight_memory_gb']:.4g} / "
-                     f"{f['predicted_weight_memory_gb']:.4g} | "
-                     + ("sizes differ (capped)" if not same else "same size" if f["ppl_val"] < a["ppl_val"]
-                        else "standard") + " |")
+        t = [_table(header, [[f"{p}%", a["ppl_val"], f["ppl_val"], a["ppl_heldout"], f["ppl_heldout"],
+                              f"{a['predicted_weight_memory_gb']:.4g} / {f['predicted_weight_memory_gb']:.4g}",
+                              "sizes differ (capped)" if not same else "same size" if f["ppl_val"] < a["ppl_val"]
+                              else "standard"] for p, a, f, same in fair])]
         fair_notes = [
             "- **Removed**: the share of all the decoder's numbers deleted; the same for both versions unless the "
             "never-pruned layers stop the same-size version from deleting as much (then its memory is higher).",

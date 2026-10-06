@@ -95,6 +95,8 @@ class Stage0Result:
 class _ModelHandle:
     """Loads the model and tokenizer only when a cache miss needs them."""
 
+    factory = None  # Stages 1-3: a fresh model from the stage's factory on each call
+
     def __init__(self, ctx: RunContext, device: torch.device, model=None, tokenizer=None):
         self.ctx, self.device, self._model, self._tokenizer = ctx, device, model, tokenizer
 
@@ -107,12 +109,47 @@ class _ModelHandle:
         return self._tokenizer
 
     def model(self, dtype: str):
+        if self.factory is not None:
+            return self.factory()
         if self._model is None:
             from transformers import AutoModelForCausalLM
 
             log.info("loading %s", self.ctx.cfg.model.name)
             self._model = AutoModelForCausalLM.from_pretrained(self.ctx.cfg.model.name)
         return self._model.to(device=self.device, dtype=getattr(torch, dtype))
+
+
+def setup(ctx: RunContext, model=None, tokenizer=None,
+          text_loader: Callable[[str, str], list[str]] | None = None):
+    """Device, lazy model handle and text loader: how every study starts."""
+    device = resolve_device(ctx.cfg.model.device)
+    return (device, _ModelHandle(ctx, device, model, tokenizer),
+            text_loader or functools.partial(load_texts, ctx.cfg.data.sources))
+
+
+def calib_batches(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
+                  text_loader: Callable[[str, str], list[str]], samples: int) -> list[torch.Tensor]:
+    c = ctx.cfg.calibration
+    return calibration_batches(text_loader(candidate["calib_dataset"], "train"), handle.tokenizer, samples,
+                               c.seq_len, c.batch_size, ctx.cfg.run.seed)
+
+
+def weight_cost(profile: SensitivityProfile, group_size: int, s0,
+                reference: list[float] | None = None) -> Callable[[CompressionPlan], PlanCost]:
+    """`predict_cost` with the run's storage settings."""
+    return functools.partial(predict_cost, profile=profile, group_size=group_size,
+                             group_overhead_bits=s0.group_overhead_bits, baseline_bits=s0.baseline_bits,
+                             sparse_storage=s0.sparse_storage, reference_scores=reference)
+
+
+def stage_reporter(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
+                   profile: SensitivityProfile, sections: tuple[str, ...], **kw: Any) -> StageReporter:
+    """A StageReporter with the shared config record (candidate + the `sections` of the config), environment,
+    requirement and original model."""
+    cfg = ctx.cfg
+    return StageReporter(run_dir=ctx.run_dir, environment=environment_info(), requirement=cfg.requirement,
+                         config={"hyperparams": dict(candidate), **{s: asdict(getattr(cfg, s)) for s in sections}},
+                         original_model=original_model_info(ctx, handle, profile), **kw)
 
 
 def original_model_info(ctx: RunContext, handle: _ModelHandle,
@@ -188,13 +225,11 @@ def kv_profile_key(ctx: RunContext, cand: dict[str, Any]) -> dict[str, Any]:
 
 def load_kv_profile(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
                     text_loader: Callable[[str, str], list[str]]) -> tuple[KVProfile, bool]:
-    cfg, s0 = ctx.cfg, ctx.cfg.stage0
+    s0 = ctx.cfg.stage0
     key = kv_profile_key(ctx, candidate)
 
     def compute() -> dict[str, Any]:
-        batches = calibration_batches(text_loader(candidate["calib_dataset"], "train"), handle.tokenizer,
-                                      s0.kv_calib_samples, cfg.calibration.seq_len, cfg.calibration.batch_size,
-                                      cfg.run.seed)
+        batches = calib_batches(ctx, candidate, handle, text_loader, s0.kv_calib_samples)
         return profile_kv(handle.model(s0.profile_dtype), batches, s0.kv_bits_options, s0.kv_group_size,
                           s0.kv_keep_ratios, tuple(s0.kv_module_names), device=handle.device, meta=key).to_dict()
 
@@ -216,9 +251,7 @@ def load_profile(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandl
     score = score or cfg.stage0.score
 
     def compute() -> dict[str, Any]:
-        batches = calibration_batches(text_loader(candidate["calib_dataset"], "train"), handle.tokenizer,
-                                      candidate["calib_samples"], cfg.calibration.seq_len,
-                                      cfg.calibration.batch_size, cfg.run.seed)
+        batches = calib_batches(ctx, candidate, handle, text_loader, candidate["calib_samples"])
         s0 = cfg.stage0
         if score in GRADIENT_SCORES:
             prof = profile_sensitivity(handle.model(s0.profile_dtype), batches, device=handle.device,
@@ -241,10 +274,11 @@ def load_profile(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandl
 
 def load_guard(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
                text_loader: Callable[[str, str], list[str]],
-               profile: SensitivityProfile) -> tuple[frozenset[int], float]:
-    """Layers no plan may prune, and the extra profiling seconds it took. The guard always ranks by layer
-    removal; when that is not the score picking the bits, a removal profile is measured (and cached) too."""
-    k = ctx.cfg.stage0.guard_top_k
+               profile: SensitivityProfile, k: int | None = None) -> tuple[frozenset[int], float]:
+    """Layers no plan may prune (top `k`, default stage0.guard_top_k), and the extra profiling seconds it took.
+    The guard always ranks by layer removal; when that is not the score picking the bits, a removal profile is
+    measured (and cached) too."""
+    k = ctx.cfg.stage0.guard_top_k if k is None else k
     if k == 0:
         return frozenset(), 0.0
     if profile.method == "layer_removal":
@@ -262,9 +296,7 @@ def run_stage0(
     measure_fp16: bool = True,
 ) -> Stage0Result:
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
-    device = resolve_device(cfg.model.device)
-    handle = _ModelHandle(ctx, device, model, tokenizer)
-    text_loader = text_loader or functools.partial(load_texts, cfg.data.sources)
+    device, handle, text_loader = setup(ctx, model, tokenizer, text_loader)
 
     profile, prof_cached = load_profile(ctx, candidate, handle, text_loader)
     # The only place scores are normalised: cheap, so not cached, and changing the method reuses the profile.
@@ -272,27 +304,22 @@ def run_stage0(
     guarded, guard_s = load_guard(ctx, candidate, handle, text_loader, profile)
     profiling_s = profile.cost["wall_clock_s"] + guard_s  # true cost of a plan, even when cached this time
 
-    rep = StageReporter(
-        stage=0, run_dir=ctx.run_dir, title="Sensitivity profiling and compression planning",
-        config={"hyperparams": dict(candidate), "stage0": asdict(s0), "calibration": asdict(cfg.calibration),
-                "eval": asdict(cfg.eval), "model": asdict(cfg.model), "run": asdict(cfg.run)},
-        environment=environment_info(),
+    rep = stage_reporter(
+        ctx, candidate, handle, profile, ("stage0", "calibration", "eval", "model", "run"),
+        stage=0, title="Sensitivity profiling and compression planning",
         conditions={"model": cfg.model.name, "calibration": f"{candidate['calib_dataset']}, "
                     f"{candidate['calib_samples']} x {cfg.calibration.seq_len} tokens", "seed": cfg.run.seed,
                     "evaluation data": f"wikitext-2 test, {cfg.eval.seq_len}-token windows, validation/held-out halves",
                     "device": str(device), "backend": "HF Transformers",
                     "group size for memory prediction": candidate["gptq_groupsize"]},
-        requirement=cfg.requirement,
         main_metrics=MAIN_METRICS,
-        original_model=original_model_info(ctx, handle, profile),
     )
     # Exposure is always scored against layer removal when that profile exists (it does whenever the guard is
     # on), so plans built from different measures are comparable; against its own ranks every measure that
     # protects k layers scores the same.
     reference = (normalize(load_profile(ctx, candidate, handle, text_loader, score="layer_removal")[0].raw_scores,
                            s0.normalization) if profile.method != "layer_removal" and s0.guard_top_k else None)
-    predict = lambda plan: predict_cost(plan, profile, candidate["gptq_groupsize"],  # noqa: E731
-                                        s0.group_overhead_bits, s0.baseline_bits, s0.sparse_storage, reference)
+    predict = weight_cost(profile, candidate["gptq_groupsize"], s0, reference)
 
     # --- FP16 baseline: measured once per (model, eval settings, hardware) and cached ----------------------
     with rep.method("baseline", "fp16", description="uncompressed model") as row:
@@ -414,7 +441,7 @@ def _act_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
               num_layers: int) -> tuple[ActivationProfile | None, ActivationPlan | None]:
     """Activation rows: uniform (original), the plan Stage 2 gets (framework) and, when that plan is measured,
     the weight-derived plan at its own average for comparison."""
-    cfg, s0 = ctx.cfg, ctx.cfg.stage0
+    s0 = ctx.cfg.stage0
     if s0.act_plan not in ("measured", "from_weights"):
         raise ValueError(f"unknown stage0.act_plan {s0.act_plan!r}; choose measured or from_weights")
     lo, hi = min(s0.act_bits_options), max(s0.act_bits_options)
@@ -443,9 +470,7 @@ def _act_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
             key = activation_profile_key(ctx, candidate)
 
             def compute() -> dict[str, Any]:
-                batches = calibration_batches(text_loader(candidate["calib_dataset"], "train"), handle.tokenizer,
-                                              s0.act_calib_samples, cfg.calibration.seq_len,
-                                              cfg.calibration.batch_size, cfg.run.seed)
+                batches = calib_batches(ctx, candidate, handle, text_loader, s0.act_calib_samples)
                 return profile_activations(handle.model(s0.profile_dtype), batches, s0.act_bits_options,
                                            s0.act_group_size, device=handle.device, meta=key).to_dict()
 
