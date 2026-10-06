@@ -10,13 +10,12 @@ The "original method" allocation used for comparison is uniform: every layer get
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Any, Callable
 
 from sdf.search_space import PER_CHANNEL
 from sdf.stage0.sensitivity import SensitivityProfile
+from sdf.utils.cache import JsonFile
 
 
 @dataclass(frozen=True)
@@ -31,7 +30,7 @@ class LayerPlan:
 
 
 @dataclass(frozen=True)
-class CompressionPlan:
+class CompressionPlan(JsonFile):
     layers: tuple[LayerPlan, ...]
     kind: str  # "sensitivity" | "budget" | "uniform" | "same_size_pruning"
     sensitive_threshold: float | None
@@ -57,19 +56,10 @@ class CompressionPlan:
             "layers": [asdict(lp) for lp in self.layers],
         }
 
-    def save(self, path: str | Path) -> None:
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "CompressionPlan":
         return cls(tuple(LayerPlan(**lp) for lp in d["layers"]), d["kind"], d["sensitive_threshold"],
                    d["prune_ratio_aggressive"])
-
-    @classmethod
-    def load(cls, path: str | Path) -> "CompressionPlan":
-        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 def guarded_layers(removal_scores: list[float], top_k: int) -> frozenset[int]:
@@ -134,12 +124,9 @@ def budget_matched_plan(
                               guarded) for i, s in enumerate(scores))
         plan = CompressionPlan(layers, "budget", None, prune_ratio_aggressive)
         if cost(plan).weight_memory_gb > budget_gb * (1 + 1e-9):
+            best = best or plan  # even protecting nothing is over budget: the k = 0 plan, caller flags it
             break
         best = plan
-    if best is None:  # even protecting nothing is over budget: return the k = 0 plan, caller flags it
-        best = CompressionPlan(tuple(_layer(i, s, False, protected_bits, compressed_bits, prune_ratio_aggressive,
-                                            guarded) for i, s in enumerate(scores)),
-                               "budget", None, prune_ratio_aggressive)
     return best
 
 

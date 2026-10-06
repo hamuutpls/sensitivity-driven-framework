@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-05: "Nothing removed" is a benchmark, not a plan for later stages
+
+- The budget-size plan with nothing removed stays in the Stage 0 rows, sweeps and report, labelled
+  "Benchmark: budget size, nothing removed". It is no longer saved as a plan file, returned in `Stage0Result`,
+  listed in handoff.md or run as a Stage 1 framework row. Handoff and Stage 1 call the 0.768 GB plan the budget plan.
+
 ## 2026-10-05: Realistic size for pruned weights; comparable fragile-parts score; code version in reports
 
 - Pruning is unstructured, so deleted weights only save space in a sparse file. `stage0.sparse_storage`:

@@ -410,7 +410,7 @@ get, and how many earlier words each layer keeps.
 | `stage0/handoff.py` | `write_handoff(path, ...)`: `handoff.md` (§5.10) |
 | `stage0/kv_cache.py` | `KVProfile`, `profile_kv(...)`, `KVLayerPlan`, `KVPlan` (`load`), `uniform_kv_plan(n, bits)`, `plan_kv(profile, avg_bits, coverage_target)`, `KVCost`, `predict_kv(...)` |
 | `stage0/compare.py` | `compare_scores(ctx, candidate)`: profiles all three scores on the same text and reports rank agreement (`MODE = "compare_scores"`) |
-| `stage0/run.py` | `run_stage0(ctx, candidate, model=None, tokenizer=None, text_loader=None, measure_fp16=True) -> Stage0Result(plan, profile, outputs, budget_plan, no_prune_plan, activation_plan, kv_plan, kv_plan_bits_only)`; `load_guard(...)` |
+| `stage0/run.py` | `run_stage0(ctx, candidate, model=None, tokenizer=None, text_loader=None, measure_fp16=True) -> Stage0Result(plan, profile, outputs, budget_plan, activation_plan, kv_plan, kv_plan_bits_only)`; `load_guard(...)` |
 
 **Contract handed to later stages (PIPE-03).** `CompressionPlan` JSON:
 
@@ -462,15 +462,16 @@ compressed (`compressed_bits` = 4, pruned at `prune_ratio_aggressive`).
 **Original variant.** Uniform: every layer `uniform_bits` = 4, pruning `uniform_prune_ratio` = 0.
 
 **Pruning guard (S0-14).** The `guard_top_k` (5) layers with the highest raw layer-removal score are never
-pruned in any framework plan (threshold and both size-matched plans); they keep the bits their plan gives
+pruned in any framework plan (threshold, budget plan and the no-pruning benchmark); they keep the bits their plan gives
 them. When `stage0.score` is not `layer_removal`, `load_guard` measures a removal profile as well (cached like
 any profile) and its time is added to the framework rows' build time. In the size-matched plans the unpruned
 guarded layers count against the budget. The uniform original variant is not guarded: it has no Stage 0.
 
 **Size-matched plans.** Rank layers by sensitivity; protect the top *k* for the largest *k* whose predicted
-memory fits the uniform plan's. Two versions: with pruning (robust layers 4-bit, pruned) and without pruning
-(robust layers `no_prune_compressed_bits` = 3, nothing removed), the second isolating the effect of the
-guidance from the effect of pruning.
+memory fits the uniform plan's (the budget plan: robust layers 4-bit, pruned). A benchmark at the same budget
+without pruning (robust layers `no_prune_compressed_bits` = 3, nothing removed) isolates the effect of the
+guidance from the effect of pruning. It is a Stage 0 comparison row only: it is not saved as a plan file nor
+handed to later stages.
 
 **Cost model (`predict_cost`).** Per decoder layer: `kept = numel · (1 − prune)`; `bits = kept · bit_width`,
 plus `group_overhead_bits` (32: one scale and zero point) per quantisation group of `gptq_groupsize` weights
@@ -482,7 +483,7 @@ weight memory (GB), average bits per weight, sparsity, and
 the share of compression that lands on sensitive layers (lower is better).
 
 **Rows reported.** fp16 (measured once, cached); original (uniform); framework (threshold plan); framework,
-same size; framework, same size without pruning; then the three KV cache rows of §5.8 when `stage0.kv_cache`
+budget plan; benchmark, budget size, nothing removed; then the three KV cache rows of §5.8 when `stage0.kv_cache`
 is on (the default). Plan rows carry *predicted* metrics; accuracy and latency of
 plans are measured once Stage 1 applies them.
 
@@ -560,7 +561,7 @@ Rows: `activations/original` (uniform `act_uniform_bits` = 8), `activations/fram
 ### 5.10 Information: hand-off report (S0-17)
 
 `handoff.md` next to `report.md`: Original model; at a glance (stage, what it receives, file, loader); Stage 1
-per-layer bits, share removed and guard for the three plans with predicted sizes; Stage 2 per-layer activation
+per-layer bits, share removed and guard for the main and budget plans with predicted sizes; Stage 2 per-layer activation
 bits, measured damage and predicted rise per plan; Stage 3 per-layer key/value bits and words kept with
 predicted memory and rise; Stage 4 FP16 reference numbers and measurement conditions; search parameters with
 current values and ranges; caveats. Every table has column explanations.

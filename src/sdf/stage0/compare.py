@@ -4,22 +4,19 @@ they rank the layers. Outputs under <run_dir>/stage_0_scores/: report.md, scores
 from __future__ import annotations
 
 import dataclasses
-import functools
 import json
 from typing import Any, Callable
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
-from sdf.data import load_texts
+from sdf.reporting.excel import save_workbook
 from sdf.reporting.markdown import original_model_lines
 from sdf.run import RunContext
-from sdf.stage0.planner import plan_compression
-from sdf.stage0.run import _ModelHandle, load_profile, original_model_info
+from sdf.stage0.run import load_profile, original_model_info, setup
 from sdf.stage0.sensitivity import SCORES, SensitivityProfile, normalize, outlier_layers
-from sdf.stage0.sweep import _spearman
+from sdf.stage0.sweep import _spearman, protected_at
 from sdf.utils.cache import atomic_write_text
-from sdf.utils.env import resolve_device
 from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -40,8 +37,7 @@ TOP_K = 5
 def compare_scores(ctx: RunContext, candidate: dict[str, Any], scores: tuple[str, ...] = SCORES, model=None,
                    tokenizer=None, text_loader: Callable[[str, str], list[str]] | None = None) -> dict[str, Any]:
     cfg = ctx.cfg
-    handle = _ModelHandle(ctx, resolve_device(cfg.model.device), model, tokenizer)
-    text_loader = text_loader or functools.partial(load_texts, cfg.data.sources)
+    _, handle, text_loader = setup(ctx, model, tokenizer, text_loader)
     profiles: dict[str, SensitivityProfile] = {}
     failures: dict[str, str] = {}
     for score in scores:
@@ -56,7 +52,7 @@ def compare_scores(ctx: RunContext, candidate: dict[str, Any], scores: tuple[str
 
     t = candidate["sensitive_threshold"]
     ranks = {s: normalize(p.raw_scores) for s, p in profiles.items()}
-    protected = {s: set(plan_compression(r, t, 0.0, 8, 4).protected_layers) for s, r in ranks.items()}
+    protected = {s: protected_at(r, t) for s, r in ranks.items()}
     names = list(profiles)
     result = {
         "candidate": candidate, "threshold": t, "scores": names,
@@ -87,9 +83,7 @@ def compare_scores(ctx: RunContext, candidate: dict[str, Any], scores: tuple[str
         c.font = Font(bold=True)
     for r in result["per_layer"]:
         ws.append(list(r.values()))
-    tmp = out / "scores.tmp.xlsx"
-    wb.save(tmp)
-    tmp.replace(out / "scores.xlsx")
+    save_workbook(wb, out / "scores.xlsx")
     atomic_write_text(out / "report.md", _report(result, candidate))
     return {"report": out / "report.md", "xlsx": out / "scores.xlsx", "json": out / "results.json"}
 

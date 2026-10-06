@@ -114,3 +114,11 @@ def test_downstream_tasks_and_master_report(stage0_dir, tiny_llama, tokenizer, s
     s0_rows = json.loads((stage0_dir / "results.json").read_text())["rows"]
     assert ws.max_row == 1 + len(s0_rows) + len(rows)
     assert "Stage 0:" in text
+
+
+def test_fp16_cache_miss_builds_the_model_with_the_factory(stage0_dir, tiny_llama, tokenizer, small_cfg, tmp_path):
+    ctx = start_run(small_cfg.with_overrides({"run.cache_dir": str(tmp_path / "fresh_cache")}))
+    out = run_stage(ctx, 1, ["rtn"], SEARCH_SPACE.make({"calib_samples": 16}), stage0_dir,
+                    model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
+    fp16 = next(r for r in json.loads(out["json"].read_text())["rows"] if r["variant"] == "fp16")
+    assert fp16["status"] == "ok" and not fp16["info"]["cached"]  # measured on the factory's model

@@ -133,7 +133,6 @@ classDiagram
         +SensitivityProfile profile
         +dict outputs
         +CompressionPlan budget_plan
-        +CompressionPlan no_prune_plan
         +ActivationPlan activation_plan
         +KVPlan kv_plan
         +KVPlan kv_plan_bits_only
@@ -318,7 +317,7 @@ sequenceDiagram
     end
     R->>P: predict_cost(plan)
 
-    Note over R,Rep: rows 4 and 5, same size as the original
+    Note over R,Rep: row 4 budget plan, row 5 benchmark (nothing removed), both at the original size
     R->>P: budget_matched_plan(scores, uniform size, prune_ratio, 8, 4)
     R->>P: budget_matched_plan(scores, uniform size, 0, 8, 3)
     loop k = 0, 1, 2 ... layers

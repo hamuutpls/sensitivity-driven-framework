@@ -79,8 +79,8 @@ classDiagram
     stage3_run ..> Stage3Config
 ```
 
-`quarot_k_bits` joins `SEARCH_SPACE` when this stage is written. `kv_cache_gb` is already in the metric registry
-and in `DeploymentRequirement`'s checks, so the fit / overflow verdict needs no new reporting code.
+`quarot_k_bits` joins `SEARCH_SPACE` when this stage is written. `kv_cache_gb` is already in
+`DeploymentRequirement`'s checks; its metric spec joins the registry when this stage first emits it.
 
 ## Sequence diagram
 
