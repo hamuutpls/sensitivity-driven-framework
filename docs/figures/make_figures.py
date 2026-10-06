@@ -152,11 +152,11 @@ def fig3_weight_plan():
                 arrowprops=dict(arrowstyle="->", color=NOTE))
     fig.legend(handles=[Patch(color=PROTECT, label="Main plan, protected: 8 bits, nothing removed (11 layers)"),
                        Patch(color=COMPRESS, label="Main plan, compressed: 4 bits, 30% removed (11 layers)"),
-                       Patch(fc="white", ec=GUARD, lw=2, label="Never pruned in any plan, even the smaller budget plan\n(number = perplexity added if skipped)")],
+                       Patch(fc="white", ec=GUARD, lw=2, label="Never pruned in any plan (the guard, from layer removal)\n(number = perplexity added if skipped)")],
               loc="lower left", fontsize=8.5, frameon=False, bbox_to_anchor=(0.03, 0.0), ncol=3)
 
     names = ["Original\n(16-bit)", "Standard\n4-bit", "Stage 0\nmain plan", "Stage 0\nbudget plan"]
-    mb = [2200, 777.0, 942.0, 768.0]
+    mb = [2200, 777.0, 1003.0, 773.0]
     c = [NOTE, PLANNED, DONE, DONE]
     ax2.bar(range(4), mb, color=c)
     for i, v in enumerate(mb):
@@ -164,12 +164,12 @@ def fig3_weight_plan():
     ax2.set(xticks=range(4), ylabel="Predicted size of the model's numbers\n(MB, smaller is better)", ylim=(0, 2550))
     ax2.set_xticklabels(names, fontsize=8.3)
     ax2.set_title("Predicted size of each version", fontsize=10.5, loc="left")
-    ax2.text(2, 1350, "The budget plan fits within the\nstandard method's memory,\nso Stage 1 compares accuracy\nat no extra memory",
+    ax2.text(2, 1350, "Measured perplexity (lower is better):\nstandard 10.96, main plan 10.71,\nbudget plan 11.50",
              ha="center", fontsize=8.5, color=NOTE)
-    fig.text(0.02, -0.03, "Bar colours show the main plan: all 11 blue layers keep 8 bits and lose nothing. The orange border matters in the smaller "
-             "budget plan, which protects only the 5 bordered layers; there the other blue layers drop to 4 bits with 30% removed.\n"
+    fig.text(0.02, -0.03, "Bar colours show the main plan: all 11 blue layers keep 8 bits and lose nothing. The budget plan protects only layer 0; "
+             "layers 1, 2, 7 and 21 stay at 4 bits with nothing removed, and the rest get 4 bits with 30% removed.\n"
              "Higher score = more fragile layer; for size, smaller is better. The score is the layer's rank by damage, not the damage itself: the five 'never pruned' layers "
-             "are where removing one layer hurts by far the most. Sizes are predictions; Stage 1 measures the real ones.",
+             "are where removing one layer hurts by far the most. Sizes are predictions that count 1 bit per weight to mark which weights were removed.",
              fontsize=8.8, color=NOTE)
     fig.tight_layout(rect=(0, 0.05, 1, 0.9))
     save(fig, "fig3_weight_plan")
@@ -235,10 +235,10 @@ def fig6_handoff():
                      "Every plan is a JSON file next to the Stage 0 report; later stages load it instead of measuring again.")
     box(ax, 36, 40, 28, 22, "Stage 0 results\nTinyLlama, 22 layers\nPerplexity 10.18 (tuning half)\n10.62 (held-out half, never tuned on)", DONE)
     targets = [
-        (2, 72, "Stage 1: weights\ncompression_plan.json\n11 layers protected at 8 bits;\n0, 1, 2, 7, 21 never pruned\n942 MB plan vs 777 MB standard\n(+ 768 MB budget plan)", (36, 56)),
+        (2, 72, "Stage 1: weights\ncompression_plan.json\n11 layers protected at 8 bits;\n0, 1, 2, 7, 21 never pruned\n1,003 MB plan vs 777 MB standard\n(+ 773 MB budget plan)", (36, 56)),
         (66, 72, "Stage 2: activations\nactivation_plan.json\n8 or 4 bits per layer, average 6\nPredicted rise 0.56 vs 0.67 copied\nLayer 1 most fragile", (64, 56)),
         (2, 6, "Stage 3: KV cache\nkv_cache_plan.json\nKeys/values 4 bits (layer 0 values 2)\nWords kept 10-100% per layer\n13.0 MB -> 3.2 MB predicted", (36, 46)),
-        (66, 6, "Stage 4 and search\nresults.json, sensitivity_profile.json\nReference: 47 ms to read a prompt,\n46 ms per word, 2.45 GB peak memory\nCached profile: trials re-plan in ms", (64, 46)),
+        (66, 6, "Stage 4 and search\nresults.json, sensitivity_profile.json\nReference: 47 ms to read a prompt,\n33-46 ms per word (overhead-bound),\n2.45 GB peak memory\nCached profile: trials re-plan in ms", (64, 46)),
     ]
     for x, y, text, anchor in targets:
         box(ax, x, y, 32, 22, text, PLANNED, dashed=True, fs=8.8)
