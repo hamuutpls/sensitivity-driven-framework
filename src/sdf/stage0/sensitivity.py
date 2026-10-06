@@ -319,15 +319,22 @@ def round_to_nearest(x: torch.Tensor, bits: int, group_size: int, int_zero: bool
     n = x.shape[-1]
     g = group_size if 0 < group_size and n % group_size == 0 else n
     w = x.float().reshape(*x.shape[:-1], n // g, g)
+    scale, zero = minmax_grid(w, bits, int_zero)
+    return snap(w, scale, zero, bits).reshape(x.shape).to(x.dtype)
+
+
+def minmax_grid(w: torch.Tensor, bits: int, int_zero: bool) -> tuple[torch.Tensor, torch.Tensor]:
+    """(scale, zero) of the `bits` grid spanning min..max of `w` along its last dimension (kept as size 1)."""
     lo, hi = w.amin(dim=-1, keepdim=True), w.amax(dim=-1, keepdim=True)
     top = 2 ** bits - 1
     scale = ((hi - lo) / top).clamp(min=1e-12)
-    if int_zero:
-        zero = (-lo / scale).round().clamp(0, top)
-        q = ((w / scale).round() + zero).clamp(0, top).sub(zero) * scale
-    else:
-        q = ((w - lo) / scale).round().clamp(0, top) * scale + lo
-    return q.reshape(x.shape).to(x.dtype)
+    zero = -lo / scale
+    return scale, (zero.round().clamp(0, top) if int_zero else zero)
+
+
+def snap(w: torch.Tensor, scale: torch.Tensor, zero: torch.Tensor, bits: int) -> torch.Tensor:
+    """`w` rounded onto the grid (scale, zero): the nearest of the 2**bits values (q - zero) * scale."""
+    return ((w / scale + zero).round().clamp(0, 2 ** bits - 1) - zero) * scale
 
 
 def int_zero(s0) -> bool:

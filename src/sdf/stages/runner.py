@@ -108,11 +108,12 @@ class Stage0Plans:
         return out
 
 
-def original_plan(stage: int, plans: Stage0Plans, s0) -> Any:
-    """The uniform plan of the standard method, from the Stage 0 "original method" settings."""
+def original_plan(stage: int, plans: Stage0Plans, s0, prune_ratio: float | None = None) -> Any:
+    """The uniform plan of the standard method, from the Stage 0 "original method" settings (`prune_ratio`:
+    the share a pruning method removes from every layer, instead of stage0.uniform_prune_ratio)."""
     if stage == 1:
         return uniform_plan(normalize(plans.profile.raw_scores, s0.normalization), s0.uniform_bits,
-                            s0.uniform_prune_ratio)
+                            s0.uniform_prune_ratio if prune_ratio is None else prune_ratio)
     if stage == 2:
         return uniform_activation_plan(plans.num_layers, s0.act_uniform_bits)
     return uniform_kv_plan(plans.num_layers, s0.kv_uniform_bits)
@@ -264,7 +265,7 @@ def run_stage(
     simulated_any = False
     for m in methods:
         simulated_any |= m.simulated
-        orig = original_plan(stage, plans, s0)
+        orig = original_plan(stage, plans, s0, candidate["prune_ratio_aggressive"] if m.prunes else None)
         with rep.method(m.name, "original", description=f"{m.label}, standard settings: {_describe(orig)}",
                         simulated=m.simulated) as row:
             _require(m)

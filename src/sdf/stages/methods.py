@@ -29,6 +29,7 @@ from sdf.stage0.planner import CompressionPlan
 from sdf.stage0.prune_sweep import apply_plan
 from sdf.stage0.sensitivity import int_zero
 from sdf.stage0.sensitivity import find_decoder_layers
+from sdf.stages.weights import awq_, gptq_, low_rank_, structured_prune_, wanda_
 
 
 @dataclass
@@ -53,6 +54,8 @@ class Method:
     calibrated: bool = False  # reads calibration batches (calibration settings join its cache key)
     simulated: bool = True  # numbers are rounded in place (FP16 storage): speed and file size are not real
     library: str = ""  # where the implementation comes from, for the feasibility table
+    # a pruning method: its standard version removes prune_ratio_aggressive from every layer (not uniform_prune_ratio)
+    prunes: bool = False
 
 
 # ----------------------------------------------------------------------------------------------- baselines
@@ -66,6 +69,16 @@ def _rtn_weights(call: MethodCall) -> Iterator[dict[str, Any]]:
                     baseline_bits=call.cfg.stage0.baseline_bits,
                     int_zero=int_zero(call.cfg.stage0)):
         yield {}
+
+
+def _calibrated(fn: Callable) -> Callable[[MethodCall], ContextManager[dict[str, Any]]]:
+    """apply() for a weights.py method fn(model, plan, batches, group size, baseline bits, int_zero): in place."""
+    @contextmanager
+    def apply(call: MethodCall) -> Iterator[dict[str, Any]]:
+        s0 = call.cfg.stage0
+        fn(call.model, call.plan, call.batches(), call.candidate["gptq_groupsize"], s0.baseline_bits, int_zero(s0))
+        yield {}
+    return apply
 
 
 @contextmanager
@@ -104,16 +117,21 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     Method("rtn", 1, "Round-to-nearest + magnitude pruning", _WEIGHT_PLANS, _rtn_weights,
            params=("gptq_groupsize",), library="in repo (torch)", version=2),  # 2: integer zero point
     # per-layer bits from the plan; Hessian of layer inputs, column-by-column error feedback
-    Method("gptq", 1, "GPTQ", _WEIGHT_PLANS, params=("gptq_groupsize",), calibrated=True,
-           library="in repo (torch), checked against gptqmodel"),
-    Method("awq", 1, "AWQ", _WEIGHT_PLANS, params=("gptq_groupsize",), calibrated=True,
+    Method("gptq", 1, "GPTQ", _WEIGHT_PLANS, _calibrated(gptq_), params=("gptq_groupsize",), calibrated=True,
+           library="in repo (torch)"),
+    Method("awq", 1, "AWQ", _WEIGHT_PLANS, _calibrated(awq_), params=("gptq_groupsize",), calibrated=True,
            library="in repo (torch); autoawq is deprecated"),  # activation-aware channel scaling, then RTN
-    Method("structured_prune", 1, "Structured pruning", _WEIGHT_PLANS, calibrated=True,
-           library="in repo (torch) or torch-pruning"),  # removes whole channels; real speed and size gains
-    Method("unstructured_prune", 1, "Unstructured pruning (Wanda)", _WEIGHT_PLANS, calibrated=True,
+    # removes whole feed-forward channels; real speed and size gains once a backend cuts them out
+    Method("structured_prune", 1, "Structured pruning (feed-forward channels)", _WEIGHT_PLANS,
+           _calibrated(structured_prune_), params=("gptq_groupsize", "prune_ratio_aggressive"), calibrated=True,
+           prunes=True, library="in repo (torch)"),
+    Method("unstructured_prune", 1, "Unstructured pruning (Wanda)", _WEIGHT_PLANS, _calibrated(wanda_),
+           params=("gptq_groupsize", "prune_ratio_aggressive"), calibrated=True, prunes=True,
            library="in repo (torch)"),  # |w| x input norm per output row
-    # rank chosen so each layer matches its planned size
-    Method("low_rank", 1, "Low-rank (SVD)", _WEIGHT_PLANS, library="in repo (torch)"),
+    # rank chosen so each layer keeps (1 - planned share) of its numbers; activation-aware SVD
+    Method("low_rank", 1, "Low-rank (activation-aware SVD)", _WEIGHT_PLANS, _calibrated(low_rank_),
+           params=("gptq_groupsize", "prune_ratio_aggressive"), calibrated=True, prunes=True,
+           library="in repo (torch)"),
     # Stage 2: activations
     Method("rtn_act", 2, "Round-to-nearest activations", ("activations",), _rtn_activations,
            library="in repo (torch)"),  # baseline; same rounding as the Stage 0 activation measurement
