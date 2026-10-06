@@ -32,12 +32,12 @@ from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-# Plan bits -> llama.cpp tensor type. K-quants (256-weight blocks, scale and minimum) are closest to the plan's
-# asymmetric groups; 8 bits has no K-quant.
 # Bump when a change alters the measured numbers, so cached llama.cpp results are not reused.
 # 2: the GGUF keeps the SentencePiece tokenizer (version 1 had flat token scores and wrong perplexity).
 VERSION = 2
 
+# Plan bits -> llama.cpp tensor type. K-quants (256-weight blocks, scale and minimum) are closest to the plan's
+# asymmetric groups; 8 bits has no K-quant.
 BITS_TO_GGUF = {16: "f16", 8: "q8_0", 6: "q6_k", 5: "q5_k", 4: "q4_k", 3: "q3_k", 2: "q2_k"}
 
 _NOTE = (" Measured in llama.cpp, the program people use to run models on their own computers, after saving the "
