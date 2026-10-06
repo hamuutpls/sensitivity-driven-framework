@@ -5,6 +5,8 @@
 - Timing passes an explicit all-ones attention mask. Without one, transformers 5.18 reads a GPU value to decide
   whether to skip the causal mask, which breaks CUDA graph capture; latency then fell back to eager (~40 ms/token
   on Colab) and each failed capture left 32 MiB allocated, so peak memory grew row by row.
+- Every capture reuses one warm-up stream. A new stream per capture kept a new 32 MiB cuBLAS workspace alive, so peak
+  memory grew 64 MiB per measured row.
 
 ## 2026-10-06: Latency timed with deterministic algorithms off
 

@@ -6,6 +6,7 @@ and repeated timings; the raw repeats are returned so reports can show every mea
 
 from __future__ import annotations
 
+import functools
 import math
 import statistics
 import time
@@ -63,11 +64,18 @@ def _static_cache(model: nn.Module, max_len: int):
                            dtype=p.dtype)
 
 
+@functools.cache
+def _warmup_stream() -> torch.cuda.Stream:
+    """One side stream for every capture: PyTorch keeps a cuBLAS workspace (32 MiB here) per stream used until the
+    process ends, so a new stream per capture grew memory by 64 MiB per measured row."""
+    return torch.cuda.Stream()
+
+
 def _graphed(fn: Callable[[], torch.Tensor], reset: Callable[[], None]) -> Callable[[], torch.Tensor]:
     """Capture `fn` (fixed input tensors, updated in place) as a CUDA graph; calling the result replays it.
     `reset` empties the KV cache before each warm-up run, so warm-up never writes past its end.
     Replaying launches the whole forward pass at once, so Python and kernel-launch overhead drop out of the time."""
-    s = torch.cuda.Stream()
+    s = _warmup_stream()
     s.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(s):  # warm up off the default stream, as torch.cuda.graph requires
         for _ in range(2):
