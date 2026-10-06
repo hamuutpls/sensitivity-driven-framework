@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-06: Stage 4 llama.cpp backend (Stage 1 rows)
+
+- With `eval.llamacpp_dir` and `eval.llamacpp_convert` set, each Stage 1 row is also saved as a GGUF file with every
+  decoder layer at its planned bits (8 -> Q8_0, 4 -> Q4_K, ...; embeddings and output head F16, `--pure`), then
+  measured: file size, llama-bench prefill/decode tok/s, llama-perplexity on both halves. llama.cpp re-rounds on its
+  own grid and scores only the second half of each window, so its perplexity is compared between rows only.
+- The saved model keeps its SentencePiece `tokenizer.model` (transformers 5 omits it; without it the GGUF had flat
+  token scores and FP16 perplexity 17.8 instead of 8.1).
+- Pruned weights are stored as zeros (GGUF has no sparse format), so pruning saves no size here.
+
 ## 2026-10-06: Latency measures the GPU, not Python
 
 - Eager HF decode of a 1B model is mostly Python and kernel-launch overhead (32.8 ms/token on the host PC), so it

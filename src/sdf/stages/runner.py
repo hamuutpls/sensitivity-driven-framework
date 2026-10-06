@@ -22,7 +22,7 @@ import torch
 from torch import nn
 
 from sdf.data import eval_windows
-from sdf.eval import downstream
+from sdf.eval import downstream, llamacpp
 from sdf.eval.metrics import measure_model
 from sdf.run import RunContext
 from sdf.stage0.activation import ActivationPlan, uniform_activation_plan
@@ -186,6 +186,8 @@ def run_stage(
             return AutoModelForCausalLM.from_pretrained(cfg.model.name, torch_dtype=dtype).to(device)
     handle.factory = model_factory  # an FP16 cache miss builds the model like every row
 
+    use_llamacpp = stage == 1 and cfg.eval.llamacpp_dir is not None
+    lc_key = [cfg.eval.llamacpp_dir, cfg.eval.llamacpp_convert, llamacpp.VERSION] if use_llamacpp else None
     calib = (f"{candidate['calib_dataset']}, {candidate['calib_samples']} x {cfg.calibration.seq_len} tokens")
     rep = stage_reporter(
         ctx, candidate, handle, plans.profile, ("stages", "stage0", "calibration", "eval", "model", "run"),
@@ -194,7 +196,7 @@ def run_stage(
                     "evaluation data": f"wikitext-2 test, {cfg.eval.seq_len}-token windows, validation/held-out halves",
                     "device": str(device), "backend": "HF Transformers", "Stage 0 plans": str(plans.dir),
                     "starting point": "the uncompressed model, for every row (stages are independent)"},
-        main_metrics=MAIN_METRICS[stage],
+        main_metrics=MAIN_METRICS[stage] + (llamacpp.MAIN_METRICS if use_llamacpp else []),
     )
     rep.plain_intro = INTROS[stage]
 
@@ -227,6 +229,9 @@ def run_stage(
                 val, held = windows()
                 metrics, raw = measure_model(model, val, held, cfg.eval, device, seed=cfg.run.seed)
                 metrics.update(tasks(model))
+                if use_llamacpp:
+                    metrics.update(llamacpp.measure(model, handle.tokenizer, plan, val, held, cfg.eval,
+                                                    s0.baseline_bits))
         finally:
             del model
             _free_memory()
@@ -250,6 +255,12 @@ def run_stage(
                        "limit": cfg.eval.downstream_limit}
                 acc, _ = ctx.cache.get_or_compute("fp16_downstream", key, lambda: tasks(model_factory()))
                 row.metrics.update(acc)
+            if use_llamacpp:
+                lc, _ = ctx.cache.get_or_compute(
+                    "fp16_llamacpp", {**fp16_key(ctx, device), "llamacpp": lc_key},
+                    lambda: llamacpp.measure(model_factory(), handle.tokenizer, None, *windows(), cfg.eval,
+                                             s0.baseline_bits))
+                row.metrics.update(lc)
 
     simulated_any = False
     for m in methods:
@@ -260,7 +271,7 @@ def run_stage(
             _require(m)
             key = {"stage": stage, "method": m.name, "version": m.version, "plan": orig.to_dict(),
                    "params": {p: candidate[p] for p in m.params}, **fp16_key(ctx, device),
-                   "downstream": [list(cfg.eval.downstream_tasks), cfg.eval.downstream_limit]}
+                   "downstream": [list(cfg.eval.downstream_tasks), cfg.eval.downstream_limit], "llamacpp": lc_key}
             if m.calibrated:
                 key["calibration"] = {"dataset": candidate["calib_dataset"], "samples": candidate["calib_samples"],
                                       "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size}

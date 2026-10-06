@@ -65,6 +65,10 @@ class EvalConfig:
     # cuda_graph: replay prefill / decode step as CUDA graphs (GPU time only); eager: plain HF calls (before
     # 2026-10-06; mostly Python and kernel-launch overhead for a 1B model)
     latency_mode: str = "cuda_graph"
+    # llama.cpp backend (Stage 1 rows; sdf/eval/llamacpp.py): folder with the release programs (llama-quantize,
+    # llama-bench, llama-perplexity) and the path of its convert_hf_to_gguf.py. None = not measured.
+    llamacpp_dir: str | None = None
+    llamacpp_convert: str | None = None
     # Downstream multiple-choice tasks (lm-evaluation-harness task names); empty = not measured.
     downstream_tasks: list[str] = field(default_factory=list)
     downstream_limit: int | None = None  # questions per task (None = all)
