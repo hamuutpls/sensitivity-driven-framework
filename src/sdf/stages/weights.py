@@ -171,7 +171,6 @@ def awq_(model: nn.Module, plan: CompressionPlan, batches: list[torch.Tensor], g
                     best_err, best = err, qs
             for m, q in zip(linears, best):
                 m.weight.data.copy_(q)
-        del inputs
 
 
 def input_sq_norms(model: nn.Module, layer: nn.Module, batches: list[torch.Tensor]) -> dict[nn.Linear, torch.Tensor]:
