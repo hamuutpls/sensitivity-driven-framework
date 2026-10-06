@@ -9,7 +9,6 @@ Outputs under <run_dir>/stage_0_sweep/: report.md (plain language first), sweep.
 
 from __future__ import annotations
 
-import functools
 import itertools
 import json
 from typing import Any, Callable
@@ -17,15 +16,14 @@ from typing import Any, Callable
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
-from sdf.data import load_texts
+from sdf.reporting.excel import save_workbook
 from sdf.reporting.markdown import original_model_lines
 from sdf.run import RunContext
 from sdf.search_space import PER_CHANNEL, SEARCH_SPACE
-from sdf.stage0.planner import budget_matched_plan, guarded_layers, plan_compression, predict_cost, uniform_plan
-from sdf.stage0.run import _ModelHandle, load_profile, original_model_info
+from sdf.stage0.planner import budget_matched_plan, guarded_layers, plan_compression, uniform_plan
+from sdf.stage0.run import load_profile, original_model_info, setup, weight_cost
 from sdf.stage0.sensitivity import SensitivityProfile, normalize, outlier_layers
 from sdf.utils.cache import atomic_write_text
-from sdf.utils.env import resolve_device
 from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -58,9 +56,7 @@ def plan_rows(profile: SensitivityProfile, calib: dict[str, Any], grid: dict[str
     guard = guarded_layers(profile.raw_scores, s0.guard_top_k) if profile.method == "layer_removal" else frozenset()
     rows = []
     for gs in grid["gptq_groupsize"]:
-        cost = functools.partial(predict_cost, profile=profile, group_size=gs,
-                                 group_overhead_bits=s0.group_overhead_bits, baseline_bits=s0.baseline_bits,
-                                sparse_storage=s0.sparse_storage)
+        cost = weight_cost(profile, gs, s0)
         uni = cost(uniform_plan(scores, s0.uniform_bits, s0.uniform_prune_ratio))
         no_prune = budget_matched_plan(scores, uni.weight_memory_gb, 0.0, s0.protected_bits,
                                        s0.no_prune_compressed_bits, cost, guard)
@@ -95,14 +91,19 @@ def _spearman(a: list[float], b: list[float]) -> float:
     return cov / den if den else 1.0
 
 
+def protected_at(scores: list[float], threshold: float) -> set[int]:
+    """The layers a plan at `threshold` protects."""
+    return {i for i, s in enumerate(scores) if s >= threshold}
+
+
 def calibration_rows(profiles: dict[tuple, SensitivityProfile], reference: tuple, threshold: float,
                      normalization: str) -> list[dict[str, Any]]:
     """How much each calibration setting changes the sensitivity ranking, against the reference setting."""
     ref = profiles[reference]
-    ref_prot = set(plan_compression(normalize(ref.raw_scores, normalization), threshold, 0.0, 8, 4).protected_layers)
+    ref_prot = protected_at(normalize(ref.raw_scores, normalization), threshold)
     out = []
     for key, prof in profiles.items():
-        prot = set(plan_compression(normalize(prof.raw_scores, normalization), threshold, 0.0, 8, 4).protected_layers)
+        prot = protected_at(normalize(prof.raw_scores, normalization), threshold)
         out.append({
             "calib_dataset": key[0], "calib_samples": key[1],
             "rank_agreement": _spearman(prof.raw_scores, ref.raw_scores),
@@ -120,9 +121,8 @@ def run_sweep(ctx: RunContext, grid: dict[str, list[Any]] | None = None, model=N
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
     grid = {**default_grid(), **(grid or {})}
     defaults = SEARCH_SPACE.make(cfg.hyperparams)
-    handle = _ModelHandle(ctx, resolve_device(cfg.model.device), model, tokenizer)
+    _, handle, text_loader = setup(ctx, model, tokenizer, text_loader)
     if profiles is None:
-        text_loader = text_loader or functools.partial(load_texts, cfg.data.sources)
         profiles = {}
         for ds, n in itertools.product(grid["calib_dataset"], grid["calib_samples"]):
             try:
@@ -174,9 +174,7 @@ def _write_xlsx(result: dict[str, Any], path) -> None:
         for r in rows:
             ws.append([json.dumps(v) if isinstance(v, list) else v for v in r.values()])
         ws.freeze_panes = "A2"
-    tmp = path.with_suffix(".tmp.xlsx")
-    wb.save(tmp)
-    tmp.replace(path)
+    save_workbook(wb, path)
 
 
 def _table(headers: list[str], rows: list[list[Any]]) -> list[str]:

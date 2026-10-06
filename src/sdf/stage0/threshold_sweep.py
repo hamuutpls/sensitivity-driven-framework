@@ -15,42 +15,30 @@ Outputs under <run_dir>/stage_0_threshold_sweep/: report.md, stage_0_comparison.
 
 from __future__ import annotations
 
-import functools
-from dataclasses import asdict
 from typing import Any, Callable
 
-from sdf.data import load_texts
+from sdf.reporting.markdown import _table
 from sdf.reporting.reporter import StageReporter
 from sdf.run import RunContext
-from sdf.stage0.planner import baseline_cost, budget_matched_plan, guarded_layers, plan_compression, predict_cost, uniform_plan
+from sdf.stage0.planner import baseline_cost, budget_matched_plan, plan_compression, uniform_plan
 from sdf.stage0.prune_sweep import METRICS, make_evaluator
-from sdf.stage0.run import _cost_metrics, _ModelHandle, load_fp16, load_profile, original_model_info
+from sdf.stage0.run import _cost_metrics, load_fp16, load_guard, load_profile, setup, stage_reporter, weight_cost
 from sdf.stage0.sensitivity import normalize
-from sdf.utils.env import environment_info, resolve_device
 
 
 def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, tokenizer=None,
                         text_loader: Callable[[str, str], list[str]] | None = None) -> dict[str, Any]:
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
-    device = resolve_device(cfg.model.device)
-    handle = _ModelHandle(ctx, device, model, tokenizer)
-    text_loader = text_loader or functools.partial(load_texts, cfg.data.sources)
+    device, handle, text_loader = setup(ctx, model, tokenizer, text_loader)
     thresholds, guards = sorted(set(s0.threshold_sweep)), sorted(set(s0.guard_sweep))
     gs, pr = candidate["gptq_groupsize"], candidate["prune_ratio_aggressive"]
 
     profile, _ = load_profile(ctx, candidate, handle, text_loader)
     scores = normalize(profile.raw_scores, s0.normalization)
-    removal = profile if profile.method == "layer_removal" else load_profile(ctx, candidate, handle, text_loader,
-                                                                             score="layer_removal")[0]
-    predict = functools.partial(predict_cost, profile=profile, group_size=gs,
-                                group_overhead_bits=s0.group_overhead_bits, baseline_bits=s0.baseline_bits,
-                                sparse_storage=s0.sparse_storage)
-    rep = StageReporter(
-        stage=0, run_dir=ctx.run_dir, subdir="stage_0_threshold_sweep",
-        title="Protection thresholds: how many layers to protect",
-        config={"hyperparams": dict(candidate), "stage0": asdict(s0), "eval": asdict(cfg.eval),
-                "model": asdict(cfg.model), "run": asdict(cfg.run)},
-        environment=environment_info(),
+    predict = weight_cost(profile, gs, s0)
+    rep = stage_reporter(
+        ctx, candidate, handle, profile, ("stage0", "eval", "model", "run"), stage=0,
+        subdir="stage_0_threshold_sweep", title="Protection thresholds: how many layers to protect",
         conditions={"model": cfg.model.name, "seed": cfg.run.seed, "device": str(device),
                     "backend": "HF Transformers", "pruning": "magnitude, per output row (simulated)",
                     "rounding": f"round-to-nearest at the plan's bits (group size {gs})",
@@ -58,8 +46,7 @@ def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, 
                     "never-pruned layers (guard sizes)": ", ".join(map(str, guards)),
                     "share removed from unprotected layers": pr, "sensitivity score": profile.method,
                     "evaluation data": f"wikitext-2 test, {cfg.eval.seq_len}-token windows, validation/held-out halves"},
-        requirement=cfg.requirement, main_metrics=METRICS,
-        original_model=original_model_info(ctx, handle, profile),
+        main_metrics=METRICS,
     )
     evaluate = make_evaluator(ctx, handle, text_loader, device)
 
@@ -78,7 +65,7 @@ def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, 
         description=f"every layer at {s0.uniform_bits} bits, {s0.uniform_prune_ratio:.0%} removed")
     budget = predict(uniform).weight_memory_gb
     for k in guards:
-        guarded = guarded_layers(removal.raw_scores, k)
+        guarded, _ = load_guard(ctx, candidate, handle, text_loader, profile, k)
         row(f"same_k{k}", "framework", budget_matched_plan(scores, budget, pr, s0.protected_bits, s0.compressed_bits,
                                                            predict, guarded),
             label=f"Budget plan, guard {k}", guard=k, description="as many top layers protected as fit in the "
@@ -136,12 +123,10 @@ def _write_plain(rep: StageReporter, s0, pr: float) -> None:
     })
     header = ["Threshold", "Guard", "Protected layers", "Memory (GB)", "Error", "Error (held-out)",
               "Best trade-off"]
-    t = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
-    for r in sorted(sweep, key=lambda r: (r.info["guard"], r.info["threshold"])):
-        m = r.metrics
-        t.append(f"| {r.info['threshold']:g} | {r.info['guard']} | {m['protected_layers']} | "
-                 f"{m['predicted_weight_memory_gb']:.4g} | {m['ppl_val']:.4g} | {m['ppl_heldout']:.4g} | "
-                 f"{'yes' if r.plain_name in best else ''} |")
+    t = [_table(header, [[f"{r.info['threshold']:g}", r.info["guard"]]
+                         + [r.metrics[k] for k in ("protected_layers", "predicted_weight_memory_gb", "ppl_val",
+                                                   "ppl_heldout")] + ["yes" if r.plain_name in best else ""]
+                         for r in sorted(sweep, key=lambda r: (r.info["guard"], r.info["threshold"]))])]
     notes = [
         "- **Threshold**: layers with a sensitivity score at or above it are protected.",
         "- **Guard**: how many of the layers whose removal hurts most are never pruned.",

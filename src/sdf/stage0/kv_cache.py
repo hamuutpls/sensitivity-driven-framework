@@ -19,24 +19,22 @@ The profile depends only on the model and calibration text, so it is cached like
 
 from __future__ import annotations
 
-import json
 import math
-import time
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field, fields
-from pathlib import Path
+from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Iterator
 
 import torch
 from torch import nn
 
-from sdf.stage0.sensitivity import _mean_loss, find_decoder_layers, round_to_nearest
+from sdf.stage0.sensitivity import _mean_loss, find_decoder_layers, profiling, round_to_nearest
+from sdf.utils.cache import JsonFile
 
 KINDS = ("key", "value")
 
 
 @dataclass
-class KVProfile:
+class KVProfile(JsonFile):
     bits_options: list[int]
     key_dims: list[int]  # numbers stored per token for keys, per layer (k_proj output size)
     value_dims: list[int]
@@ -50,17 +48,6 @@ class KVProfile:
     @property
     def num_layers(self) -> int:
         return len(self.key_dims)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "KVProfile":
-        known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in d.items() if k in known})
-
-    def save(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
 
 
 def kv_projections(layer: nn.Module, names: tuple[str, str]) -> tuple[nn.Linear, nn.Linear]:
@@ -140,12 +127,7 @@ def profile_kv(model: nn.Module, batches: Iterable[torch.Tensor], bits_options: 
     if not batches:
         raise ValueError("no calibration batches given")
     projs = [kv_projections(layer, module_names) for layer in find_decoder_layers(model)]
-    was_training = model.training
-    model.eval()
-    if device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats(device)
-    t0 = time.perf_counter()
-    try:
+    with profiling(model, device) as cost_so_far:
         base = math.exp(_mean_loss(model, batches, device))
         rise: dict[str, list[list[float]]] = {k: [] for k in KINDS}
         for i, kind in enumerate(KINDS):
@@ -156,11 +138,7 @@ def profile_kv(model: nn.Module, batches: Iterable[torch.Tensor], bits_options: 
                         row.append(math.exp(_mean_loss(model, batches, device)) - base)
                 rise[kind].append(row)
         coverage = attention_coverage(model, batches, keep_ratios, device)
-    finally:
-        model.train(was_training)
-    cost = {"calibration_batches": len(batches), "calibration_tokens": sum(b.numel() for b in batches),
-            "wall_clock_s": time.perf_counter() - t0,
-            "peak_memory_gb": (torch.cuda.max_memory_allocated(device) / 1e9) if device.type == "cuda" else None}
+    cost = cost_so_far(len(batches), sum(b.numel() for b in batches))
     return KVProfile(bits_options=list(bits_options), key_dims=[k.out_features for k, _ in projs],
                      value_dims=[v.out_features for _, v in projs], key_rise=rise["key"],
                      value_rise=rise["value"], keep_ratios=list(keep_ratios), coverage=coverage, cost=cost,
@@ -176,23 +154,16 @@ class KVLayerPlan:
 
 
 @dataclass(frozen=True)
-class KVPlan:
+class KVPlan(JsonFile):
     layers: tuple[KVLayerPlan, ...]
     kind: str  # "uniform" | "sensitivity"
 
     def to_dict(self) -> dict[str, Any]:
         return {"kind": self.kind, "layers": [asdict(lp) for lp in self.layers]}
 
-    def save(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "KVPlan":
         return cls(tuple(KVLayerPlan(**lp) for lp in d["layers"]), d["kind"])
-
-    @classmethod
-    def load(cls, path: str | Path) -> "KVPlan":
-        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 def uniform_kv_plan(num_layers: int, bits: int) -> KVPlan:

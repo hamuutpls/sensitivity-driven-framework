@@ -53,7 +53,6 @@ class Method:
     calibrated: bool = False  # reads calibration batches (calibration settings join its cache key)
     simulated: bool = True  # numbers are rounded in place (FP16 storage): speed and file size are not real
     library: str = ""  # where the implementation comes from, for the feasibility table
-    notes: str = ""
 
 
 # ----------------------------------------------------------------------------------------------- baselines
@@ -101,44 +100,44 @@ _WEIGHT_PLANS = ("weights", "weights_same_size")
 
 METHODS: dict[str, Method] = {m.name: m for m in [
     # Stage 1: weights
+    # baseline; same rounding and pruning as the Stage 0 pruning-levels study
     Method("rtn", 1, "Round-to-nearest + magnitude pruning", _WEIGHT_PLANS, _rtn_weights,
-           params=("gptq_groupsize",), library="in repo (torch)", version=2,  # 2: integer zero point
-           notes="baseline; same rounding and pruning as the Stage 0 pruning-levels study"),
+           params=("gptq_groupsize",), library="in repo (torch)", version=2),  # 2: integer zero point
+    # per-layer bits from the plan; Hessian of layer inputs, column-by-column error feedback
     Method("gptq", 1, "GPTQ", _WEIGHT_PLANS, params=("gptq_groupsize",), calibrated=True,
-           library="in repo (torch), checked against gptqmodel",
-           notes="per-layer bits from the plan; Hessian of layer inputs, column-by-column error feedback"),
+           library="in repo (torch), checked against gptqmodel"),
     Method("awq", 1, "AWQ", _WEIGHT_PLANS, params=("gptq_groupsize",), calibrated=True,
-           library="in repo (torch); autoawq is deprecated", notes="activation-aware channel scaling, then RTN"),
+           library="in repo (torch); autoawq is deprecated"),  # activation-aware channel scaling, then RTN
     Method("structured_prune", 1, "Structured pruning", _WEIGHT_PLANS, calibrated=True,
-           library="in repo (torch) or torch-pruning", notes="removes whole channels; real speed and size gains"),
+           library="in repo (torch) or torch-pruning"),  # removes whole channels; real speed and size gains
     Method("unstructured_prune", 1, "Unstructured pruning (Wanda)", _WEIGHT_PLANS, calibrated=True,
-           library="in repo (torch)", notes="|w| x input norm per output row"),
-    Method("low_rank", 1, "Low-rank (SVD)", _WEIGHT_PLANS, library="in repo (torch)",
-           notes="rank chosen so each layer matches its planned size"),
+           library="in repo (torch)"),  # |w| x input norm per output row
+    # rank chosen so each layer matches its planned size
+    Method("low_rank", 1, "Low-rank (SVD)", _WEIGHT_PLANS, library="in repo (torch)"),
     # Stage 2: activations
     Method("rtn_act", 2, "Round-to-nearest activations", ("activations",), _rtn_activations,
-           library="in repo (torch)", notes="baseline; same rounding as the Stage 0 activation measurement"),
+           library="in repo (torch)"),  # baseline; same rounding as the Stage 0 activation measurement
     Method("smoothquant", 2, "SmoothQuant", ("activations",), params=("smoothquant_alpha",), calibrated=True,
-           library="in repo (torch)", notes="moves outliers from activations into weights"),
-    Method("quarot", 2, "QuaRot", ("activations",), library="in repo (torch Hadamard)",
-           notes="fast-hadamard-transform is a CUDA source build; a torch matmul Hadamard is fast enough at 1B"),
-    Method("rptq", 2, "RPTQ", ("activations",), calibrated=True, library="in repo (research code only)",
-           notes="reorder channels into clusters, one scale per cluster"),
-    Method("spinquant", 2, "SpinQuant", ("activations",), calibrated=True, library="in repo (research code only)",
-           notes="learned rotations: a short optimisation run, the most expensive Stage 2 method"),
+           library="in repo (torch)"),  # moves outliers from activations into weights
+    # fast-hadamard-transform is a CUDA source build; a torch matmul Hadamard is fast enough at 1B
+    Method("quarot", 2, "QuaRot", ("activations",), library="in repo (torch Hadamard)"),
+    # reorder channels into clusters, one scale per cluster
+    Method("rptq", 2, "RPTQ", ("activations",), calibrated=True, library="in repo (research code only)"),
+    # learned rotations: a short optimisation run, the most expensive Stage 2 method
+    Method("spinquant", 2, "SpinQuant", ("activations",), calibrated=True, library="in repo (research code only)"),
     # Stage 3: KV cache
-    Method("rtn_kv", 3, "Round-to-nearest KV cache", ("kv_bits_only",), _rtn_kv, library="in repo (torch)",
-           notes="baseline; same rounding as the Stage 0 KV measurement, no eviction"),
+    # baseline; same rounding as the Stage 0 KV measurement, no eviction
+    Method("rtn_kv", 3, "Round-to-nearest KV cache", ("kv_bits_only",), _rtn_kv, library="in repo (torch)"),
     Method("quarot_kv", 3, "QuaRot KV", ("kv_bits_only",), params=("quarot_k_bits",),
-           library="in repo (torch Hadamard)", notes="rotated keys/values, then rounding"),
-    Method("kvquant", 3, "KVQuant", ("kv_bits_only",), calibrated=True, library="in repo (research code only)",
-           notes="pre-RoPE per-channel keys, dense-and-sparse outliers"),
-    Method("h2o", 3, "H2O", ("kv",), library="in repo (attention hook)",
-           notes="keeps recent + heavy-hitter tokens; framework keeps each layer's planned share"),
-    Method("snapkv", 3, "SnapKV", ("kv",), library="in repo (attention hook)",
-           notes="picks tokens from an observation window at the end of the prompt"),
-    Method("infinigen", 3, "InfiniGen", ("kv",), library="research code only (custom offloading)",
-           notes="offloads the cache to CPU and prefetches; latency results depend on PCIe"),
+           library="in repo (torch Hadamard)"),  # rotated keys/values, then rounding
+    # pre-RoPE per-channel keys, dense-and-sparse outliers
+    Method("kvquant", 3, "KVQuant", ("kv_bits_only",), calibrated=True, library="in repo (research code only)"),
+    # keeps recent + heavy-hitter tokens; framework keeps each layer's planned share
+    Method("h2o", 3, "H2O", ("kv",), library="in repo (attention hook)"),
+    # picks tokens from an observation window at the end of the prompt
+    Method("snapkv", 3, "SnapKV", ("kv",), library="in repo (attention hook)"),
+    # offloads the cache to CPU and prefetches; latency results depend on PCIe
+    Method("infinigen", 3, "InfiniGen", ("kv",), library="research code only (custom offloading)"),
 ]}
 
 

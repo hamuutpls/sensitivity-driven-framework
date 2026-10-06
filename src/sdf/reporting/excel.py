@@ -39,6 +39,11 @@ def write_workbook(rep: "StageReporter", path: "Path") -> None:
     _records(wb.create_sheet("Per-layer"), rep.per_layer)
     _records(wb.create_sheet("Raw"), rep.raw)
     _charts(wb.create_sheet("Charts"), rep)
+    save_workbook(wb, path)
+
+
+def save_workbook(wb: Workbook, path: "Path") -> None:
+    """Save through a temporary file, so a crash never leaves half a workbook."""
     tmp = path.with_name(f".{path.name}.tmp")
     wb.save(tmp)
     tmp.replace(path)

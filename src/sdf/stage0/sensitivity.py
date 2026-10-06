@@ -24,20 +24,21 @@ can be computed once and reused by every trial (see SensitivityProfile.save / lo
 
 from __future__ import annotations
 
-import json
 import math
+import statistics
 import time
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field, fields
-from pathlib import Path
-from typing import Any, Iterable, Iterator
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterable, Iterator
 
 import torch
 from torch import nn
 
+from sdf.utils.cache import JsonFile
+
 
 @dataclass
-class SensitivityProfile:
+class SensitivityProfile(JsonFile):
     raw_scores: list[float]  # accumulated |g * w|, one per decoder layer (normalise with `normalize`)
     layer_numel: list[int] = field(default_factory=list)  # weights per decoder layer (Linear weights only)
     layer_rows: list[int] = field(default_factory=list)  # output channels per layer (for per-channel scales)
@@ -49,23 +50,6 @@ class SensitivityProfile:
     @property
     def num_layers(self) -> int:
         return len(self.raw_scores)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    def save(self, path: str | Path) -> None:
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "SensitivityProfile":
-        known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in d.items() if k in known})  # ignores keys from older versions
-
-    @classmethod
-    def load(cls, path: str | Path) -> "SensitivityProfile":
-        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 def find_decoder_layers(model: nn.Module) -> nn.ModuleList:
@@ -138,13 +122,10 @@ def outlier_layers(raw_scores: list[float], cutoff: float = 3.5) -> list[int]:
     Median and MAD (median absolute deviation) are used instead of mean and std so the outlier itself
     doesn't hide itself by inflating the spread. 3.5 is the usual cutoff (Iglewicz and Hoaglin).
     """
-    n = len(raw_scores)
-    if n < 3:
+    if len(raw_scores) < 3:
         return []
-    ordered = sorted(raw_scores)
-    median = ordered[n // 2] if n % 2 else (ordered[n // 2 - 1] + ordered[n // 2]) / 2
-    dev = sorted(abs(s - median) for s in raw_scores)
-    mad = dev[n // 2] if n % 2 else (dev[n // 2 - 1] + dev[n // 2]) / 2
+    median = statistics.median(raw_scores)
+    mad = statistics.median(abs(s - median) for s in raw_scores)
     if mad == 0:
         return [i for i, s in enumerate(raw_scores) if s != median]
     return [i for i, s in enumerate(raw_scores) if abs(s - median) / (1.4826 * mad) > cutoff]
@@ -231,55 +212,49 @@ def profile_sensitivity(
     moves = [torch.zeros_like(o, dtype=torch.float32) for o in originals] if method == "movement" else None
     diag = [torch.zeros_like(o, dtype=torch.float32) for o in originals] if method == "hessian" else None
 
-    was_training = model.training
-    model.eval()
-    if device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats(device)
-
     def backward(input_ids: torch.Tensor) -> None:
         model.zero_grad(set_to_none=True)
         model(input_ids=input_ids, labels=input_ids).loss.backward()
 
     raw = torch.zeros(len(layers), dtype=torch.float64)
     n_batches = n_tokens = 0
-    t0 = time.perf_counter()
-    try:
-        for b, input_ids in enumerate(batches):
-            input_ids = input_ids.to(device)
-            backward(input_ids)
-            per = torch.zeros(len(layers), dtype=torch.float64)
-            if method == "hessian":
-                _hessian_probes(flat, backward, input_ids, originals, diag, hessian_probes, hessian_eps, seed, b)
-            with torch.no_grad():
-                for j, (i, p) in enumerate(flat):
-                    if p.grad is None or method == "hessian":
-                        continue
-                    g = p.grad.float()
-                    gw = g * p.float()
-                    if method == "grad_x_weight":
-                        per[i] += gw.abs().sum().item()
-                    elif method == "fisher":
-                        per[i] += 0.5 * gw.pow(2).sum().item()
-                    elif method == "taylor_ema":
-                        per[i] += gw.sum().item()
-                    else:  # movement: accumulate -g w per weight, then take an SGD step
-                        moves[j] -= gw.cpu()
-                        p.sub_((movement_lr * g).to(p.dtype))
-            if method == "taylor_ema":
-                raw = per.abs() if b == 0 else ema_beta * raw + (1 - ema_beta) * per.abs()
-            else:
-                raw += per
-            n_batches += 1
-            n_tokens += input_ids.numel()
-    finally:
-        model.zero_grad(set_to_none=True)
-        if originals is not None:
-            with torch.no_grad():
-                for (_, p), o in zip(flat, originals):
-                    p.copy_(o.to(p.device))
-        for p in model.parameters():
-            p.requires_grad_(saved_flags[id(p)])
-        model.train(was_training)
+    with profiling(model, device) as cost_so_far:
+        try:
+            for b, input_ids in enumerate(batches):
+                input_ids = input_ids.to(device)
+                backward(input_ids)
+                per = torch.zeros(len(layers), dtype=torch.float64)
+                if method == "hessian":
+                    _hessian_probes(flat, backward, input_ids, originals, diag, hessian_probes, hessian_eps, seed, b)
+                with torch.no_grad():
+                    for j, (i, p) in enumerate(flat):
+                        if p.grad is None or method == "hessian":
+                            continue
+                        g = p.grad.float()
+                        gw = g * p.float()
+                        if method == "grad_x_weight":
+                            per[i] += gw.abs().sum().item()
+                        elif method == "fisher":
+                            per[i] += 0.5 * gw.pow(2).sum().item()
+                        elif method == "taylor_ema":
+                            per[i] += gw.sum().item()
+                        else:  # movement: accumulate -g w per weight, then take an SGD step
+                            moves[j] -= gw.cpu()
+                            p.sub_((movement_lr * g).to(p.dtype))
+                if method == "taylor_ema":
+                    raw = per.abs() if b == 0 else ema_beta * raw + (1 - ema_beta) * per.abs()
+                else:
+                    raw += per
+                n_batches += 1
+                n_tokens += input_ids.numel()
+        finally:
+            model.zero_grad(set_to_none=True)
+            if originals is not None:
+                with torch.no_grad():
+                    for (_, p), o in zip(flat, originals):
+                        p.copy_(o.to(p.device))
+            for p in model.parameters():
+                p.requires_grad_(saved_flags[id(p)])
 
     if n_batches == 0:
         raise ValueError("no calibration batches given")
@@ -296,12 +271,7 @@ def profile_sensitivity(
     if not torch.isfinite(raw).all():
         raise FloatingPointError("non-finite sensitivity scores; profile in float32 (stage0.profile_dtype)")
 
-    cost: dict[str, Any] = {
-        "calibration_batches": n_batches,
-        "calibration_tokens": n_tokens,
-        "wall_clock_s": time.perf_counter() - t0,
-        "peak_memory_gb": (torch.cuda.max_memory_allocated(device) / 1e9) if device.type == "cuda" else None,
-    }
+    cost = cost_so_far(n_batches, n_tokens)
     numel, rows, other = layer_shapes(model)
     return SensitivityProfile(
         raw_scores=raw.tolist(),
@@ -396,6 +366,26 @@ def _mean_loss(model: nn.Module, batches: list[torch.Tensor], device: torch.devi
     return sum(losses) / len(losses)
 
 
+@contextmanager
+def profiling(model: nn.Module, device: torch.device) -> Iterator[Callable[[int, int], dict[str, Any]]]:
+    """Eval mode, a fresh peak-memory count and a timer; yields `cost(batches, tokens)` -> the profile's cost."""
+    was_training = model.training
+    model.eval()
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    t0 = time.perf_counter()
+
+    def cost(n_batches: int, n_tokens: int) -> dict[str, Any]:
+        return {"calibration_batches": n_batches, "calibration_tokens": n_tokens,
+                "wall_clock_s": time.perf_counter() - t0,
+                "peak_memory_gb": (torch.cuda.max_memory_allocated(device) / 1e9) if device.type == "cuda" else None}
+
+    try:
+        yield cost
+    finally:
+        model.train(was_training)
+
+
 def profile_by_ablation(
     model: nn.Module,
     batches: Iterable[torch.Tensor],
@@ -416,30 +406,18 @@ def profile_by_ablation(
     if not batches:
         raise ValueError("no calibration batches given")
     layers = find_decoder_layers(model)
-    was_training = model.training
-    model.eval()
-    if device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats(device)
-    t0 = time.perf_counter()
-    try:
+    with profiling(model, device) as cost_so_far:
         base = math.exp(_mean_loss(model, batches, device))
         layer_ppl = []
         for layer in layers:
             change = skip_layer(layer) if method == "layer_removal" else quantize_layer(layer, bits, group_size, int_zero)
             with change:
                 layer_ppl.append(math.exp(_mean_loss(model, batches, device)))
-    finally:
-        model.train(was_training)
     if not all(math.isfinite(p) for p in layer_ppl):
         # removing a layer can blow perplexity up; cap it so the ranking still works
         layer_ppl = [p if math.isfinite(p) else float(torch.finfo(torch.float64).max) for p in layer_ppl]
     numel, rows, other = layer_shapes(model)
-    cost = {
-        "calibration_batches": len(batches),
-        "calibration_tokens": sum(b.numel() for b in batches),
-        "wall_clock_s": time.perf_counter() - t0,
-        "peak_memory_gb": (torch.cuda.max_memory_allocated(device) / 1e9) if device.type == "cuda" else None,
-    }
+    cost = cost_so_far(len(batches), sum(b.numel() for b in batches))
     return SensitivityProfile(
         raw_scores=[p - base for p in layer_ppl], layer_numel=numel, layer_rows=rows, other_numel=other,
         method=method, cost=cost,

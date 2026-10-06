@@ -138,13 +138,7 @@ def _plain_part(rep: "StageReporter") -> list[str]:
               "All versions were tested under exactly the same conditions (same data, same computer, same "
               "settings), so differences come from the method alone. A dash means the measure is not available "
               "at this stage.", ""]
-    headers = ["Version"]
-    for m in metrics:
-        spec = METRICS[m]
-        bits = [spec.unit] if spec.unit else []
-        if spec.better:
-            bits.append(f"{spec.better} is better")
-        headers.append(_cap(spec.plain or spec.label) + (f" ({', '.join(bits)})" if bits else ""))
+    headers = ["Version"] + [_headline(METRICS[m]) for m in metrics]
     table = [[r.plain_name] + [_value(r.metrics.get(m), None) if m in r.metrics else "–" for m in metrics]
              for r in ok]
     lines += [_table(headers, table), ""]
@@ -271,14 +265,17 @@ def _technical_part(rep: "StageReporter") -> list[str]:
     return lines
 
 
-def _technical_note(m: str) -> str:
-    spec = METRICS.get(m)
-    if spec is None:
-        return ""
+def _headline(spec: MetricSpec) -> str:
+    """Plain name with "(unit, lower is better)"."""
     bits = [spec.unit] if spec.unit else []
     if spec.better:
         bits.append(f"{spec.better} is better")
-    return _cap(spec.plain or spec.label) + (f" ({', '.join(bits)})" if bits else "") + "."
+    return _cap(spec.plain or spec.label) + (f" ({', '.join(bits)})" if bits else "")
+
+
+def _technical_note(m: str) -> str:
+    spec = METRICS.get(m)
+    return "" if spec is None else _headline(spec) + "."
 
 
 def write_report(rep: "StageReporter", path: "Path") -> None:
