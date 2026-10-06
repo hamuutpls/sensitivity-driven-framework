@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -119,9 +120,11 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
         tokenizer.save_pretrained(d / "hf")
         gguf = d / "f16.gguf"
         _run([sys.executable, cfg.llamacpp_convert, d / "hf", "--outtype", "f16", "--outfile", gguf])
+        shutil.rmtree(d / "hf")  # each copy is model-sized; keep at most two on disk
         if plan is not None and any(lp.bit_width < baseline_bits for lp in plan.layers):
             opts, ftype = quantize_args(plan, baseline_bits)
             _run([_exe(cfg, "llama-quantize"), *opts, gguf, d / "q.gguf", ftype])
+            gguf.unlink()
             gguf = d / "q.gguf"
         out = {"llamacpp_size_gb": gguf.stat().st_size / 1e9, **_bench(cfg, gguf)}
         for name, w in (("val", val), ("heldout", held)):
