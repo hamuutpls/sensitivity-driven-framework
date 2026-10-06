@@ -5,8 +5,25 @@
 - Eager HF decode of a 1B model is mostly Python and kernel-launch overhead (32.8 ms/token on the host PC), so it
   said nothing about compression. `eval.latency_mode = "cuda_graph"` (default) runs prefill and each decode step
   from a fixed-size KV cache and replays them as CUDA graphs. If capture fails (e.g. a method's hook syncs with
-  the CPU) it times eagerly; each raw latency record has `mode`. `"eager"` times the same loop without graphs. The setting is in
-  the FP16 cache key, so cached baselines are re-measured.
+  the CPU) it times eagerly; each raw latency record has `mode`. `"eager"` times the same loop without
+  graphs. The setting is in the FP16 cache key, so cached baselines are re-measured.
+
+## 2026-10-06: Stage 1 pruning and low-rank methods
+
+- `unstructured_prune` (Wanda: |w| x input norm per output row), `structured_prune` (whole feed-forward channels,
+  found by shape, lowest input norm x output-column norm first) and `low_rank` (activation-aware SVD, rank keeping
+  1 - planned share of each layer's numbers). Each then rounds to the planned bits.
+- Their standard version removes `prune_ratio_aggressive` from every layer (Method.prunes), since removing nothing
+  would just be RTN. All six Stage 1 methods are the default.
+- The plan's predicted size assumes a bitmask for removed numbers; structured and low-rank need none, so their
+  real size is slightly smaller than predicted (Stage 4 measures it).
+
+## 2026-10-06: Stage 1 GPTQ and AWQ
+
+- `gptq` and `awq` (src/sdf/stages/weights.py), plain torch, layer by layer with inputs from the already-compressed
+  layers before. Both use the round-to-nearest grid, follow each layer's planned bits, and keep the plan's pruned
+  weights at 0 (GPTQ feeds their error back, as SparseGPT does). AWQ has no weight-clipping search yet.
+- Default Stage 1 methods: rtn, gptq, awq.
 
 ## 2026-10-05: "Nothing removed" is a benchmark, not a plan for later stages
 
