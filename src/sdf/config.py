@@ -140,7 +140,8 @@ class StagesConfig:
     """Stages 1-3 (sdf.stages.runner). Method names are keys of sdf.stages.methods.METHODS."""
 
     stage0_dir: str | None = None  # a finished run's stage_0/ folder; None = run Stage 0 first, in the same run
-    stage1_methods: list[str] = field(default_factory=lambda: ["rtn", "gptq", "awq"])
+    stage1_methods: list[str] = field(default_factory=lambda: ["rtn", "gptq", "awq", "unstructured_prune",
+                                                                  "structured_prune", "low_rank"])
     stage2_methods: list[str] = field(default_factory=lambda: ["rtn_act"])
     stage3_methods: list[str] = field(default_factory=lambda: ["rtn_kv"])
 

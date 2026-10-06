@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-06: Stage 1 pruning and low-rank methods
+
+- `unstructured_prune` (Wanda: |w| x input norm per output row), `structured_prune` (whole feed-forward channels,
+  found by shape, lowest input norm x output-column norm first) and `low_rank` (activation-aware SVD, rank keeping
+  1 - planned share of each layer's numbers). Each then rounds to the planned bits.
+- Their standard version removes `prune_ratio_aggressive` from every layer (Method.prunes), since removing nothing
+  would just be RTN. All six Stage 1 methods are the default.
+- The plan's predicted size assumes a bitmask for removed numbers; structured and low-rank need none, so their
+  real size is slightly smaller than predicted (Stage 4 measures it).
+
 ## 2026-10-06: Stage 1 GPTQ and AWQ
 
 - `gptq` and `awq` (src/sdf/stages/weights.py), plain torch, layer by layer with inputs from the already-compressed

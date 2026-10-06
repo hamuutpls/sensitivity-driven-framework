@@ -6,7 +6,7 @@ compression, applied to TinyLlama-1.1B-Chat.
 | Stage | What it does | Status |
 |---|---|---|
 | 0 | Per-layer sensitivity profiling, then a bit-width / pruning plan | implemented |
-| 1 | Weight compression (GPTQ, AWQ, structured / unstructured / low-rank pruning) | GPTQ, AWQ done |
+| 1 | Weight compression (GPTQ, AWQ, structured / unstructured / low-rank pruning) | done (simulated) |
 | 2 | Activation compression (SmoothQuant, QuaRot, RPTQ, SpinQuant) | todo |
 | 3 | KV-cache compression (QuaRot KV, KVQuant, H2O, SnapKV, InfiniGen) | todo |
 | 4 | Evaluation across backends (HF Transformers, llama.cpp, vLLM, TensorRT-LLM) | todo |
