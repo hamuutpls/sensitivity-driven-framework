@@ -85,9 +85,21 @@ def _graphed(fn: Callable[[], torch.Tensor], reset: Callable[[], None]) -> Calla
     return replay
 
 
-@torch.no_grad()
 def measure_latency(model: nn.Module, cfg: EvalConfig, device: torch.device, vocab_size: int,
                     seed: int = 0) -> list[dict[str, Any]]:
+    """`_time_latency` with deterministic algorithms off: the run's deterministic mode (sdf.utils.seed) picks slower
+    kernels (+0.9 ms/token decode on the host PC) and timing needs no bit-reproducibility."""
+    on, warn_only = torch.are_deterministic_algorithms_enabled(), torch.is_deterministic_algorithms_warn_only_enabled()
+    torch.use_deterministic_algorithms(False)
+    try:
+        return _time_latency(model, cfg, device, vocab_size, seed)
+    finally:
+        torch.use_deterministic_algorithms(on, warn_only=warn_only)
+
+
+@torch.no_grad()
+def _time_latency(model: nn.Module, cfg: EvalConfig, device: torch.device, vocab_size: int,
+                  seed: int = 0) -> list[dict[str, Any]]:
     """Time prefill of a `latency_prompt_len` prompt and `latency_decode_tokens` greedy decode steps.
 
     With `latency_mode="cuda_graph"` on a GPU, prefill and one decode step are each captured once as a CUDA graph
