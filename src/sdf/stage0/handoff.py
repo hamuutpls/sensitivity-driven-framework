@@ -257,7 +257,7 @@ def write_handoff(
               f"{'' if ev.max_windows is None else f' (first {ev.max_windows})'}, first half for validation and "
               f"second half held out (never tuned on); latency with a {ev.latency_prompt_len}-token prompt and "
               f"{ev.latency_decode_tokens} generated tokens, {ev.latency_warmup} warm-up and {ev.latency_repeats} "
-              f"timed repeats; seed {cfg.run.seed}; backend HF Transformers.", ""]
+              f"timed repeats ({ev.latency_mode.replace('_', ' ')} timing); seed {cfg.run.seed}; backend HF Transformers.", ""]
 
     # ---- search -------------------------------------------------------------------------------------------
     rows = [[p.name, p.stage, _n(candidate.get(p.name)),

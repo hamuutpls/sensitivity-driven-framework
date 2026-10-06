@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-06: Latency measures the GPU, not Python
+
+- Eager HF decode of a 1B model is mostly Python and kernel-launch overhead (32.8 ms/token on the host PC), so it
+  said nothing about compression. `eval.latency_mode = "cuda_graph"` (default) runs prefill and each decode step
+  from a fixed-size KV cache and replays them as CUDA graphs. If capture fails (e.g. a method's hook syncs with
+  the CPU) it times eagerly; each raw latency record has `mode`. `"eager"` times the same loop without
+  graphs. The setting is in the FP16 cache key, so cached baselines are re-measured.
+
 ## 2026-10-06: Stage 1 pruning and low-rank methods
 
 - `unstructured_prune` (Wanda: |w| x input norm per output row), `structured_prune` (whole feed-forward channels,
