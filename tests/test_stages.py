@@ -187,3 +187,58 @@ def test_awq_scales_toward_large_activations():
     for k, m in toy.model.layers[0].items():
         err = lambda q: ((x @ (w[k] - q).T) ** 2).mean()
         assert err(m.weight.data) < err(round_to_nearest(w[k], 3, 16, int_zero=True))
+
+
+def test_llama_cpp_helpers():
+    from sdf.stage0.planner import uniform_plan
+    from sdf.stages.llama_cpp import parse_bench, parse_perplexity, tensor_type_args
+
+    plan = uniform_plan([0.1, 0.2, 0.3], 4, 0.0)
+    plan = type(plan)(tuple(lp if lp.layer != 1 else type(lp)(1, 8, 0.0, True, 0.2) for lp in plan.layers),
+                      "t", None, 0.0)
+    assert tensor_type_args(plan) == ["--tensor-type", r"blk\.(0|2)\.=q4_k", "--tensor-type", r"blk\.(1)\.=q8_0"]
+    log_text = ("load_tensors:        CUDA0 model buffer size =   600.00 MiB\n"
+                "llama_kv_cache:        CUDA0 KV buffer size =    24.00 MiB\nFinal estimate: PPL = 9.8765 +/- 0.1")
+    ppl, gb = parse_perplexity(log_text)
+    assert ppl == 9.8765 and abs(gb - 624 * 2 ** 20 / 1e9) < 1e-9
+    m = parse_bench([{"n_prompt": 128, "n_gen": 0, "avg_ts": 4000.0, "stddev_ts": 40.0},
+                     {"n_prompt": 0, "n_gen": 64, "avg_ts": 200.0, "stddev_ts": 2.0}])
+    assert m["prefill_ms_mean"] == 32.0 and m["decode_ms_per_token_mean"] == 5.0 and m["decode_tokens_per_s"] == 200
+
+
+class FakeBackend:
+    name, label, version, notes = "fake", "Fake runtime", "v1", ["a note"]
+    key = {"backend": "fake"}
+
+    def __init__(self):
+        self.plans = []
+
+    def measure(self, model, plan, windows, tokenizer):
+        self.plans.append(plan)
+        bits = 16 if plan is None else sum(lp.bit_width for lp in plan.layers) / len(plan.layers)
+        return {"ppl_val": 10 + 16 / bits, "ppl_heldout": 11.0, "model_size_gb": bits / 16,
+                "decode_tokens_per_s": 100.0}, [{"measurement": "x", "value": 1}]
+
+
+def test_stage4_rebuilds_stage1_rows_on_a_backend(stage0_dir, tiny_llama, tokenizer, small_cfg):
+    cfg = small_cfg.with_overrides({"stages.stage1_methods": ["rtn"], "stages.stage2_methods": [],
+                                    "stages.stage3_methods": [], "stages.stage4_backends": ["fake"]})
+    ctx = start_run(cfg)
+    fake = FakeBackend()
+    kwargs = dict(model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
+    out = run_stages(ctx, SEARCH_SPACE.make({"calib_samples": 16}), stage0_dir, backends={"fake": fake}, **kwargs)
+    assert "stage_4_fake_json" in out and out["stage_4_fake_report"].parent.name == "stage_4"
+    res = json.loads(out["stage_4_fake_json"].read_text())
+    assert res["stage"] == 4 and "Fake runtime" in res["title"]
+    rows = {f"{r['method']}/{r['variant']}": r for r in res["rows"]}
+    assert all(r["status"] == "ok" for r in rows.values()), rows
+    assert rows["rtn/original"]["metrics"]["model_size_gb"] < rows["baseline/fp16"]["metrics"]["model_size_gb"]
+    assert fake.plans[0] is None  # FP16 row: no plan
+    # FP16 and original rows are cached per backend: a rerun measures only the framework rows
+    n = len(fake.plans)
+    run_stage(ctx, 1, ["rtn"], SEARCH_SPACE.make({"calib_samples": 16}), stage0_dir, backend=fake, **kwargs)
+    assert len(fake.plans) == n + 2
+    # a backend that cannot start is logged and skipped; stages 1-3 are kept
+    cfg2 = cfg.with_overrides({"stages.stage4_backends": ["llama_cpp"]})
+    out2 = run_stages(start_run(cfg2), SEARCH_SPACE.make({"calib_samples": 16}), stage0_dir, **kwargs)
+    assert "stage_1_json" in out2 and not any(k.startswith("stage_4") for k in out2)

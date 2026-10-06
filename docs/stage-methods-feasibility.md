@@ -60,9 +60,9 @@ Until a method is written, `main.py` (MODE `"stages"`) lists it as a failed row 
 | Downstream tasks | `lm-eval` 0.4.13 (pure Python) | yes | yes |
 | Search | `optuna` 5.0.0 (pure Python), `pymoo` 0.6.2 (Windows wheels) | yes | yes |
 
-Open points for Stage 4 (decide when we get there):
+Stage 4 llama.cpp is **done** (`src/sdf/stages/llama_cpp.py`): it gets the same WikiText-2 windows as text, and
+its perplexity is reported as a separate, labelled measurement (it scores the second half of each window only).
 
-- llama.cpp's own perplexity tool cuts the text into windows its own way; to keep conditions identical, feed it the
-  same WikiText-2 windows (same tokenizer) or report it as a separate, labelled measurement.
+Open points for Stage 4:
 - `bitsandbytes` 0.50.2 has Windows wheels and stores 4/8-bit weights for real in HF Transformers, which would give
   a real file size and memory on the PC before the other backends are set up.

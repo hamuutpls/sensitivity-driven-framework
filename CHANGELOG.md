@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-06: Stage 4 on llama.cpp
+
+- `STAGE4_BACKENDS = ["llama_cpp"]` rebuilds every Stage 1 row (FP16, original, framework plans), saves it as a GGUF
+  file with each layer's planned bits (q8_0 / q4_k / q3_k ..., `--pure`, embeddings and output FP16) and measures
+  with the llama.cpp release programs: real file size, GPU buffers, perplexity on the same validation / held-out
+  text, prompt and writing speed (llama-bench, warmup + repeats). Output: stage_4/. FP16 and original rows are
+  cached per llama.cpp version. A backend that cannot start is logged and skipped; stages 1-3 are kept.
+- `run_stage(..., backend=...)` is the hook for later backends (vLLM, TensorRT-LLM).
+
 ## 2026-10-06: Stage 1 GPTQ and AWQ
 
 - `gptq` and `awq` (src/sdf/stages/weights.py), plain torch, layer by layer with inputs from the already-compressed

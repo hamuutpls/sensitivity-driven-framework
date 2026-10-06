@@ -137,12 +137,17 @@ class Stage0Config:
 
 @dataclass
 class StagesConfig:
-    """Stages 1-3 (sdf.stages.runner). Method names are keys of sdf.stages.methods.METHODS."""
+    """Stages 1-4 (sdf.stages.runner). Method names are keys of sdf.stages.methods.METHODS."""
 
     stage0_dir: str | None = None  # a finished run's stage_0/ folder; None = run Stage 0 first, in the same run
     stage1_methods: list[str] = field(default_factory=lambda: ["rtn", "gptq", "awq"])
     stage2_methods: list[str] = field(default_factory=lambda: ["rtn_act"])
     stage3_methods: list[str] = field(default_factory=lambda: ["rtn_kv"])
+    # Stage 4: the Stage 1 rows rebuilt and measured on these backends ("llama_cpp"); [] = Stage 4 not run.
+    stage4_backends: list[str] = field(default_factory=list)
+    llama_cpp_dir: str | None = None  # folder of the unpacked llama.cpp release (llama-quantize, -perplexity, -bench)
+    llama_cpp_convert: str | None = None  # llama.cpp's convert_hf_to_gguf.py (from its source)
+    llama_cpp_gpu_layers: int = 99  # layers on the GPU (99 = all)
 
 
 @dataclass

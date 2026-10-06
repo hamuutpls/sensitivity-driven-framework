@@ -12,7 +12,7 @@ MODE = "single"  # "single": one Stage 0 run with the settings in section 2
 #                  "compare_scores": measure sensitivity every way (section 3) and compare how they rank layers
 #                  "prune_sweep": really prune at every level in section 6 and measure the error (standard vs framework, and the fair same-size test)
 #                  "threshold_sweep": build and measure the plan at every protection threshold and guard size in section 6
-#                  "stages": Stages 1-3 with the methods in section 7, on top of a Stage 0 plan
+#                  "stages": Stages 1-3 with the methods in section 7, on top of a Stage 0 plan, then Stage 4
 
 MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 OUTPUT_ROOT = "thesis_compression/results"  # local folder, relative to where you run; results/<run_id>/stage_0/
@@ -107,7 +107,7 @@ THRESHOLD_SWEEP = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]  # MODE "thresho
 GUARD_SWEEP = [0, 3, 5, 8]  # MODE "threshold_sweep": never-pruned layer counts to measure with each threshold
 
 # =====================================================================================================
-# 7. Stages 1-3 (MODE = "stages"). Each stage starts from the uncompressed model and follows the Stage 0 plan.
+# 7. Stages 1-4 (MODE = "stages"). Each stage starts from the uncompressed model and follows the Stage 0 plan.
 #    Methods: src/sdf/stages/methods.py. Not-yet-written methods show up as failed rows that say so.
 # =====================================================================================================
 STAGE0_DIR = None  # a finished run's stage_0 folder, e.g. "thesis_compression/results/<run_id>/stage_0";
@@ -117,6 +117,10 @@ STAGE2_METHODS = ["rtn_act"]  # activations: rtn_act | smoothquant | quarot | rp
 STAGE3_METHODS = ["rtn_kv"]  # KV cache: rtn_kv | quarot_kv | kvquant | h2o | snapkv | infinigen
 SMOOTHQUANT_ALPHA = 0.5  # 0.0-1.0: how much of the activation outliers SmoothQuant moves into the weights
 QUAROT_K_BITS = 4  # 2 | 3 | 4 | 8: key bits for QuaRot KV (standard method)
+# Stage 4: the Stage 1 models saved and measured on real backends (file size, GPU memory, speed, perplexity).
+STAGE4_BACKENDS = []  # [] = skip; ["llama_cpp"] needs the two paths below
+LLAMA_CPP_DIR = None  # unpacked llama.cpp release with llama-quantize, llama-perplexity, llama-bench (CUDA build)
+LLAMA_CPP_CONVERT = None  # convert_hf_to_gguf.py from the llama.cpp source (same version as the release)
 
 
 # =====================================================================================================
@@ -137,6 +141,9 @@ def build_config():
         "stages.stage1_methods": STAGE1_METHODS,
         "stages.stage2_methods": STAGE2_METHODS,
         "stages.stage3_methods": STAGE3_METHODS,
+        "stages.stage4_backends": STAGE4_BACKENDS,
+        "stages.llama_cpp_dir": LLAMA_CPP_DIR,
+        "stages.llama_cpp_convert": LLAMA_CPP_CONVERT,
         "stage0.score": SENSITIVITY_SCORE,
         "stage0.normalization": NORMALIZATION,
         "stage0.protected_bits": PROTECTED_BITS,

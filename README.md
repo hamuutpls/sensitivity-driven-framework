@@ -9,7 +9,7 @@ compression, applied to TinyLlama-1.1B-Chat.
 | 1 | Weight compression (GPTQ, AWQ, structured / unstructured / low-rank pruning) | GPTQ, AWQ done |
 | 2 | Activation compression (SmoothQuant, QuaRot, RPTQ, SpinQuant) | todo |
 | 3 | KV-cache compression (QuaRot KV, KVQuant, H2O, SnapKV, InfiniGen) | todo |
-| 4 | Evaluation across backends (HF Transformers, llama.cpp, vLLM, TensorRT-LLM) | todo |
+| 4 | Evaluation across backends (HF Transformers, llama.cpp, vLLM, TensorRT-LLM) | HF, llama.cpp done |
 | Search | MOBO (Optuna), MFBO (successive halving), NSGA-III (pymoo), benchmarked against each other | todo |
 
 Every stage compares, under identical conditions, three variants of each method: the **FP16** baseline, the

@@ -253,7 +253,7 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 
 | ID | Requirement | Pri | Status | Ver | Source | Design |
 |---|---|---|---|---|---|---|
-| S4-01 | Stage 4 shall evaluate compressed models on HF Transformers, llama.cpp, vLLM and TensorRT-LLM. | M | Partial (HF measurement exists) | T | SPEC | SDD §9 |
+| S4-01 | Stage 4 shall evaluate compressed models on HF Transformers, llama.cpp, vLLM and TensorRT-LLM. | M | Partial (HF, llama.cpp) | T | SPEC | SDD §9 |
 | S4-02 | Each backend shall report the same metrics (MET-01 to MET-08) under the same conditions. | M | Planned | T | SPEC | SDD §9 |
 | S4-03 | A backend that cannot load a format shall be recorded as unsupported for that row, not crash the stage. | M | Planned | T | SPEC (error capture) | SDD §9 |
 

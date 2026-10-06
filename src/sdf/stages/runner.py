@@ -54,7 +54,7 @@ _PLAN_ROWS = {
         "layers as fit in that budget, so the two can be compared fairly, size for size."),
 }
 
-TITLES = {1: "Weight compression", 2: "Activation compression", 3: "KV-cache compression"}
+TITLES = {1: "Weight compression", 2: "Activation compression", 3: "KV-cache compression", 4: "Evaluation on {}"}
 
 MAIN_METRICS = {
     1: ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "avg_bits_per_weight", "sparsity", "peak_memory_gb",
@@ -63,6 +63,8 @@ MAIN_METRICS = {
         "decode_ms_per_token_mean", "build_time_s"],
     3: ["ppl_val", "ppl_heldout", "predicted_kv_memory_gb", "avg_kv_bits", "kv_kept_share", "peak_memory_gb",
         "prefill_ms_mean", "decode_ms_per_token_mean", "build_time_s"],
+    4: ["ppl_val", "ppl_heldout", "model_size_gb", "predicted_weight_memory_gb", "peak_memory_gb",
+        "prefill_tokens_per_s", "decode_tokens_per_s", "build_time_s"],
 }
 
 INTROS = {
@@ -77,6 +79,10 @@ INTROS = {
        "notes can take more memory than the model itself. This stage stores the notes with fewer bits or forgets "
        "the least-used ones. The standard way treats every layer the same; the framework follows the Stage 0 "
        "plan for each layer.",
+    4: "The earlier stages measure accuracy inside the research software, where compressed numbers are only "
+       "simulated. This stage saves each Stage 1 model in the format of {}, a program people use to run models "
+       "on their own computers, and measures there what a user would get: the real file size, the memory used "
+       "on the graphics card, accuracy, and how fast it reads a prompt and writes a reply.",
 }
 
 
@@ -168,11 +174,16 @@ def run_stage(
     tokenizer=None,
     text_loader: Callable[[str, str], list[str]] | None = None,
     measure_fp16: bool = True,
+    backend=None,
 ) -> dict[str, Path]:
     """Run one of Stages 1-3 with `method_names` (see sdf.stages.methods.METHODS). `model_factory` returns a
-    fresh FP16 model on the right device (default: from_pretrained); tests pass a tiny model's deepcopy."""
-    if stage not in TITLES:
-        raise ValueError(f"run_stage runs Stages 1-3, not {stage}")
+    fresh FP16 model on the right device (default: from_pretrained); tests pass a tiny model's deepcopy.
+
+    With a Stage 4 `backend` (e.g. llama_cpp.LlamaCpp) the same rows are built and measured on that backend
+    instead of HF Transformers, and reported as Stage 4 (stage_4/)."""
+    if stage not in (1, 2, 3) or (backend is not None and stage != 1):
+        raise ValueError(f"run_stage runs Stages 1-3 (Stage 4 backends: Stage 1 rows), not {stage}")
+    report_stage = 4 if backend else stage
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
     methods = methods_for(stage, method_names)
     plans = Stage0Plans.load(stage0_dir)
@@ -186,16 +197,21 @@ def run_stage(
     handle.factory = model_factory  # an FP16 cache miss builds the model like every row
 
     calib = (f"{candidate['calib_dataset']}, {candidate['calib_samples']} x {cfg.calibration.seq_len} tokens")
+    label = backend.label if backend else "HF Transformers"
+    conditions = {"model": cfg.model.name, "calibration": calib, "seed": cfg.run.seed,
+                  "evaluation data": f"wikitext-2 test, {cfg.eval.seq_len}-token windows, validation/held-out halves",
+                  "device": str(device), "backend": label, "Stage 0 plans": str(plans.dir),
+                  "starting point": "the uncompressed model, for every row (stages are independent)"}
+    if backend:
+        conditions |= {"backend version": backend.version, "methods": "Stage 1 rows, rebuilt the same way"}
     rep = stage_reporter(
         ctx, candidate, handle, plans.profile, ("stages", "stage0", "calibration", "eval", "model", "run"),
-        stage=stage, title=TITLES[stage],
-        conditions={"model": cfg.model.name, "calibration": calib, "seed": cfg.run.seed,
-                    "evaluation data": f"wikitext-2 test, {cfg.eval.seq_len}-token windows, validation/held-out halves",
-                    "device": str(device), "backend": "HF Transformers", "Stage 0 plans": str(plans.dir),
-                    "starting point": "the uncompressed model, for every row (stages are independent)"},
-        main_metrics=MAIN_METRICS[stage],
+        stage=report_stage, title=TITLES[report_stage].format(label), conditions=conditions,
+        main_metrics=MAIN_METRICS[report_stage],
     )
-    rep.plain_intro = INTROS[stage]
+    rep.plain_intro = INTROS[report_stage].format(label)
+    if backend:
+        rep.plain_why += backend.notes
 
     # Evaluation windows and calibration batches: built once, identical for every row.
     @functools.cache
@@ -212,7 +228,7 @@ def run_stage(
 
     def tasks(model: nn.Module) -> dict[str, float]:
         ev = cfg.eval
-        if not ev.downstream_tasks:
+        if not ev.downstream_tasks or backend:  # lm-eval runs the HF model only
             return {}
         return downstream.downstream_accuracy(model, handle.tokenizer, ev.downstream_tasks, ev.downstream_limit,
                                               ev.downstream_batch_size, cfg.run.seed)
@@ -223,15 +239,17 @@ def run_stage(
             t0 = time.perf_counter()
             with method.apply(MethodCall(model, plan, candidate, cfg, batches)) as extra:
                 build_s = time.perf_counter() - t0
-                val, held = windows()
-                metrics, raw = measure_model(model, val, held, cfg.eval, device, seed=cfg.run.seed)
+                if backend:
+                    metrics, raw = backend.measure(model, plan, windows(), handle.tokenizer)
+                else:
+                    metrics, raw = measure_model(model, *windows(), cfg.eval, device, seed=cfg.run.seed)
                 metrics.update(tasks(model))
         finally:
             del model
             _free_memory()
         metrics.update(extra)
         metrics["build_time_s"] = build_s
-        if method.simulated and stage == 1:
+        if method.simulated and stage == 1 and not backend:
             metrics.pop("model_size_gb", None)  # still FP16 in memory; predicted_weight_memory_gb is the size
         return {"metrics": metrics, "raw": raw}
 
@@ -239,7 +257,14 @@ def run_stage(
     with rep.method("baseline", "fp16", description="uncompressed model") as row:
         row.metrics.update(_fp16_plan_metrics(stage, plans, cfg, candidate))
         row.metrics["build_time_s"] = 0.0
-        if measure_fp16:
+        if backend:
+            key = {**fp16_key(ctx, device), **backend.key}
+            result, row.info["cached"] = ctx.cache.get_or_compute(
+                "stage4_fp16", key, lambda: dict(zip(("metrics", "raw"), backend.measure(
+                    model_factory(), None, windows(), handle.tokenizer))))
+            row.metrics.update(result["metrics"])
+            rep.add_raw("baseline", "fp16", result["raw"])
+        elif measure_fp16:
             fp16, cached = load_fp16(ctx, handle, text_loader)
             row.metrics.update(fp16["metrics"])
             row.info["cached"] = cached
@@ -260,10 +285,12 @@ def run_stage(
             key = {"stage": stage, "method": m.name, "version": m.version, "plan": orig.to_dict(),
                    "params": {p: candidate[p] for p in m.params}, **fp16_key(ctx, device),
                    "downstream": [list(cfg.eval.downstream_tasks), cfg.eval.downstream_limit]}
+            if backend:
+                key["backend"] = backend.key
             if m.calibrated:
                 key["calibration"] = {"dataset": candidate["calib_dataset"], "samples": candidate["calib_samples"],
                                       "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size}
-            result, cached = ctx.cache.get_or_compute(f"stage{stage}_original", key,
+            result, cached = ctx.cache.get_or_compute(f"stage{report_stage}_original", key,
                                                       lambda: build_and_measure(m, orig))
             row.metrics.update(plan_metrics(orig, plans, cfg, candidate))
             row.metrics.update(result["metrics"])
@@ -287,7 +314,7 @@ def run_stage(
                 row.metrics.update(result["metrics"])
                 rep.add_raw(m.name + suffix, "framework", result["raw"])
 
-    if simulated_any:
+    if simulated_any and not backend:
         rep.plain_why.append(
             "Some techniques here are simulated: the numbers are rounded as the compressed model would store them, "
             "but kept in the uncompressed format. Their accuracy is real; their memory is the plan's prediction, "
@@ -300,12 +327,35 @@ def _require(m: Method) -> None:
         raise NotImplementedError(f"{m.label} is not implemented yet ({m.library})")
 
 
-def run_stages(ctx: RunContext, candidate: dict[str, Any], stage0_dir: str | Path, **kwargs: Any) -> dict[str, Path]:
-    """Stages 1-3 with the methods in cfg.stages, each on top of the same Stage 0 plans."""
+def make_backend(name: str, ctx: RunContext):
+    st = ctx.cfg.stages
+    if name == "llama_cpp":
+        from sdf.stages.llama_cpp import LlamaCpp
+
+        if not (st.llama_cpp_dir and st.llama_cpp_convert):
+            raise ValueError("Stage 4 llama_cpp needs stages.llama_cpp_dir and stages.llama_cpp_convert")
+        return LlamaCpp(st.llama_cpp_dir, st.llama_cpp_convert, ctx.cfg.eval, ctx.run_dir / "stage_4" / "work",
+                        st.llama_cpp_gpu_layers)
+    raise ValueError(f"unknown Stage 4 backend {name!r}; known: ['llama_cpp']")
+
+
+def run_stages(ctx: RunContext, candidate: dict[str, Any], stage0_dir: str | Path, backends: dict[str, Any] | None = None,
+               **kwargs: Any) -> dict[str, Path]:
+    """Stages 1-3 with the methods in cfg.stages, each on top of the same Stage 0 plans, then Stage 4: the
+    Stage 1 rows on every backend in cfg.stages.stage4_backends (`backends` maps names to ready backends, for tests)."""
     st = ctx.cfg.stages
     outputs = {}
     for stage, names in ((1, st.stage1_methods), (2, st.stage2_methods), (3, st.stage3_methods)):
         if names:
             for name, path in run_stage(ctx, stage, names, candidate, stage0_dir, **kwargs).items():
                 outputs[f"stage_{stage}_{name}"] = path
+    for b in st.stage4_backends if st.stage1_methods else []:
+        try:
+            backend = (backends or {}).get(b) or make_backend(b, ctx)
+        except (ValueError, OSError, RuntimeError) as e:  # stages 1-3 are done; keep them and the master report
+            log.error("Stage 4 %s not run: %s", b, e)
+            continue
+        for name, path in run_stage(ctx, 1, st.stage1_methods, candidate, stage0_dir, backend=backend,
+                                    **kwargs).items():
+            outputs[f"stage_4_{b}_{name}"] = path
     return outputs
