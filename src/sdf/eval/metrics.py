@@ -115,12 +115,17 @@ def _time_latency(model: nn.Module, cfg: EvalConfig, device: torch.device, vocab
     prompt_pos = torch.arange(n_prompt, device=device)
     step_pos = torch.tensor([n_prompt], device=device)
     tok = torch.zeros(1, 1, dtype=torch.long, device=device)
+    # An explicit all-ones mask: without one, transformers 5.18 decides whether to skip the causal mask with a
+    # GPU-to-CPU read, which CUDA graph capture forbids (capture failed on Colab; 5.17 skips the check).
+    mask = torch.ones(1, n_prompt + n_decode, dtype=torch.long, device=device)
 
     def prefill() -> torch.Tensor:
-        return model(input_ids=prompt, past_key_values=cache, cache_position=prompt_pos, use_cache=True).logits
+        return model(input_ids=prompt, attention_mask=mask, past_key_values=cache, cache_position=prompt_pos,
+                     use_cache=True).logits
 
     def step() -> torch.Tensor:
-        return model(input_ids=tok, past_key_values=cache, cache_position=step_pos, use_cache=True).logits
+        return model(input_ids=tok, attention_mask=mask, past_key_values=cache, cache_position=step_pos,
+                     use_cache=True).logits
 
     mode = "eager"
     if cfg.latency_mode == "cuda_graph" and device.type == "cuda":

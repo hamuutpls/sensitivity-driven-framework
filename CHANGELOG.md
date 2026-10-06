@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-06: CUDA-graph latency works with transformers 5.18
+
+- Timing passes an explicit all-ones attention mask. Without one, transformers 5.18 reads a GPU value to decide
+  whether to skip the causal mask, which breaks CUDA graph capture; latency then fell back to eager (~40 ms/token
+  on Colab) and each failed capture left 32 MiB allocated, so peak memory grew row by row.
+
 ## 2026-10-06: Latency timed with deterministic algorithms off
 
 - The run's deterministic mode (`run.deterministic`) made HF decode 21% slower (4.12 -> 4.99 ms/token on the host
