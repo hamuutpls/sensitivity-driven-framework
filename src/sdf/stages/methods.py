@@ -29,6 +29,7 @@ from sdf.stage0.planner import CompressionPlan
 from sdf.stage0.prune_sweep import apply_plan
 from sdf.stage0.sensitivity import int_zero
 from sdf.stage0.sensitivity import find_decoder_layers
+from sdf.stages.weights import awq_, gptq_
 
 
 @dataclass
@@ -69,6 +70,20 @@ def _rtn_weights(call: MethodCall) -> Iterator[dict[str, Any]]:
 
 
 @contextmanager
+def _gptq(call: MethodCall) -> Iterator[dict[str, Any]]:
+    s0 = call.cfg.stage0
+    gptq_(call.model, call.plan, call.batches(), call.candidate["gptq_groupsize"], s0.baseline_bits, int_zero(s0))
+    yield {}
+
+
+@contextmanager
+def _awq(call: MethodCall) -> Iterator[dict[str, Any]]:
+    s0 = call.cfg.stage0
+    awq_(call.model, call.plan, call.batches(), call.candidate["gptq_groupsize"], s0.baseline_bits, int_zero(s0))
+    yield {}
+
+
+@contextmanager
 def _rtn_activations(call: MethodCall) -> Iterator[dict[str, Any]]:
     plan: ActivationPlan = call.plan
     gs, base = call.cfg.stage0.act_group_size, call.cfg.stage0.baseline_bits
@@ -104,9 +119,9 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     Method("rtn", 1, "Round-to-nearest + magnitude pruning", _WEIGHT_PLANS, _rtn_weights,
            params=("gptq_groupsize",), library="in repo (torch)", version=2),  # 2: integer zero point
     # per-layer bits from the plan; Hessian of layer inputs, column-by-column error feedback
-    Method("gptq", 1, "GPTQ", _WEIGHT_PLANS, params=("gptq_groupsize",), calibrated=True,
-           library="in repo (torch), checked against gptqmodel"),
-    Method("awq", 1, "AWQ", _WEIGHT_PLANS, params=("gptq_groupsize",), calibrated=True,
+    Method("gptq", 1, "GPTQ", _WEIGHT_PLANS, _gptq, params=("gptq_groupsize",), calibrated=True,
+           library="in repo (torch)"),
+    Method("awq", 1, "AWQ", _WEIGHT_PLANS, _awq, params=("gptq_groupsize",), calibrated=True,
            library="in repo (torch); autoawq is deprecated"),  # activation-aware channel scaling, then RTN
     Method("structured_prune", 1, "Structured pruning", _WEIGHT_PLANS, calibrated=True,
            library="in repo (torch) or torch-pruning"),  # removes whole channels; real speed and size gains

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-06: Stage 1 GPTQ and AWQ
+
+- `gptq` and `awq` (src/sdf/stages/weights.py), plain torch, layer by layer with inputs from the already-compressed
+  layers before. Both use the round-to-nearest grid, follow each layer's planned bits, and keep the plan's pruned
+  weights at 0 (GPTQ feeds their error back, as SparseGPT does). AWQ has no weight-clipping search yet.
+- Default Stage 1 methods: rtn, gptq, awq.
+
 ## 2026-10-05: "Nothing removed" is a benchmark, not a plan for later stages
 
 - The budget-size plan with nothing removed stays in the Stage 0 rows, sweeps and report, labelled

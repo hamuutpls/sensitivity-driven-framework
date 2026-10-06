@@ -2,6 +2,7 @@ import copy
 import json
 
 import pytest
+import torch
 
 from sdf.run import start_run
 from sdf.search_space import SEARCH_SPACE
@@ -37,7 +38,7 @@ def test_stage0_plans_load(stage0_dir):
         Stage0Plans.load(stage0_dir.parent)
 
 
-@pytest.mark.parametrize("stage,method", [(1, "rtn"), (2, "rtn_act"), (3, "rtn_kv")])
+@pytest.mark.parametrize("stage,method", [(1, "rtn"), (1, "gptq"), (1, "awq"), (2, "rtn_act"), (3, "rtn_kv")])
 def test_run_stage_end_to_end(stage0_dir, tiny_llama, tokenizer, small_cfg, stage, method):
     ctx = start_run(small_cfg)
     cand = SEARCH_SPACE.make({"calib_samples": 16})
@@ -64,9 +65,9 @@ def test_run_stage_end_to_end(stage0_dir, tiny_llama, tokenizer, small_cfg, stag
     assert all((v == tiny_llama.state_dict()[k]).all() for k, v in pristine.items())
 
     if stage == 1:
-        assert rows["rtn_same_size/framework"]["info"]["compare_to"] == "rtn"
-        assert "model_size_gb" not in rows["rtn/framework"]["metrics"]  # simulated: FP16 in memory
-        assert rows["rtn/original"]["metrics"]["avg_bits_per_weight"] < 16
+        assert rows[f"{method}_same_size/framework"]["info"]["compare_to"] == method
+        assert "model_size_gb" not in rows[f"{method}/framework"]["metrics"]  # simulated: FP16 in memory
+        assert rows[f"{method}/original"]["metrics"]["avg_bits_per_weight"] < 16
     if stage == 3:
         assert rows["rtn_kv/framework"]["metrics"]["predicted_kv_memory_gb"] < \
             rows["baseline/fp16"]["metrics"]["predicted_kv_memory_gb"]
@@ -122,3 +123,67 @@ def test_fp16_cache_miss_builds_the_model_with_the_factory(stage0_dir, tiny_llam
                     model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
     fp16 = next(r for r in json.loads(out["json"].read_text())["rows"] if r["variant"] == "fp16")
     assert fp16["status"] == "ok" and not fp16["info"]["cached"]  # measured on the factory's model
+
+
+def test_gptq_without_input_correlation_is_round_to_nearest():
+    from sdf.stage0.sensitivity import round_to_nearest
+    from sdf.stages.weights import gptq_quantize_
+
+    torch.manual_seed(0)
+    w = torch.randn(8, 64)
+    for gs in (16, -1):
+        q = w.clone()
+        gptq_quantize_(q, torch.eye(64), 4, gs)  # diagonal H: no error feedback between columns
+        assert torch.allclose(q, round_to_nearest(w, 4, gs, int_zero=True), atol=1e-6)
+
+
+def test_gptq_beats_round_to_nearest_on_correlated_inputs():
+    from sdf.stage0.prune_sweep import magnitude_mask
+    from sdf.stage0.sensitivity import round_to_nearest
+    from sdf.stages.weights import gptq_quantize_
+
+    torch.manual_seed(0)
+    x = torch.randn(512, 8) @ torch.randn(8, 64) + 0.1 * torch.randn(512, 64)  # low-rank, correlated inputs
+    w = torch.randn(16, 64)
+    H = 2 * x.T @ x / len(x)
+    err = lambda q: ((x @ (w - q).T) ** 2).mean()
+    q = w.clone()
+    gptq_quantize_(q, H, 3, 16)
+    assert err(q) < 0.5 * err(round_to_nearest(w, 3, 16, int_zero=True))
+    # pruned weights stay exactly 0, and the error feedback still helps
+    mask = magnitude_mask(w, 0.5)
+    q = w.clone()
+    gptq_quantize_(q, H, None, -1, mask=mask)
+    assert (q[~mask] == 0).all() and err(q) < 0.5 * err(w * mask)
+
+
+def test_awq_scales_toward_large_activations():
+    from sdf.stage0.planner import uniform_plan
+    from sdf.stage0.sensitivity import round_to_nearest
+    from sdf.stages.weights import awq_
+    from torch import nn
+
+    class Toy(nn.Module):  # one "decoder layer": two Linears fed the same input, like q/k/v
+        def __init__(self):
+            super().__init__()
+            self.model = nn.Module()
+            self.model.layers = nn.ModuleList([nn.ModuleDict({"a": nn.Linear(64, 16, bias=False),
+                                                              "b": nn.Linear(64, 8, bias=False)})])
+
+        def forward(self, input_ids, use_cache=False):
+            x = input_ids
+            layer = self.model.layers[0]
+            out = layer["a"](x), layer["b"](x)
+            for h in layer._forward_hooks.values():
+                h(layer, (x,), out)
+            return out
+
+    torch.manual_seed(0)
+    x = torch.randn(256, 64)
+    x[:, :4] *= 30  # a few input channels with large activations, as in real LLMs
+    toy = Toy()
+    w = {k: m.weight.data.clone() for k, m in toy.model.layers[0].items()}
+    awq_(toy, uniform_plan([0.0], 3, 0.0), [x], 16, 16)
+    for k, m in toy.model.layers[0].items():
+        err = lambda q: ((x @ (w[k] - q).T) ** 2).mean()
+        assert err(m.weight.data) < err(round_to_nearest(w[k], 3, 16, int_zero=True))
