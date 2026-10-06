@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import statistics
 import time
-from typing import Any
+from typing import Any, Callable
 
 import torch
 from torch import nn
@@ -51,38 +51,97 @@ def _sync(device: torch.device) -> None:
         torch.cuda.synchronize(device)
 
 
+def _static_cache(model: nn.Module, max_len: int):
+    """A fixed-size KV cache (no tensor grows between steps, so a decode step can be replayed as a CUDA graph)."""
+    from transformers import StaticCache
+
+    p = next(model.parameters())
+    try:
+        return StaticCache(config=model.config, max_cache_len=max_len)  # transformers >= 4.56: allocated lazily
+    except TypeError:
+        return StaticCache(config=model.config, max_batch_size=1, max_cache_len=max_len, device=p.device,
+                           dtype=p.dtype)
+
+
+def _graphed(fn: Callable[[], torch.Tensor], reset: Callable[[], None]) -> Callable[[], torch.Tensor]:
+    """Capture `fn` (fixed input tensors, updated in place) as a CUDA graph; calling the result replays it.
+    `reset` empties the KV cache before each warm-up run, so warm-up never writes past its end.
+    Replaying launches the whole forward pass at once, so Python and kernel-launch overhead drop out of the time."""
+    s = torch.cuda.Stream()
+    s.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(s):  # warm up off the default stream, as torch.cuda.graph requires
+        for _ in range(2):
+            reset()
+            fn()
+    torch.cuda.current_stream().wait_stream(s)
+    reset()
+    g = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(g):
+        out = fn()
+
+    def replay() -> torch.Tensor:
+        g.replay()
+        return out
+    return replay
+
+
 @torch.no_grad()
 def measure_latency(model: nn.Module, cfg: EvalConfig, device: torch.device, vocab_size: int,
                     seed: int = 0) -> list[dict[str, Any]]:
     """Time prefill of a `latency_prompt_len` prompt and `latency_decode_tokens` greedy decode steps.
 
-    Returns one raw record per timed repeat (warmup runs are not recorded).
+    With `latency_mode="cuda_graph"` on a GPU, prefill and one decode step are each captured once as a CUDA graph
+    and replayed, so the time is the GPU's work, not Python's (eager HF decode of a 1B model is mostly launch
+    overhead). If capture fails (e.g. a method's hook syncs with the CPU), the same loop runs eagerly; each record
+    says which mode ran. Returns one raw record per timed repeat (warmup runs are not recorded).
     """
     model.eval()
     g = torch.Generator().manual_seed(seed)
-    prompt = torch.randint(0, vocab_size, (1, cfg.latency_prompt_len), generator=g).to(device)
+    n_prompt, n_decode = cfg.latency_prompt_len, cfg.latency_decode_tokens
+    prompt = torch.randint(0, vocab_size, (1, n_prompt), generator=g).to(device)
+    cache = _static_cache(model, n_prompt + n_decode)
+    prompt_pos = torch.arange(n_prompt, device=device)
+    step_pos = torch.tensor([n_prompt], device=device)
+    tok = torch.zeros(1, 1, dtype=torch.long, device=device)
+
+    def prefill() -> torch.Tensor:
+        return model(input_ids=prompt, past_key_values=cache, cache_position=prompt_pos, use_cache=True).logits
+
+    def step() -> torch.Tensor:
+        return model(input_ids=tok, past_key_values=cache, cache_position=step_pos, use_cache=True).logits
+
+    mode = "eager"
+    if cfg.latency_mode == "cuda_graph" and device.type == "cuda":
+        try:
+            prefill, step, mode = _graphed(prefill, cache.reset), _graphed(step, cache.reset), "cuda_graph"
+        except Exception as e:  # noqa: BLE001 - any capture failure falls back to eager timing, recorded
+            log.warning("CUDA graph capture failed (%s: %s); timing eagerly", type(e).__name__, e)
+
     records = []
     for i in range(cfg.latency_warmup + cfg.latency_repeats):
+        cache.reset()  # in place: newer transformers track the fill level inside the cache
         _sync(device)
         t0 = time.perf_counter()
-        out = model(input_ids=prompt, use_cache=True)
+        logits = prefill()
         _sync(device)
         prefill_s = time.perf_counter() - t0
 
-        past, nxt = out.past_key_values, out.logits[:, -1:].argmax(-1)
         t0 = time.perf_counter()
-        for _ in range(cfg.latency_decode_tokens):
-            out = model(input_ids=nxt, past_key_values=past, use_cache=True)
-            past, nxt = out.past_key_values, out.logits[:, -1:].argmax(-1)
+        step_pos.fill_(n_prompt)
+        tok.copy_(logits[:, -1:].argmax(-1))
+        for _ in range(n_decode):
+            tok.copy_(step()[:, -1:].argmax(-1))
+            step_pos.add_(1)
         _sync(device)
         decode_s = time.perf_counter() - t0
 
         if i >= cfg.latency_warmup:
             records.append({
                 "measurement": "latency",
+                "mode": mode,
                 "repeat": i - cfg.latency_warmup,
                 "prefill_ms": prefill_s * 1e3,
-                "decode_ms_per_token": decode_s * 1e3 / cfg.latency_decode_tokens,
+                "decode_ms_per_token": decode_s * 1e3 / n_decode,
             })
     return records
 

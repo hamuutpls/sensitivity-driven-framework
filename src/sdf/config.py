@@ -62,6 +62,9 @@ class EvalConfig:
     latency_decode_tokens: int = 64
     latency_warmup: int = 3
     latency_repeats: int = 10
+    # cuda_graph: replay prefill / decode step as CUDA graphs (GPU time only); eager: plain HF calls (before
+    # 2026-10-06; mostly Python and kernel-launch overhead for a 1B model)
+    latency_mode: str = "cuda_graph"
     # Downstream multiple-choice tasks (lm-evaluation-harness task names); empty = not measured.
     downstream_tasks: list[str] = field(default_factory=list)
     downstream_limit: int | None = None  # questions per task (None = all)
