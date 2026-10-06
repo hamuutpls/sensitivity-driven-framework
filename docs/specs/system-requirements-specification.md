@@ -227,7 +227,7 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 
 | ID | Requirement | Pri | Status | Ver | Source | Design |
 |---|---|---|---|---|---|---|
-| S1-01 | Stage 1 shall support GPTQ, AWQ, structured pruning, unstructured pruning and low-rank decomposition. | M | Partial (GPTQ, AWQ) | T | SPEC | SDD §6 |
+| S1-01 | Stage 1 shall support GPTQ, AWQ, structured pruning, unstructured pruning and low-rank decomposition. | M | Implemented | T | SPEC | SDD §6 |
 | S1-02 | In the framework variant, each layer's bit width and pruning ratio shall come from the Stage 0 plan. | M | Implemented | T | SPEC | SDD §6 |
 | S1-03 | GPTQ group size shall be the search parameter `gptq_groupsize`. | M | Implemented | I | SPEC | SDD §6 |
 | S1-04 | Stage 1 shall measure real (not predicted) size and accuracy, and report predicted vs measured memory. | M | Planned | T | SPEC | SDD §6 |

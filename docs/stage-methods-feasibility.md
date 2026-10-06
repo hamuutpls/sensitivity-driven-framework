@@ -24,9 +24,9 @@ Until a method is written, `main.py` (MODE `"stages"`) lists it as a failed row 
 | RTN (baseline) | none | yes | yes | **done** (`rtn`) |
 | GPTQ | `gptqmodel` 7.5.0: source only, compiles CUDA kernels; `auto-gptq` 0.7.1: abandoned (2024) | build is unreliable, no Blackwell wheel | works | **done** (`gptq`, `sdf/stages/weights.py`) |
 | AWQ | `autoawq` 0.2.9: deprecated (last release May 2025), source only; successor is `llmcompressor` 0.14 (pure Python) | `llmcompressor` installs, its output runs in vLLM (Linux) | works | **done** (`awq`: scale search + RTN, no clip search) |
-| Structured pruning | `torch-pruning` 1.6.1 (pure Python) | yes | yes | in repo or `torch-pruning`; gives real speed and size |
-| Unstructured pruning (Wanda) | none needed | yes | yes | in repo |
-| Low-rank (SVD) | none needed | yes | yes | in repo |
+| Structured pruning | `torch-pruning` 1.6.1 (pure Python) | yes | yes | **done** (`structured_prune`: feed-forward channels) |
+| Unstructured pruning (Wanda) | none needed | yes | yes | **done** (`unstructured_prune`) |
+| Low-rank (SVD) | none needed | yes | yes | **done** (`low_rank`: activation-aware SVD) |
 
 ## Stage 2: activations
 

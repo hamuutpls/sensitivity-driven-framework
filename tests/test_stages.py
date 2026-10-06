@@ -38,14 +38,15 @@ def test_stage0_plans_load(stage0_dir):
         Stage0Plans.load(stage0_dir.parent)
 
 
-@pytest.mark.parametrize("stage,method", [(1, "rtn"), (1, "gptq"), (1, "awq"), (2, "rtn_act"), (3, "rtn_kv")])
+@pytest.mark.parametrize("stage,method", [(1, "rtn"), (1, "gptq"), (1, "awq"), (1, "unstructured_prune"),
+                                          (1, "structured_prune"), (1, "low_rank"), (2, "rtn_act"), (3, "rtn_kv")])
 def test_run_stage_end_to_end(stage0_dir, tiny_llama, tokenizer, small_cfg, stage, method):
     ctx = start_run(small_cfg)
     cand = SEARCH_SPACE.make({"calib_samples": 16})
     pristine = {k: v.clone() for k, v in tiny_llama.state_dict().items()}
-    unimplemented = next(m.name for m in METHODS.values() if m.stage == stage and m.apply is None)
+    unimplemented = next((m.name for m in METHODS.values() if m.stage == stage and m.apply is None), None)
     kwargs = dict(model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
-    out = run_stage(ctx, stage, [method, unimplemented], cand, stage0_dir, **kwargs)
+    out = run_stage(ctx, stage, [method] + ([unimplemented] if unimplemented else []), cand, stage0_dir, **kwargs)
 
     res = json.loads(out["json"].read_text())
     rows = {f"{r['method']}/{r['variant']}": r for r in res["rows"]}
@@ -56,8 +57,9 @@ def test_run_stage_end_to_end(stage0_dir, tiny_llama, tokenizer, small_cfg, stag
         if r["status"] == "ok":
             assert r["metrics"]["ppl_val"] > 1 and r["metrics"]["ppl_heldout"] > 1
     # a method that is not written yet is a failed row saying so, not a crash or a silent gap
-    assert rows[f"{unimplemented}/original"]["status"] == "failed"
-    assert "not implemented" in rows[f"{unimplemented}/original"]["error"]
+    if unimplemented:
+        assert rows[f"{unimplemented}/original"]["status"] == "failed"
+        assert "not implemented" in rows[f"{unimplemented}/original"]["error"]
     # framework rows are compared with the original row of their method
     assert "vs_original_abs" in rows[f"{method}/framework"]["deltas"]["ppl_val"]
     assert out["report"].exists() and out["xlsx"].exists() and out["report"].parent.name == f"stage_{stage}"
@@ -68,6 +70,8 @@ def test_run_stage_end_to_end(stage0_dir, tiny_llama, tokenizer, small_cfg, stag
         assert rows[f"{method}_same_size/framework"]["info"]["compare_to"] == method
         assert "model_size_gb" not in rows[f"{method}/framework"]["metrics"]  # simulated: FP16 in memory
         assert rows[f"{method}/original"]["metrics"]["avg_bits_per_weight"] < 16
+        # a pruning method's standard version removes prune_ratio_aggressive everywhere; the others remove nothing
+        assert (rows[f"{method}/original"]["metrics"]["sparsity"] > 0) == METHODS[method].prunes
     if stage == 3:
         assert rows["rtn_kv/framework"]["metrics"]["predicted_kv_memory_gb"] < \
             rows["baseline/fp16"]["metrics"]["predicted_kv_memory_gb"]
@@ -187,3 +191,32 @@ def test_awq_scales_toward_large_activations():
     for k, m in toy.model.layers[0].items():
         err = lambda q: ((x @ (w[k] - q).T) ** 2).mean()
         assert err(m.weight.data) < err(round_to_nearest(w[k], 3, 16, int_zero=True))
+
+
+def test_pruning_and_low_rank_methods_remove_what_the_plan_says(tiny_llama):
+    from torch import nn
+
+    from sdf.stage0.planner import uniform_plan
+    from sdf.stages.weights import low_rank_, mlp_linears, structured_prune_, wanda_
+
+    torch.manual_seed(0)
+    batches = [torch.randint(0, 64, (2, 16)) for _ in range(2)]
+    plan = uniform_plan([0.0] * 4, 16, 0.5)  # 16 bits: no rounding, only removal
+    linears = lambda m: [x for x in m.modules() if isinstance(x, nn.Linear) and x is not m.lm_head]
+
+    m = copy.deepcopy(tiny_llama)
+    wanda_(m, plan, batches, -1, 16)
+    assert all(abs((l.weight == 0).float().mean().item() - 0.5) < 0.05 for l in linears(m))
+
+    m = copy.deepcopy(tiny_llama)
+    structured_prune_(m, plan, batches, -1, 16)
+    for layer in m.model.layers:
+        ups, down = mlp_linears(layer, 32)
+        dead = (down.weight == 0).all(dim=0)
+        assert dead.any() and all((u.weight[dead] == 0).all() for u in ups)
+
+    m = copy.deepcopy(tiny_llama)
+    low_rank_(m, plan, batches, -1, 16)
+    for l in linears(m):
+        out, inp = l.weight.shape
+        assert torch.linalg.matrix_rank(l.weight.float()) <= int(0.5 * out * inp / (out + inp))

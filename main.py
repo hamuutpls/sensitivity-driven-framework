@@ -112,7 +112,8 @@ GUARD_SWEEP = [0, 3, 5, 8]  # MODE "threshold_sweep": never-pruned layer counts 
 # =====================================================================================================
 STAGE0_DIR = None  # a finished run's stage_0 folder, e.g. "thesis_compression/results/<run_id>/stage_0";
 #                    None = run Stage 0 first with the settings above, in the same run
-STAGE1_METHODS = ["rtn", "gptq", "awq"]  # weights: rtn | gptq | awq | structured_prune | unstructured_prune | low_rank
+STAGE1_METHODS = ["rtn", "gptq", "awq", "unstructured_prune", "structured_prune", "low_rank"]  # weights; pruning
+#   methods (last three) remove PRUNE_RATIO_AGGRESSIVE from every layer in their standard version
 STAGE2_METHODS = ["rtn_act"]  # activations: rtn_act | smoothquant | quarot | rptq | spinquant
 STAGE3_METHODS = ["rtn_kv"]  # KV cache: rtn_kv | quarot_kv | kvquant | h2o | snapkv | infinigen
 SMOOTHQUANT_ALPHA = 0.5  # 0.0-1.0: how much of the activation outliers SmoothQuant moves into the weights
