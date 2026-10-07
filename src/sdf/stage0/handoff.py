@@ -118,7 +118,8 @@ def write_handoff(
         f"({len(quant.protected_layers)} of {n}: kept at {s0.protected_bits} bits) and compresses the rest to "
         f"{s0.compressed_bits} bits. The budget plan fits in the standard method's memory, so accuracy can be "
         f"compared size for size: it also protects the sensitive layers and pays for them by dropping the rest "
-        f"to {s0.no_prune_compressed_bits} bits.",
+        f"to {s0.no_prune_compressed_bits} bits. This budget plan replaces the earlier one that paid by pruning "
+        "(now Stage 2's same-size plan), so numbers from the two must not be mixed.",
         "",
     ]
     budget_layers = quant_budget.layers if quant_budget else [None] * n

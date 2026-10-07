@@ -359,6 +359,11 @@ def run_stage(
         rep.plain_why.append(
             "Structured pruning and low-rank remove whole channels or store smaller factors, so their predicted size "
             "has no extra record of which numbers were kept; unstructured pruning does (one bit per number).")
+    if stage == 1 and any(kind_of(m) == "weights" for m in methods):
+        rep.plain_why.append(
+            "The budget plan here removes nothing: it keeps the sensitive layers at more bits and pays for them by "
+            "dropping the robust layers to fewer. It replaces the earlier budget plan, which paid by pruning; that "
+            "one now belongs to Stage 2 as the same-size pruning plan. Do not compare numbers across the two.")
     if simulated_any:
         rep.plain_why.append(
             "Some techniques here are simulated: the numbers are rounded as the compressed model would store them, "
