@@ -38,7 +38,10 @@ METRICS.update({
                                         "Memory taken by the model's numbers once loaded." + _NOTE),
     "vllm_peak_memory_gb": MetricSpec("vLLM peak memory", "GB", "lower", "most graphics-card memory used",
                                       "Most graphics-card memory the program had allocated, including its reserved "
-                                      "space for remembering the text so far." + _NOTE),
+                                      "space for remembering the text so far (fixed at 1 GB for every row)." + _NOTE),
+    "vllm_kv_cache_reserved_gb": MetricSpec("vLLM KV cache reserved", "GB", "lower", "space reserved for the text so far",
+                                            "Memory vLLM sets aside up front for remembering the text so far; the same "
+                                            "for every row, and included in the peak." + _NOTE),
     "vllm_prefill_ms": MetricSpec("vLLM prefill time", "ms", "lower", "time to read the prompt (vLLM)",
                                   "Time to read a prompt and write one word-piece." + _NOTE),
     "vllm_decode_ms_per_token": MetricSpec("vLLM decode time per token", "ms", "lower", "time per written word-piece (vLLM)",
@@ -50,6 +53,10 @@ METRICS.update({
                                    "As the validation-half value, on the held-out half of the test text (lower is better)."),
 })
 MAIN_METRICS = ["vllm_size_gb", "vllm_decode_ms_per_token", "vllm_ppl_val"]
+
+
+class VLLMError(RuntimeError):
+    """vLLM could not load or run a checkpoint (e.g. a bit width its GPTQ kernels do not support)."""
 
 
 def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val: torch.Tensor, held: torch.Tensor,
@@ -74,7 +81,12 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
         env = {**os.environ, "PATH": os.pathsep.join([str(Path(cfg.vllm_python).parent), os.environ.get("PATH", "")])}
         r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
         if r.returncode:
-            raise RuntimeError(f"vllm_worker failed ({r.returncode}): {(r.stderr or r.stdout)[-2000:]}")
+            text = r.stderr or r.stdout
+            log.warning("vllm_worker failed (%d):\n%s", r.returncode, text[-4000:])
+            # the cause is the last line naming an error (vLLM's "Unsupported quantization config: ..." etc.)
+            cause = next((ln.strip() for ln in reversed(text.splitlines()) if "rror" in ln and "http" not in ln),
+                         text.strip()[-300:])
+            raise VLLMError(f"vllm_worker failed ({r.returncode}): {cause}")
         out = {"vllm_size_gb": size, **json.loads(r.stdout.strip().splitlines()[-1])}
     log.info("vLLM: %s", ", ".join(f"{k}={v:.4g}" for k, v in out.items() if isinstance(v, float)))
     return out

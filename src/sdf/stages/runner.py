@@ -281,6 +281,7 @@ def run_stage(
 
     def build_and_measure(method: Method, plan: Any) -> dict[str, Any]:
         model = model_factory()
+        info: dict[str, str] = {}
         try:
             t0 = time.perf_counter()
             with method.apply(MethodCall(model, plan, candidate, cfg, batches)) as extra:
@@ -292,8 +293,12 @@ def run_stage(
                     metrics.update(llamacpp.measure(model, handle.tokenizer, plan, val, held, cfg.eval,
                                                     s0.baseline_bits))
                 if vl_on(method):
-                    metrics.update(vllm_backend.measure(model, handle.tokenizer, plan, val, held, cfg.eval,
-                                                        s0.baseline_bits, candidate["gptq_groupsize"]))
+                    try:
+                        metrics.update(vllm_backend.measure(model, handle.tokenizer, plan, val, held, cfg.eval,
+                                                            s0.baseline_bits, candidate["gptq_groupsize"]))
+                    except vllm_backend.VLLMError as e:  # a plan vLLM cannot load (e.g. 3-bit GPTQ): keep the
+                        log.warning("vLLM could not measure %s: %s", method.name, e)  # HF row, record why
+                        info["vllm_error"] = str(e)
         finally:
             del model
             _free_memory()
@@ -301,7 +306,7 @@ def run_stage(
         metrics["build_time_s"] = build_s
         if method.simulated and stage in (1, 2):
             metrics.pop("model_size_gb", None)  # still FP16 in memory; predicted_weight_memory_gb is the size
-        return {"metrics": metrics, "raw": raw}
+        return {"metrics": metrics, "raw": raw, "info": info}
 
     # --- FP16: the same cache entry Stage 0 measured ------------------------------------------------------------
     with rep.method("baseline", "fp16", description="uncompressed model") as row:
@@ -352,7 +357,7 @@ def run_stage(
                                                       lambda: build_and_measure(m, orig))
             row.metrics.update(plan_metrics(orig, plans, cfg, candidate, m.storage))
             row.metrics.update(result["metrics"])
-            row.info["cached"] = cached
+            row.info.update(result.get("info", {}), cached=cached)  # .get: rows cached before "info" existed
             rep.add_raw(m.name, "original", result["raw"])
 
         for plan_key in m.plans:
@@ -370,6 +375,7 @@ def run_stage(
                 result = build_and_measure(m, plan)
                 row.metrics.update(plan_metrics(plan, plans, cfg, candidate, m.storage))
                 row.metrics.update(result["metrics"])
+                row.info.update(result["info"])
                 rep.add_raw(m.name + suffix, "framework", result["raw"])
 
     if any(m.storage for m in methods):

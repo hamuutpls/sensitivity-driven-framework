@@ -57,7 +57,10 @@ def quantize_linear(weight: torch.Tensor, bits: int, group_size: int) -> dict[st
         raise ValueError(f"shape {tuple(weight.shape)} does not fit group size {group_size} and 32-wide packing")
     top = 2 ** bits - 1
     w = weight.detach().float().reshape(out_f, in_f // group_size, group_size)
-    scale = (2 * w.abs().amax(-1, keepdim=True) / top).clamp(min=1e-8)
+    # round against the FP16 scale the file stores (at 8 bits the FP32->FP16 change, times up to 127 steps, moved the
+    # dequantized weights by more than half a step), nudged up by one FP16 step so max|w| still fits on the grid
+    scale = (2 * w.abs().amax(-1, keepdim=True) / top).clamp(min=1e-6)
+    scale = (scale * (1 + 2 ** -10)).half().float()
     zero = torch.full_like(scale, 2 ** (bits - 1))
     q = (w / scale + zero).round().clamp(0, top)
     qw = q.reshape(out_f, in_f).T.cpu().numpy()  # (in, out)

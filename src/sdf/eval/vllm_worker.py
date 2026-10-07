@@ -16,8 +16,14 @@ def main(args: dict) -> dict:
     import torch
     from vllm import LLM, SamplingParams
 
-    llm = LLM(model=args["model_dir"], dtype="float16", max_model_len=args["seq_len"] + 8, seed=0,
-              gpu_memory_utilization=args.get("gpu_memory_utilization", 0.4))
+    # A fixed KV-cache size instead of a share of the card: vLLM reserves the whole KV cache up front, so with
+    # gpu_memory_utilization the peak memory measured the card (33 GB on an A100 at 0.4), not the model.
+    kv = {"kv_cache_memory_bytes": args.get("kv_cache_memory_bytes", 1 << 30)}
+    try:
+        llm = LLM(model=args["model_dir"], dtype="float16", max_model_len=args["seq_len"] + 8, seed=0, **kv)
+    except TypeError:  # vLLM without kv_cache_memory_bytes: fall back to a share of the card
+        kv = {"gpu_memory_utilization": args.get("gpu_memory_utilization", 0.4)}
+        llm = LLM(model=args["model_dir"], dtype="float16", max_model_len=args["seq_len"] + 8, seed=0, **kv)
     out: dict = {}
     try:
         out["vllm_weight_memory_gb"] = sum(llm.apply_model(
@@ -57,6 +63,7 @@ def main(args: dict) -> dict:
     out["vllm_prefill_ms"] = prefill * 1e3
     out["vllm_decode_ms_per_token"] = (full - prefill) * 1e3 / (args["decode_tokens"] - 1)
     out["vllm_peak_memory_gb"] = torch.cuda.max_memory_allocated() / 1e9
+    out["vllm_kv_cache_reserved_gb"] = kv.get("kv_cache_memory_bytes", float("nan")) / 1e9
     return out
 
 

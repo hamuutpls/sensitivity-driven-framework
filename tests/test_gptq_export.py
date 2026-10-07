@@ -38,7 +38,7 @@ def test_pack_round_trip(bits):
 
 @pytest.mark.parametrize("bits", g.BITS)
 def test_quantize_linear_matches_its_grid(bits):
-    w = torch.randn(64, 256)
+    w = torch.randn(64, 256, generator=torch.Generator().manual_seed(bits))
     t = g.quantize_linear(w, bits, 128)
     assert t["qweight"].shape == (256 * bits // 32, 64) and t["qzeros"].shape == (2, 64 * bits // 32)
     q = torch.from_numpy(unpack(t["qweight"].numpy(), bits).astype(np.int64)).T.reshape(64, 2, 128)
