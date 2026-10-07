@@ -18,8 +18,6 @@ def main(args: dict) -> dict:
 
     # A fixed KV-cache size instead of a share of the card: vLLM reserves the whole KV cache up front, so with
     # gpu_memory_utilization the peak memory measured the card (33 GB on an A100 at 0.4), not the model.
-    # A fixed KV-cache size instead of a share of the card: vLLM reserves the whole KV cache up front, so with
-    # gpu_memory_utilization the peak memory measured the card (33 GB on an A100 at 0.4), not the model.
     kv_bytes = args.get("kv_cache_memory_bytes", 1 << 30)
     llm = LLM(model=args["model_dir"], dtype="float16", max_model_len=args["seq_len"] + 8, seed=0,
               kv_cache_memory_bytes=kv_bytes)
