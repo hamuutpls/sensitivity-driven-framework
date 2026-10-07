@@ -112,7 +112,7 @@ def _bench(cfg: EvalConfig, gguf: Path) -> dict[str, float]:
     """llama-bench (one warm-up run of its own, then `latency_repeats` timed runs)."""
     out = _run([_exe(cfg, "llama-bench"), "-m", gguf, "-p", cfg.latency_prompt_len, "-n", cfg.latency_decode_tokens,
                 "-r", cfg.latency_repeats, "-ngl", 99, "-o", "json"])
-    rows = json.loads(out[out.index("["):out.rindex("]") + 1])
+    rows, _ = json.JSONDecoder().raw_decode(out[out.index("["):])  # stderr follows stdout in `out`: stop at the JSON's end
     pre = next(r for r in rows if r["n_gen"] == 0)
     dec = next(r for r in rows if r["n_prompt"] == 0)
     return {"llamacpp_prefill_tokens_per_s": pre["avg_ts"], "llamacpp_decode_tokens_per_s": dec["avg_ts"],

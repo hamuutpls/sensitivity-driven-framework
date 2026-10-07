@@ -56,6 +56,9 @@ class Method:
     library: str = ""  # where the implementation comes from, for the feasibility table
     # a pruning method: its standard version removes prune_ratio_aggressive from every layer (not uniform_prune_ratio)
     prunes: bool = False
+    # how removed weights are stored in the predicted size, when not stage0.sparse_storage ("free": whole channels or
+    # low-rank factors are removed, so no mask of kept weights is needed)
+    storage: str | None = None
 
 
 # ----------------------------------------------------------------------------------------------- baselines
@@ -124,13 +127,13 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     # removes whole feed-forward channels; real speed and size gains once a backend cuts them out
     Method("structured_prune", 1, "Structured pruning (feed-forward channels)", _WEIGHT_PLANS,
            _calibrated(structured_prune_), params=("gptq_groupsize", "prune_ratio_aggressive"), calibrated=True,
-           prunes=True, library="in repo (torch)"),
+           prunes=True, storage="free", library="in repo (torch)"),
     Method("unstructured_prune", 1, "Unstructured pruning (Wanda)", _WEIGHT_PLANS, _calibrated(wanda_),
            params=("gptq_groupsize", "prune_ratio_aggressive"), calibrated=True, prunes=True,
-           library="in repo (torch)"),  # |w| x input norm per output row
+           library="in repo (torch)", version=2),  # |w| x input norm per output row; 2: scores in float32
     # rank chosen so each layer keeps (1 - planned share) of its numbers; activation-aware SVD
     Method("low_rank", 1, "Low-rank (activation-aware SVD)", _WEIGHT_PLANS, _calibrated(low_rank_),
-           params=("gptq_groupsize", "prune_ratio_aggressive"), calibrated=True, prunes=True,
+           params=("gptq_groupsize", "prune_ratio_aggressive"), calibrated=True, prunes=True, storage="free",
            library="in repo (torch)"),
     # Stage 2: activations
     Method("rtn_act", 2, "Round-to-nearest activations", ("activations",), _rtn_activations,

@@ -220,3 +220,46 @@ def test_pruning_and_low_rank_methods_remove_what_the_plan_says(tiny_llama):
     for l in linears(m):
         out, inp = l.weight.shape
         assert torch.linalg.matrix_rank(l.weight.float()) <= int(0.5 * out * inp / (out + inp))
+
+
+def test_stage_settings_join_the_cache_key_only_when_changed():
+    from sdf.config import Stage0Config
+    from sdf.stages.runner import _setting_key
+
+    s0 = Stage0Config()
+    assert all(_setting_key(st, s0) == {} for st in (1, 2, 3))  # defaults: existing cache entries stay valid
+    s0.weight_zero_point, s0.act_group_size = "float", 64
+    assert _setting_key(1, s0) == {"weight_zero_point": "float"}
+    assert _setting_key(2, s0) == {"act_group_size": 64} and _setting_key(3, s0) == {}
+
+
+def test_removed_channels_and_factors_need_no_mask_in_the_predicted_size(stage0_dir, small_cfg):
+    from sdf.stages.runner import plan_metrics
+
+    plans = Stage0Plans.load(stage0_dir)
+    plan = plans.plans["weights"]
+    cand = SEARCH_SPACE.make({})
+    size = lambda storage: plan_metrics(plan, plans, small_cfg, cand, storage)["predicted_weight_memory_gb"]
+    assert size("free") < size(None) == size("bitmask")
+    assert METHODS["structured_prune"].storage == METHODS["low_rank"].storage == "free"
+    assert METHODS["unstructured_prune"].storage is None
+
+
+def test_wanda_scores_do_not_overflow_in_fp16(tiny_llama, monkeypatch):
+    from torch import nn
+
+    from sdf.stage0.planner import uniform_plan
+    from sdf.stage0.prune_sweep import magnitude_mask
+    from sdf.stages import weights
+
+    batches = [torch.randint(0, 64, (2, 16))]
+    # every channel's summed squares are 1e10 (sqrt 1e5, above the FP16 maximum of 65504): Wanda then ranks by |w|
+    monkeypatch.setattr(weights, "input_sq_norms",
+                        lambda model, layer, b: {m: torch.full((m.in_features,), 1e10)
+                                                 for m in layer.modules() if isinstance(m, nn.Linear)})
+    m = copy.deepcopy(tiny_llama).half()
+    before = [x.weight.clone() for x in m.model.layers[0].modules() if isinstance(x, nn.Linear)]
+    weights.wanda_(m, uniform_plan([0.0] * 4, 16, 0.75), batches, -1, 16)
+    after = [x.weight for x in m.model.layers[0].modules() if isinstance(x, nn.Linear)]
+    for b, a in zip(before, after):
+        assert torch.equal(a != 0, magnitude_mask(b, 0.75))

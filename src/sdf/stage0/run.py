@@ -134,12 +134,12 @@ def calib_batches(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHand
                                c.seq_len, c.batch_size, ctx.cfg.run.seed)
 
 
-def weight_cost(profile: SensitivityProfile, group_size: int, s0,
-                reference: list[float] | None = None) -> Callable[[CompressionPlan], PlanCost]:
-    """`predict_cost` with the run's storage settings."""
+def weight_cost(profile: SensitivityProfile, group_size: int, s0, reference: list[float] | None = None,
+                storage: str | None = None) -> Callable[[CompressionPlan], PlanCost]:
+    """`predict_cost` with the run's storage settings (`storage` overrides stage0.sparse_storage)."""
     return functools.partial(predict_cost, profile=profile, group_size=group_size,
                              group_overhead_bits=s0.group_overhead_bits, baseline_bits=s0.baseline_bits,
-                             sparse_storage=s0.sparse_storage, reference_scores=reference)
+                             sparse_storage=storage or s0.sparse_storage, reference_scores=reference)
 
 
 def stage_reporter(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
