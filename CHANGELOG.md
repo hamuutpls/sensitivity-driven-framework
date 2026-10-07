@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-07: vLLM backend for Stage 1 weight rows
+
+- `eval.vllm_python` (the Python with vLLM; Linux only, so run inside WSL2 or Colab) turns it on. Each weight row is
+  saved as a GPTQ-format checkpoint at the plan's per-layer bits (`eval/gptq_export.py`: 2/3/4/8-bit packing, vLLM
+  `dynamic` per-layer overrides) and measured by `eval/vllm_worker.py`: file size, weight memory, peak memory,
+  prefill and decode time (warm-up and repeats as in HF), perplexity of both halves.
+- Weights are re-rounded onto grids of their own when saved (as in llama.cpp), so `vllm_ppl_*` is comparable between
+  rows, not with HF. Cache keys are unchanged when the backend is off.
+
 ## 2026-10-07: Stage 1 is quantization only, Stage 2 is pruning only
 
 Mohammad's split: Stage 1 = quantization of weights and activations (path 0 > 1 > 4), Stage 2 = pruning

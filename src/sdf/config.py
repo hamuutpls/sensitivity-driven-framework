@@ -69,6 +69,8 @@ class EvalConfig:
     # llama-bench, llama-perplexity) and the path of its convert_hf_to_gguf.py. None = not measured.
     llamacpp_dir: str | None = None
     llamacpp_convert: str | None = None
+    # vLLM backend (Stage 1 rows; sdf/eval/vllm_backend.py): the Python that has vLLM installed (Linux only). None = not measured.
+    vllm_python: str | None = None
     # Downstream multiple-choice tasks (lm-evaluation-harness task names); empty = not measured.
     downstream_tasks: list[str] = field(default_factory=list)
     downstream_limit: int | None = None  # questions per task (None = all)
