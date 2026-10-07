@@ -203,8 +203,8 @@ def wanda_(model: nn.Module, plan: CompressionPlan, batches: list[torch.Tensor],
         norms = input_sq_norms(model, layer, batches) if lp.pruning_ratio else {}
         for m in (m for m in layer.modules() if isinstance(m, nn.Linear)):
             if lp.pruning_ratio:
-                m.weight.data.mul_(magnitude_mask(m.weight.data.abs() * norms[m].sqrt().to(m.weight.dtype),
-                                                  lp.pruning_ratio))
+                # float32: sqrt of a channel's summed squares can pass the FP16 maximum (65504) -> inf / nan scores
+                m.weight.data.mul_(magnitude_mask(m.weight.data.float().abs() * norms[m].sqrt(), lp.pruning_ratio))
             _round_(m, lp.bit_width, group_size, baseline_bits, int_zero)
 
 

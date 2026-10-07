@@ -119,11 +119,24 @@ def original_plan(stage: int, plans: Stage0Plans, s0, prune_ratio: float | None 
     return uniform_kv_plan(plans.num_layers, s0.kv_uniform_bits)
 
 
-def plan_metrics(plan: Any, plans: Stage0Plans, cfg, candidate: dict[str, Any]) -> dict[str, Any]:
-    """What the plan is predicted to cost (the same predictions Stage 0 reports), next to the measured metrics."""
+# Stage 0 settings each stage's methods read that a plan does not carry; they join the cache key when not default
+# (so entries made with the defaults stay valid).
+_STAGE_SETTINGS = {1: ("weight_zero_point", "baseline_bits"), 2: ("act_group_size", "baseline_bits"),
+                   3: ("kv_group_size", "kv_module_names", "baseline_bits")}
+
+
+def _setting_key(stage: int, s0) -> dict[str, Any]:
+    default = type(s0)()
+    return {k: getattr(s0, k) for k in _STAGE_SETTINGS[stage] if getattr(s0, k) != getattr(default, k)}
+
+
+def plan_metrics(plan: Any, plans: Stage0Plans, cfg, candidate: dict[str, Any],
+                 storage: str | None = None) -> dict[str, Any]:
+    """What the plan is predicted to cost (the same predictions Stage 0 reports), next to the measured metrics.
+    `storage`: how removed weights are stored (Method.storage), when not the run's stage0.sparse_storage."""
     s0 = cfg.stage0
     if isinstance(plan, CompressionPlan):
-        return _cost_metrics(weight_cost(plans.profile, candidate["gptq_groupsize"], s0)(plan))
+        return _cost_metrics(weight_cost(plans.profile, candidate["gptq_groupsize"], s0, storage=storage)(plan))
     if isinstance(plan, ActivationPlan):
         return {"avg_activation_bits": plan.avg_bits}
     if isinstance(plan, KVPlan) and plans.kv_profile is not None:
@@ -272,12 +285,14 @@ def run_stage(
             key = {"stage": stage, "method": m.name, "version": m.version, "plan": orig.to_dict(),
                    "params": {p: candidate[p] for p in m.params}, **fp16_key(ctx, device),
                    "downstream": [list(cfg.eval.downstream_tasks), cfg.eval.downstream_limit], "llamacpp": lc_key}
+            if settings := _setting_key(stage, s0):
+                key["settings"] = settings
             if m.calibrated:
                 key["calibration"] = {"dataset": candidate["calib_dataset"], "samples": candidate["calib_samples"],
                                       "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size}
             result, cached = ctx.cache.get_or_compute(f"stage{stage}_original", key,
                                                       lambda: build_and_measure(m, orig))
-            row.metrics.update(plan_metrics(orig, plans, cfg, candidate))
+            row.metrics.update(plan_metrics(orig, plans, cfg, candidate, m.storage))
             row.metrics.update(result["metrics"])
             row.info["cached"] = cached
             rep.add_raw(m.name, "original", result["raw"])
@@ -295,10 +310,14 @@ def run_stage(
                 plan = plans.plans[plan_key]
                 row.info["description"] = f"{m.label}, Stage 0 {_describe(plan)}"
                 result = build_and_measure(m, plan)
-                row.metrics.update(plan_metrics(plan, plans, cfg, candidate))
+                row.metrics.update(plan_metrics(plan, plans, cfg, candidate, m.storage))
                 row.metrics.update(result["metrics"])
                 rep.add_raw(m.name + suffix, "framework", result["raw"])
 
+    if any(m.storage for m in methods):
+        rep.plain_why.append(
+            "Structured pruning and low-rank remove whole channels or store smaller factors, so their predicted size "
+            "has no extra record of which numbers were kept; unstructured pruning does (one bit per number).")
     if simulated_any:
         rep.plain_why.append(
             "Some techniques here are simulated: the numbers are rounded as the compressed model would store them, "

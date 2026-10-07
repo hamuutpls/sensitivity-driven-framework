@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-07: Stage 1/4 audit fixes
+
+- Stage 1-3 cache keys now include the settings a plan does not carry (`weight_zero_point`, `baseline_bits`,
+  `act_group_size`, `kv_group_size`, `kv_module_names`) when they differ from the defaults. Before, changing one
+  reused stale rows. Default-settings entries stay valid.
+- Structured pruning and low-rank rows predict their size without the 1-bit-per-weight mask (whole channels or
+  factors are removed). Only `predicted_weight_memory_gb` and `avg_bits_per_weight` of those rows change; no
+  perplexity does. Cached rows are not stale (the prediction is recomputed every run).
+- Wanda ranks weights with float32 scores (FP16 scores overflowed to inf when a channel's summed squares passed
+  65504 squared). `unstructured_prune` is version 2, so its cached rows are measured again.
+- llama-bench JSON is parsed up to its end, so text after it on stderr cannot break it.
+
 ## 2026-10-06: CUDA-graph latency works with transformers 5.18
 
 - Timing passes an explicit all-ones attention mask. Without one, transformers 5.18 reads a GPU value to decide
