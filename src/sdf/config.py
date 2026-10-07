@@ -71,6 +71,8 @@ class EvalConfig:
     llamacpp_convert: str | None = None
     # vLLM backend (Stage 1 rows; sdf/eval/vllm_backend.py): the Python that has vLLM installed (Linux only). None = not measured.
     vllm_python: str | None = None
+    # TensorRT-LLM backend (Stage 1 rows; sdf/eval/trtllm_backend.py): the Python that has TensorRT-LLM (Linux only).
+    trtllm_python: str | None = None
     # Downstream multiple-choice tasks (lm-evaluation-harness task names); empty = not measured.
     downstream_tasks: list[str] = field(default_factory=list)
     downstream_limit: int | None = None  # questions per task (None = all)
