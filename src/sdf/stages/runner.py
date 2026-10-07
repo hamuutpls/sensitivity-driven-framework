@@ -23,7 +23,7 @@ import torch
 from torch import nn
 
 from sdf.data import eval_windows
-from sdf.eval import downstream, llamacpp, vllm_backend
+from sdf.eval import downstream, llamacpp, trtllm_backend, vllm_backend
 from sdf.eval.metrics import measure_model
 from sdf.run import RunContext
 from sdf.stage0.activation import ActivationPlan, uniform_activation_plan
@@ -238,8 +238,11 @@ def run_stage(
 
     use_llamacpp = stage == 1 and cfg.eval.llamacpp_dir is not None  # weight rows only (see lc_on)
     lc_key = [cfg.eval.llamacpp_dir, cfg.eval.llamacpp_convert, llamacpp.VERSION] if use_llamacpp else None
-    use_vllm = stage == 1 and cfg.eval.vllm_python is not None  # weight rows only (see be_on)
-    vl_key = [cfg.eval.vllm_python, vllm_backend.VERSION] if use_vllm else None
+    # Serving backends run in a Python of their own (Linux only) on the model saved at the plan's bits; weight rows
+    # of Stage 1 only (see be_on). name -> (module, its error for a plan it cannot load, cache key part)
+    serving = {name: (mod, err, [py, mod.VERSION]) for name, mod, err, py in (
+        ("vllm", vllm_backend, vllm_backend.VLLMError, cfg.eval.vllm_python),
+        ("trtllm", trtllm_backend, trtllm_backend.TRTLLMError, cfg.eval.trtllm_python)) if stage == 1 and py}
     calib = (f"{candidate['calib_dataset']}, {candidate['calib_samples']} x {cfg.calibration.seq_len} tokens")
     rep = stage_reporter(
         ctx, candidate, handle, plans.profile, ("stages", "stage0", "calibration", "eval", "model", "run"),
@@ -249,7 +252,7 @@ def run_stage(
                     "device": str(device), "backend": "HF Transformers", "Stage 0 plans": str(plans.dir),
                     "starting point": "the uncompressed model, for every row (stages are independent)"},
         main_metrics=MAIN_METRICS[stage] + (llamacpp.MAIN_METRICS if use_llamacpp else [])
-        + (vllm_backend.MAIN_METRICS if use_vllm else []),
+        + [k for mod, _, _ in serving.values() for k in mod.MAIN_METRICS],
     )
     rep.plain_intro = INTROS[stage]
 
@@ -276,8 +279,8 @@ def run_stage(
     def lc_on(method: Method) -> bool:
         return use_llamacpp and kind_of(method) == "weights"
 
-    def vl_on(method: Method) -> bool:
-        return use_vllm and kind_of(method) == "weights"
+    def be_on(method: Method) -> bool:
+        return bool(serving) and kind_of(method) == "weights"
 
     def build_and_measure(method: Method, plan: Any) -> dict[str, Any]:
         model = model_factory()
@@ -292,13 +295,13 @@ def run_stage(
                 if lc_on(method):
                     metrics.update(llamacpp.measure(model, handle.tokenizer, plan, val, held, cfg.eval,
                                                     s0.baseline_bits))
-                if vl_on(method):
+                for name, (mod, err, _) in serving.items() if be_on(method) else ():
                     try:
-                        metrics.update(vllm_backend.measure(model, handle.tokenizer, plan, val, held, cfg.eval,
-                                                            s0.baseline_bits, candidate["gptq_groupsize"]))
-                    except vllm_backend.VLLMError as e:  # a plan vLLM cannot load (e.g. 3-bit GPTQ): keep the
-                        log.warning("vLLM could not measure %s: %s", method.name, e)  # HF row, record why
-                        info["vllm_error"] = str(e)
+                        metrics.update(mod.measure(model, handle.tokenizer, plan, val, held, cfg.eval,
+                                                   s0.baseline_bits, candidate["gptq_groupsize"]))
+                    except err as e:  # a plan the backend cannot load (e.g. 3-bit GPTQ in vLLM): keep the row,
+                        log.warning("%s could not measure %s: %s", name, method.name, e)  # record why
+                        info[f"{name}_error"] = str(e)
         finally:
             del model
             _free_memory()
@@ -328,12 +331,12 @@ def run_stage(
                     lambda: llamacpp.measure(model_factory(), handle.tokenizer, None, *windows(), cfg.eval,
                                              s0.baseline_bits))
                 row.metrics.update(lc)
-            if use_vllm:
-                vl, _ = ctx.cache.get_or_compute(
-                    "fp16_vllm", {**fp16_key(ctx, device), "vllm": vl_key},
-                    lambda: vllm_backend.measure(model_factory(), handle.tokenizer, None, *windows(), cfg.eval,
-                                                 s0.baseline_bits, candidate["gptq_groupsize"]))
-                row.metrics.update(vl)
+            for name, (mod, _, be_key) in serving.items():
+                be, _ = ctx.cache.get_or_compute(
+                    f"fp16_{name}", {**fp16_key(ctx, device), name: be_key},
+                    lambda mod=mod: mod.measure(model_factory(), handle.tokenizer, None, *windows(), cfg.eval,
+                                                s0.baseline_bits, candidate["gptq_groupsize"]))
+                row.metrics.update(be)
 
     simulated_any = False
     for m in methods:
@@ -346,8 +349,8 @@ def run_stage(
                    "params": {p: candidate[p] for p in m.params}, **fp16_key(ctx, device),
                    "downstream": [list(cfg.eval.downstream_tasks), cfg.eval.downstream_limit],
                    "llamacpp": lc_key if lc_on(m) else None}
-            if vl_on(m):
-                key["vllm"] = vl_key  # absent when off, so cached rows from before stay valid
+            if be_on(m):  # absent when off, so cached rows from before stay valid
+                key.update({name: be_key for name, (_, _, be_key) in serving.items()})
             if settings := _setting_key(kind_of(m), s0):
                 key["settings"] = settings
             if m.calibrated:

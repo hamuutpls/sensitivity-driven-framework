@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-08: TensorRT-LLM backend; vLLM backend fixes from the first real run (Colab A100)
+
+- `eval.trtllm_python` (the Python with TensorRT-LLM; Linux only) adds TensorRT-LLM rows: the same GPTQ export,
+  plus TensorRT-LLM's own `hf_quant_config.json` (W4A16_GPTQ / W8A16_GPTQ, MIXED_PRECISION for mixed plans; it does
+  not read a GPTQ `quantization_config`), built into a TensorRT engine by `eval/trtllm_worker.py`: engine size,
+  GPU memory loaded/after the run (read from the device; TensorRT does not allocate through torch), build time,
+  prefill and decode time, perplexity of both halves from the context logits.
+- vLLM: the export is symmetric (vLLM 0.31 rejects sym=False GPTQ), rounds against the FP16 scale it stores, the
+  worker gets its venv's bin/ on PATH (ninja), and reserves a fixed 1 GB KV cache so peak memory measures the model.
+- A plan a serving backend cannot load (vLLM has no 3-bit GPTQ kernel) keeps its HF/llama.cpp row and records the
+  backend's own reason in the row info (`vllm_error`, `trtllm_error`).
+
 ## 2026-10-07: vLLM backend for Stage 1 weight rows
 
 - `eval.vllm_python` (the Python with vLLM; Linux only, so run inside WSL2 or Colab) turns it on. Each weight row is
