@@ -43,6 +43,7 @@ def test_quantize_linear_matches_its_grid(bits):
     assert t["qweight"].shape == (256 * bits // 32, 64) and t["qzeros"].shape == (2, 64 * bits // 32)
     q = torch.from_numpy(unpack(t["qweight"].numpy(), bits).astype(np.int64)).T.reshape(64, 2, 128)
     zero = torch.from_numpy(unpack(t["qzeros"].numpy().T.copy(), bits).astype(np.int64)).T + 1  # (groups, out)
+    assert (zero == 2 ** (bits - 1)).all()  # symmetric: the only GPTQ layout vLLM loads
     deq = (q - zero.T[..., None]) * t["scales"].float().T[..., None]
     step = t["scales"].float().T[..., None]
     assert ((deq.reshape(64, 256) - w).abs() <= step.expand(-1, -1, 128).reshape(64, 256) * 0.51 + 1e-3).all()
@@ -79,4 +80,4 @@ def test_export_writes_per_layer_bits(tmp_path):
     assert t["model.layers.1.proj.qweight"].shape == (128 * 8 // 32, 64)
     assert t["lm_head.weight"].dtype == torch.float16 and "model.layers.0.proj.weight" not in t and size > 0
     qc = json.loads((tmp_path / "config.json").read_text())["quantization_config"]
-    assert qc["bits"] == 4 and qc["dynamic"] == {r"+:.*layers\.1\..*": {"bits": 8}}
+    assert qc["bits"] == 4 and qc["sym"] is True and qc["dynamic"] == {r"+:.*layers\.1\..*": {"bits": 8}}

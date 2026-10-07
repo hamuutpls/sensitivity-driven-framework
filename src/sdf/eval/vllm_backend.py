@@ -10,6 +10,7 @@ as plain FP16.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -27,7 +28,7 @@ from sdf.utils.logging import get_logger
 log = get_logger(__name__)
 
 # Bump when a change alters the measured numbers, so cached vLLM results are not reused.
-VERSION = 1
+VERSION = 2
 
 _NOTE = " Measured in vLLM, a program for running models on servers, after saving the model at the plan's bits."
 METRICS.update({
@@ -68,7 +69,10 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
         (d / "args.json").write_text(json.dumps(args))
         cmd = [cfg.vllm_python, str(Path(__file__).with_name("vllm_worker.py")), str(d / "args.json")]
         log.info("vLLM: %s", " ".join(cmd))
-        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        # vLLM compiles kernels with tools installed next to its Python (ninja); a venv's bin/ is not on PATH
+        # unless the venv is activated, so put it there.
+        env = {**os.environ, "PATH": os.pathsep.join([str(Path(cfg.vllm_python).parent), os.environ.get("PATH", "")])}
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
         if r.returncode:
             raise RuntimeError(f"vllm_worker failed ({r.returncode}): {(r.stderr or r.stdout)[-2000:]}")
         out = {"vllm_size_gb": size, **json.loads(r.stdout.strip().splitlines()[-1])}

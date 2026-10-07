@@ -3,9 +3,11 @@ converter) read: every decoder Linear is stored as integers, 2/3/4/8 bits per we
 group of `group_size` inputs. Each layer keeps the bits its plan gives it (vLLM's `dynamic` overrides carry the
 per-layer widths); embeddings, norms and the output head stay FP16, as in the plan.
 
-The weights are re-rounded onto min..max grids of their own groups, like llama.cpp does: the grids a method used
-while rounding (GPTQ's updated weights, AWQ's column scales) are not kept in the model, so the file's weights differ
-slightly from the HF model's. Zero points are kept in 1..2^bits-1 because the v1 GPTQ layout stores zero - 1.
+The weights are re-rounded onto symmetric grids of their own groups (scale = 2 * max|w| / (2^bits - 1), zero point
+2^(bits-1), as AutoGPTQ's sym=True), like llama.cpp re-rounds: the grids a method used while rounding (GPTQ's updated
+weights, AWQ's column scales) are not kept in the model, so the file's weights differ slightly from the HF model's.
+Symmetric because vLLM loads only sym=True GPTQ checkpoints ("Unsupported quantization config: bits=4, sym=False" on
+vLLM 0.31). The v1 GPTQ layout stores zero - 1.
 """
 
 from __future__ import annotations
@@ -55,9 +57,8 @@ def quantize_linear(weight: torch.Tensor, bits: int, group_size: int) -> dict[st
         raise ValueError(f"shape {tuple(weight.shape)} does not fit group size {group_size} and 32-wide packing")
     top = 2 ** bits - 1
     w = weight.detach().float().reshape(out_f, in_f // group_size, group_size)
-    lo, hi = w.amin(-1, keepdim=True), w.amax(-1, keepdim=True)
-    scale = ((hi - lo) / top).clamp(min=1e-8)
-    zero = (-lo / scale).round().clamp(1, top)
+    scale = (2 * w.abs().amax(-1, keepdim=True) / top).clamp(min=1e-8)
+    zero = torch.full_like(scale, 2 ** (bits - 1))
     q = (w / scale + zero).round().clamp(0, top)
     qw = q.reshape(out_f, in_f).T.cpu().numpy()  # (in, out)
     qz = zero[..., 0].T.cpu().numpy()  # (groups, out)
@@ -93,7 +94,7 @@ def export(model: nn.Module, tokenizer: Any, plan: CompressionPlan, group_size: 
     dynamic = {rf"+:.*layers\.{i}\..*": {"bits": b} for i, b in bits_of.items() if b != common and b < 16}
     cfg = model.config.to_dict()
     cfg["quantization_config"] = {"quant_method": "gptq", "bits": common, "group_size": group_size, "desc_act": False,
-                                  "sym": False, "true_sequential": True, "dynamic": dynamic}
+                                  "sym": True, "true_sequential": True, "dynamic": dynamic}
     cfg["torch_dtype"] = "float16"
     (out_dir / "config.json").write_text(json.dumps(cfg, indent=2))
     tokenizer.save_pretrained(out_dir)
