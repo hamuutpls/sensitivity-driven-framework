@@ -1,18 +1,16 @@
-# Stage 1: weight compression (planned)
+# Stage 1: quantization
 
-Not written yet. Drawn from the design (v2_1 diagram, "Stage 1" page) and the thesis spec; names are proposals.
-Back to the [overview](README.md).
+Drawn from the code (`src/sdf/stages/`). Weights are implemented (RTN, GPTQ, AWQ); of the activation methods only
+the RTN baseline is. Back to the [overview](README.md).
 
 ## In plain words
 
-A model is billions of stored numbers ("weights"). Stage 1 makes that store smaller in two ways: keeping each
-number with fewer bits (**quantisation**, like rounding prices to the nearest dollar), and throwing away numbers
-that barely matter (**pruning**). The standard methods treat every layer the same. The framework follows the
-Stage 0 plan instead: protected layers keep 8 bits and are not pruned, the rest get 4 bits and are pruned.
+A model is billions of stored numbers ("weights") and, while it runs, computes new numbers at every step
+("activations"). Stage 1 keeps both with fewer bits, like rounding prices to the nearest dollar, and **removes
+nothing**. The standard methods treat every layer the same. The framework follows the Stage 0 plan: protected
+layers keep more bits, the rest fewer. A plan handed to Stage 1 carries bits only; a plan that prunes is refused.
 
-For each method (GPTQ, AWQ, structured, unstructured and low-rank pruning) Stage 1 builds the standard version
-and the framework version, really compresses the model, and measures accuracy, size, memory and speed against
-the uncompressed model.
+Path: Stage 0 > Stage 1 > Stage 4.
 
 ## Class diagram
 
@@ -20,121 +18,77 @@ the uncompressed model.
 classDiagram
     direction LR
 
-    class WeightMethod {
-        <<planned, Protocol>>
+    class Method {
         +str name
-        +str kind
-        +apply(model, layer_plans, candidate, batches) Module
+        +int stage
+        +tuple plans
+        +apply(MethodCall) ContextManager
     }
-    class GPTQ {
-        <<planned>>
-        +int groupsize
-        +apply(...)
-    }
-    class AWQ {
-        <<planned>>
-        +int groupsize
-        +apply(...)
-    }
-    class StructuredPrune {
-        <<planned>>
-        +apply(...)
-    }
-    class UnstructuredPrune {
-        <<planned>>
-        +apply(...)
-    }
-    class LowRank {
-        <<planned>>
-        +apply(...)
-    }
-    class Stage1Config {
-        <<planned>>
-        +list methods
-        +dict original_defaults
-    }
-    class stage1_run {
-        <<planned module>>
-        +run_stage1(ctx, candidate, stage0) StageResult
-    }
-    class StageResult {
-        <<planned>>
-        +dict artifacts
-        +dict outputs
-    }
-    class Stage0Result {
-        +CompressionPlan plan
-        +SensitivityProfile profile
-    }
-    class LayerPlan {
-        +int layer
-        +int bit_width
-        +float pruning_ratio
-        +bool protected
-    }
-    class StageReporter
-    class ArtifactCache
-    class measure_model {
+    class gptq_ {
         <<function>>
     }
+    class awq_ {
+        <<function>>
+    }
+    class rtn_weights {
+        <<function>>
+    }
+    class rtn_activations {
+        <<function>>
+    }
+    class require_bits_only {
+        <<function>>
+    }
+    class run_stage {
+        <<function>>
+        +run_stage(ctx, 1, names, candidate, stage0_dir)
+    }
+    class Stage0Plans {
+        +dict plans
+        +load(dir)
+    }
+    class CompressionPlan {
+        +LayerPlan[] layers
+    }
+    class ActivationPlan
 
-    WeightMethod <|.. GPTQ
-    WeightMethod <|.. AWQ
-    WeightMethod <|.. StructuredPrune
-    WeightMethod <|.. UnstructuredPrune
-    WeightMethod <|.. LowRank
-    stage1_run ..> WeightMethod : each method in Stage1Config.methods
-    stage1_run ..> Stage0Result : reads plan
-    WeightMethod ..> LayerPlan : bits and prune ratio per layer
-    stage1_run ..> measure_model : ppl, size, memory, latency
-    stage1_run ..> ArtifactCache : original-method results
-    stage1_run ..> StageReporter : fp16 / original / framework rows
-    stage1_run ..> StageResult : returns
-    stage1_run ..> Stage1Config
+    Method ..> gptq_ : gptq
+    Method ..> awq_ : awq
+    Method ..> rtn_weights : rtn
+    Method ..> rtn_activations : rtn_act
+    gptq_ ..> require_bits_only
+    awq_ ..> require_bits_only
+    run_stage ..> Method : each method
+    run_stage ..> Stage0Plans : quant_plan.json, quant_plan_budget_matched.json, activation_plan.json
+    Stage0Plans ..> CompressionPlan : bits only
+    Stage0Plans ..> ActivationPlan
 ```
-
-`layer_plans` is `None` for the original method (uniform method defaults) and the Stage 0 plan's layers for the
-framework. `gptq_groupsize` comes from the search space. `StageResult` is meant to be shared by Stages 1 to 3.
 
 ## Sequence diagram
 
 ```mermaid
 sequenceDiagram
-    participant R as run_stage1 (planned)
+    participant R as run_stage (stage 1)
     participant C as ArtifactCache
-    participant W as WeightMethod (planned)
+    participant M as Method.apply
     participant E as measure_model
     participant Rep as StageReporter
 
     Note over R,Rep: FP16 row reused from the cache (same key as Stage 0)
-    loop each method: GPTQ, AWQ, structured, unstructured, low-rank
-        R->>C: get_or_compute("stage1_original", method + defaults + calibration + seed)
+    loop each method: rtn, gptq, awq, rtn_act
+        R->>C: original row (uniform bits, nothing removed)
         alt cache miss
-            C->>W: apply(FP16 model, None, defaults, batches)
-            W-->>C: compressed model
-            C->>E: measure_model(model, validation, held-out)
-            E-->>C: metrics
+            C->>M: apply(fresh FP16 model, uniform plan)
+            M-->>C: quantized model
+            C->>E: measure_model
         end
-        C-->>R: original-method metrics
         R->>Rep: row (method, original)
-
-        R->>W: apply(FP16 model, plan.layers, candidate, batches)
-        loop each layer plan
-            alt protected
-                W->>W: keep 8-bit, no pruning
-            else compressed
-                W->>W: prune to the planned ratio
-                W->>W: quantise to 4-bit in groups of gptq_groupsize
-            end
-            opt GPTQ
-                W->>W: Hessian of the layer inputs, round column by column, push the error to later columns
-            end
+        loop each Stage 0 plan: quant, quant_same_size
+            R->>M: apply(fresh FP16 model, plan)
+            M->>M: round every layer to its planned bits (GPTQ: Hessian error feedback, AWQ: channel scaling)
+            R->>E: measure_model
+            R->>Rep: row (method, framework)
         end
-        W-->>R: compressed model + per-layer error, achieved sparsity
-        R->>E: measure_model(model, validation, held-out)
-        E-->>R: metrics
-        R->>Rep: row (method, framework), per-layer table
     end
     R->>Rep: finalize()
-    Rep-->>R: stage_1/report.md, stage_1_comparison.xlsx, results.json
 ```

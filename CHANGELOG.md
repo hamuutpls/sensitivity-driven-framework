@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-10-07: Stage 1 is quantization only, Stage 2 is pruning only
+
+Mohammad's split: Stage 1 = quantization of weights and activations (path 0 > 1 > 4), Stage 2 = pruning
+(0 > 2 > 4 on the FP16 model, 0 > 1 > 2 > 4 after a Stage 1 method), Stage 3 = KV cache (0 > 3 > 4).
+
+- Stage 1 methods: `rtn`, `gptq`, `awq` (weights) and `rtn_act`, `smoothquant`, `quarot`, `rptq`, `spinquant`
+  (activations, formerly Stage 2). They refuse a plan that removes anything (`require_bits_only`). GPTQ's fixed-mask
+  (SparseGPT) path and RTN's magnitude pruning are gone; `rtn` no longer prunes.
+- Stage 2 methods: `unstructured_prune` (Wanda), `structured_prune`, `low_rank`, in `stages/pruning.py`. They round
+  nothing, except low-rank, whose factors are stored at the plan's bits. Run alone the weights stay FP16; run as
+  `<pruning>_after_<quantization>` (config `stages.stage2_after`, e.g. `["gptq"]`) the Stage 1 method runs first.
+- Stage 0 now also writes `quant_plan.json` (main plan, bits only), `quant_plan_budget_matched.json` (the
+  nothing-removed budget plan, robust layers at 3 bits), `prune_plan.json` (the main plan's ratios, bits at 16) and
+  `prune_plan_same_size.json` (as many numbers removed as the standard method, placed by sensitivity). The runner
+  reads these instead of `compression_plan*.json`, so Stage 0 must be rerun.
+- Standard versions: Stage 1 = uniform 4-bit, nothing removed; Stage 2 = every layer pruned at
+  `prune_ratio_aggressive`, nothing rounded (4-bit uniform first when after Stage 1).
+- llama.cpp rows are made for Stage 1 weight methods only. Cache versions bumped for every changed method.
+- All earlier combined prune-plus-4-bit Stage 1 numbers (Wanda, structured, low-rank rows) belong to the series path
+  and are stale; Stage 1 numbers for RTN, GPTQ and AWQ on the main and budget plans change (no pruning).
+
 ## 2026-10-07: Stage 1/4 audit fixes
 
 - Stage 1-3 cache keys now include the settings a plan does not carry (`weight_zero_point`, `baseline_bits`,

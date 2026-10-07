@@ -7,8 +7,8 @@ text in these files.
 |---|---|---|
 | this file | the project as a whole | the code (Stage 0 and shared parts) + the design (the rest) |
 | [stage0.md](stage0.md) | Stage 0: sensitivity profiling and planning | the code |
-| [stage1.md](stage1.md) | Stage 1: weight compression | the design, **planned** |
-| [stage2.md](stage2.md) | Stage 2: activation compression | the design, **planned** |
+| [stage1.md](stage1.md) | Stage 1: quantization (weights, activations) | the code |
+| [stage2.md](stage2.md) | Stage 2: pruning | the code |
 | [stage3.md](stage3.md) | Stage 3: KV-cache compression | the design, **planned** |
 | [stage4.md](stage4.md) | Stage 4: evaluation across backends | the design, **planned** |
 | [search.md](search.md) | the search layer (MOBO, MFBO, NSGA-III) | the design, **planned** |
@@ -33,9 +33,9 @@ functions are proposals and may change when the stage is written.
 
 The framework makes a language model smaller and faster while keeping its answers good. First it measures
 which layers of the model are fragile (**Stage 0**). It then uses that measurement to decide how hard to
-compress each layer, and applies three separate kinds of compression: to the model's stored numbers
-(**Stage 1**), to the numbers it computes while running (**Stage 2**), and to its short-term memory of the
-conversation (**Stage 3**). **Stage 4** measures the result on real software that runs models. Around all of
+compress each layer, and applies three separate kinds of compression: keeping the model's stored numbers
+and the numbers it computes while running with fewer bits (**Stage 1**, quantization only), removing numbers
+(**Stage 2**, pruning only), and shrinking its short-term memory of the conversation (**Stage 3**). **Stage 4** measures the result on real software that runs models. Around all of
 this, a **search** tries many settings and keeps the ones that give the best trade-off between accuracy, memory
 and speed.
 
@@ -236,8 +236,8 @@ sequenceDiagram
     participant SR as SearchRun (planned)
     participant Se as Searcher (planned)
     participant S0 as Stage 0
-    participant S1 as Stage 1 (planned)
-    participant S2 as Stage 2 (planned)
+    participant S1 as Stage 1 (quantization)
+    participant S2 as Stage 2 (pruning)
     participant S3 as Stage 3 (planned)
     participant S4 as Stage 4 (planned)
     participant MR as MasterReport (planned)

@@ -210,7 +210,8 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     for name in ("report.md", "stage_0_comparison.xlsx", "results.json", "compression_plan.json",
                  "compression_plan_budget_matched.json", "sensitivity_profile.json",
                  "kv_cache_plan.json", "kv_cache_plan_bits_only.json", "kv_profile.json", "activation_plan.json",
-                 "activation_profile.json"):
+                 "activation_profile.json", "quant_plan.json", "quant_plan_budget_matched.json", "prune_plan.json",
+                 "prune_plan_same_size.json"):
         assert (stage_dir / name).exists(), name
     assert not (stage_dir / "compression_plan_budget_matched_no_prune.json").exists()  # benchmark, not handed on
     data = json.loads((stage_dir / "results.json").read_text())
@@ -244,6 +245,17 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
         assert all(p.layers[i].pruning_ratio == 0 for i in p.guarded_layers)
     assert CompressionPlan.load(stage_dir / "compression_plan.json") == res.plan
     assert CompressionPlan.load(stage_dir / "compression_plan_budget_matched.json") == res.budget_plan
+    # Stage 1 gets bits only, Stage 2 pruning only (bits at the baseline)
+    for f in ("quant_plan.json", "quant_plan_budget_matched.json"):
+        assert all(lp.pruning_ratio == 0 for lp in CompressionPlan.load(stage_dir / f).layers), f
+    quant = CompressionPlan.load(stage_dir / "quant_plan.json")
+    assert [lp.bit_width for lp in quant.layers] == [lp.bit_width for lp in res.plan.layers]
+    for f in ("prune_plan.json", "prune_plan_same_size.json"):
+        pp = CompressionPlan.load(stage_dir / f)
+        assert {lp.bit_width for lp in pp.layers} == {16}, f
+        assert all(pp.layers[i].pruning_ratio == 0 for i in res.plan.guarded_layers), f
+    assert [lp.pruning_ratio for lp in CompressionPlan.load(stage_dir / "prune_plan.json").layers] == \
+        [lp.pruning_ratio for lp in res.plan.layers]
     assert KVPlan.load(stage_dir / "kv_cache_plan.json") == res.kv_plan
     assert KVPlan.load(stage_dir / "kv_cache_plan_bits_only.json") == res.kv_plan_bits_only
     assert ActivationPlan.load(stage_dir / "activation_plan.json") == res.activation_plan
@@ -288,9 +300,9 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     assert notes.count("\n- **") == header.count("|") - 1  # one explanation per column
     assert "- **Raw score**: How much the prediction error" in layer_part
     assert "## Original model" in report and f"{n_params:,}" in report
-    assert "Pruning guard" in report and "Activation plan (for Stage 2)" in report
+    assert "Pruning guard" in report and "Activation plan (for Stage 1)" in report
     handoff = (stage_dir / "handoff.md").read_text(encoding="utf-8")
-    for heading in ("## Original model", "## At a glance", "## Stage 1: weights", "## Stage 2: activations",
+    for heading in ("## Original model", "## At a glance", "## Stage 1: quantization", "## Stage 2: pruning",
                     "## Stage 3: KV cache", "## Stage 4: evaluation", "## Search", "## Caveats"):
         assert heading in handoff, heading
     tables = [b for b in handoff.split("\n\n") if b.startswith("| ")]

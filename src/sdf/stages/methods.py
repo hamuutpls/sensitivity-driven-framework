@@ -1,5 +1,10 @@
 """Every compression method of Stages 1-3 in one table, and the ones implemented so far.
 
+Stage 1 is quantization only (weights: RTN, GPTQ, AWQ; activations: RTN, SmoothQuant, QuaRot, ...), Stage 2 is
+pruning only (Wanda, structured, low-rank) and Stage 3 is KV-cache compression only. Paths: 0 -> 1 -> 4,
+0 -> 2 -> 4 (prunes the FP16 model), 0 -> 3 -> 4, and 0 -> 1 -> 2 -> 4 ("<pruning>_after_<quantization>": a Stage 1
+method, then a Stage 2 one on its result).
+
 A method is applied as a context manager on a fresh copy of the model:
 
     with method.apply(MethodCall(model, plan, ...)) as extra_metrics:
@@ -17,7 +22,7 @@ docs/stage-methods-feasibility.md for which library each one needs on Windows an
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, ContextManager, Iterator
 
 import torch
@@ -25,17 +30,18 @@ from torch import nn
 
 from sdf.stage0.activation import ActivationPlan, quantize_inputs
 from sdf.stage0.kv_cache import KVPlan, kv_projections, quantize_output
-from sdf.stage0.planner import CompressionPlan
+from sdf.stage0.planner import CompressionPlan, bits_only
 from sdf.stage0.prune_sweep import apply_plan
 from sdf.stage0.sensitivity import int_zero
 from sdf.stage0.sensitivity import find_decoder_layers
-from sdf.stages.weights import awq_, gptq_, low_rank_, structured_prune_, wanda_
+from sdf.stages.pruning import low_rank_, structured_prune_, wanda_
+from sdf.stages.weights import awq_, gptq_
 
 
 @dataclass
 class MethodCall:
     model: nn.Module
-    plan: Any  # CompressionPlan (Stage 1), ActivationPlan (Stage 2) or KVPlan (Stage 3)
+    plan: Any  # CompressionPlan (weights, pruning), ActivationPlan or KVPlan
     candidate: dict[str, Any]
     cfg: Any  # FrameworkConfig
     batches: Callable[[], list[torch.Tensor]]  # calibration batches, built on first call
@@ -54,8 +60,8 @@ class Method:
     calibrated: bool = False  # reads calibration batches (calibration settings join its cache key)
     simulated: bool = True  # numbers are rounded in place (FP16 storage): speed and file size are not real
     library: str = ""  # where the implementation comes from, for the feasibility table
-    # a pruning method: its standard version removes prune_ratio_aggressive from every layer (not uniform_prune_ratio)
-    prunes: bool = False
+    # a Stage 1 method run before this Stage 2 method: its plan keys, one per entry of `plans`
+    quant_plans: tuple[str, ...] = ()
     # how removed weights are stored in the predicted size, when not stage0.sparse_storage ("free": whole channels or
     # low-rank factors are removed, so no mask of kept weights is needed)
     storage: str | None = None
@@ -112,40 +118,40 @@ def _rtn_kv(call: MethodCall) -> Iterator[dict[str, Any]]:
         yield {}
 
 
-_WEIGHT_PLANS = ("weights", "weights_same_size")
+_WEIGHT_PLANS = ("quant", "quant_same_size")
+_PRUNE_PLANS = ("prune", "prune_same_size")
 
 METHODS: dict[str, Method] = {m.name: m for m in [
-    # Stage 1: weights
-    # baseline; same rounding and pruning as the Stage 0 pruning-levels study
-    Method("rtn", 1, "Round-to-nearest + magnitude pruning", _WEIGHT_PLANS, _rtn_weights,
-           params=("gptq_groupsize",), library="in repo (torch)", version=2),  # 2: integer zero point
+    # Stage 1: quantization, weights (plans carry bits only)
+    # baseline; same rounding as the Stage 0 pruning-levels study
+    Method("rtn", 1, "Round-to-nearest", _WEIGHT_PLANS, _rtn_weights,
+           params=("gptq_groupsize",), library="in repo (torch)", version=3),  # 3: bits-only plans
     # per-layer bits from the plan; Hessian of layer inputs, column-by-column error feedback
     Method("gptq", 1, "GPTQ", _WEIGHT_PLANS, _calibrated(gptq_), params=("gptq_groupsize",), calibrated=True,
-           library="in repo (torch)"),
+           library="in repo (torch)", version=2),
     Method("awq", 1, "AWQ", _WEIGHT_PLANS, _calibrated(awq_), params=("gptq_groupsize",), calibrated=True,
-           library="in repo (torch); autoawq is deprecated"),  # activation-aware channel scaling, then RTN
-    # removes whole feed-forward channels; real speed and size gains once a backend cuts them out
-    Method("structured_prune", 1, "Structured pruning (feed-forward channels)", _WEIGHT_PLANS,
-           _calibrated(structured_prune_), params=("gptq_groupsize", "prune_ratio_aggressive"), calibrated=True,
-           prunes=True, storage="free", library="in repo (torch)"),
-    Method("unstructured_prune", 1, "Unstructured pruning (Wanda)", _WEIGHT_PLANS, _calibrated(wanda_),
-           params=("gptq_groupsize", "prune_ratio_aggressive"), calibrated=True, prunes=True,
-           library="in repo (torch)", version=2),  # |w| x input norm per output row; 2: scores in float32
-    # rank chosen so each layer keeps (1 - planned share) of its numbers; activation-aware SVD
-    Method("low_rank", 1, "Low-rank (activation-aware SVD)", _WEIGHT_PLANS, _calibrated(low_rank_),
-           params=("gptq_groupsize", "prune_ratio_aggressive"), calibrated=True, prunes=True, storage="free",
-           library="in repo (torch)"),
-    # Stage 2: activations
-    Method("rtn_act", 2, "Round-to-nearest activations", ("activations",), _rtn_activations,
+           library="in repo (torch); autoawq is deprecated", version=2),  # activation-aware channel scaling, then RTN
+    # Stage 1: quantization, activations
+    Method("rtn_act", 1, "Round-to-nearest activations", ("activations",), _rtn_activations,
            library="in repo (torch)"),  # baseline; same rounding as the Stage 0 activation measurement
-    Method("smoothquant", 2, "SmoothQuant", ("activations",), params=("smoothquant_alpha",), calibrated=True,
+    Method("smoothquant", 1, "SmoothQuant", ("activations",), params=("smoothquant_alpha",), calibrated=True,
            library="in repo (torch)"),  # moves outliers from activations into weights
     # fast-hadamard-transform is a CUDA source build; a torch matmul Hadamard is fast enough at 1B
-    Method("quarot", 2, "QuaRot", ("activations",), library="in repo (torch Hadamard)"),
+    Method("quarot", 1, "QuaRot", ("activations",), library="in repo (torch Hadamard)"),
     # reorder channels into clusters, one scale per cluster
-    Method("rptq", 2, "RPTQ", ("activations",), calibrated=True, library="in repo (research code only)"),
-    # learned rotations: a short optimisation run, the most expensive Stage 2 method
-    Method("spinquant", 2, "SpinQuant", ("activations",), calibrated=True, library="in repo (research code only)"),
+    Method("rptq", 1, "RPTQ", ("activations",), calibrated=True, library="in repo (research code only)"),
+    # learned rotations: a short optimisation run, the most expensive activation method
+    Method("spinquant", 1, "SpinQuant", ("activations",), calibrated=True, library="in repo (research code only)"),
+    # Stage 2: pruning (plans carry pruning ratios; weights stay FP16 unless run after Stage 1)
+    Method("unstructured_prune", 2, "Unstructured pruning (Wanda)", _PRUNE_PLANS, _calibrated(wanda_),
+           calibrated=True, library="in repo (torch)", version=3),  # |w| x input norm per output row; 3: prunes only
+    # removes whole feed-forward channels; real speed and size gains once a backend cuts them out
+    Method("structured_prune", 2, "Structured pruning (feed-forward channels)", _PRUNE_PLANS,
+           _calibrated(structured_prune_), calibrated=True, storage="free",
+           library="in repo (torch)", version=2),
+    # rank chosen so each layer keeps (1 - planned share) of its numbers; activation-aware SVD
+    Method("low_rank", 2, "Low-rank (activation-aware SVD)", _PRUNE_PLANS, _calibrated(low_rank_),
+           params=("gptq_groupsize",), calibrated=True, storage="free", library="in repo (torch)", version=2),
     # Stage 3: KV cache
     # baseline; same rounding as the Stage 0 KV measurement, no eviction
     Method("rtn_kv", 3, "Round-to-nearest KV cache", ("kv_bits_only",), _rtn_kv, library="in repo (torch)"),
@@ -161,11 +167,36 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     Method("infinigen", 3, "InfiniGen", ("kv",), library="research code only (custom offloading)"),
 ]}
 
+AFTER = "_after_"  # "<Stage 2 method>_after_<Stage 1 weight method>": the series path 0 -> 1 -> 2 -> 4
+
+
+def series(quant: Method, prune: Method) -> Method:
+    """`prune` (Stage 2) applied to the model `quant` (Stage 1, weights) has just quantized. The quantization
+    follows the plan's bits, the pruning its ratios; both plans are the two halves of one combined plan."""
+    if (quant.stage, prune.stage) != (1, 2) or quant.plans != _WEIGHT_PLANS:
+        raise ValueError(f"{prune.name} (Stage {prune.stage}) cannot follow {quant.name} (Stage {quant.stage}): "
+                         "only a Stage 1 weight method can precede a Stage 2 method")
+
+    @contextmanager
+    def apply(call: MethodCall) -> Iterator[dict[str, Any]]:
+        with quant.apply(replace(call, plan=bits_only(call.plan))) as first, prune.apply(call) as second:
+            yield {**first, **second}
+
+    return Method(prune.name + AFTER + quant.name, 2, f"{prune.label} after {quant.label}", prune.plans, apply,
+                  version=quant.version * 1000 + prune.version, params=tuple(dict.fromkeys(quant.params + prune.params)),
+                  calibrated=quant.calibrated or prune.calibrated, library=prune.library, storage=prune.storage,
+                  quant_plans=quant.plans)
+
 
 def methods_for(stage: int, names: list[str]) -> list[Method]:
     """The listed methods of one stage, in the given order; unknown names or wrong stages are an error."""
     out = []
     for n in names:
+        if AFTER in n and stage == 2:
+            prune, quant = n.split(AFTER)
+            if prune in METHODS and quant in METHODS:
+                out.append(series(METHODS[quant], METHODS[prune]))
+                continue
         m = METHODS.get(n)
         if m is None or m.stage != stage:
             known = sorted(k for k, v in METHODS.items() if v.stage == stage)

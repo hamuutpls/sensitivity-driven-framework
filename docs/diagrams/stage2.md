@@ -1,20 +1,19 @@
-# Stage 2: activation compression (planned)
+# Stage 2: pruning
 
-Not written yet. Drawn from the design (v2_1 diagram, "Stage 2" page) and the thesis spec; names are proposals.
-Back to the [overview](README.md).
+Drawn from the code (`src/sdf/stages/pruning.py`, `methods.py`). Back to the [overview](README.md).
 
 ## In plain words
 
-Besides its stored numbers, a model computes new numbers at every step while it runs ("activations"). Storing
-those with fewer bits too makes the model faster, but a few of them are huge **outliers** that get ruined by
-rounding. The methods here tame the outliers first: **SmoothQuant** moves part of the difficulty into the stored
-weights (how much is set by the "migration strength", `smoothquant_alpha`), while **QuaRot**, **RPTQ** and
-**SpinQuant** mix the numbers so the outliers are spread evenly. None of this changes the model's output before
-rounding.
+Stage 2 makes the model smaller by **removing** numbers that barely matter and rounds nothing: single weights
+(**Wanda**), whole feed-forward channels (**structured pruning**), or the part of a weight table a smaller
+**low-rank** copy can drop. The standard way removes the same share from every layer. The framework removes more
+from the layers Stage 0 found robust and nothing from the fragile or never-pruned ones.
 
-The framework version keeps activations at higher precision in the layers Stage 0 protected. Stage 2 starts
-from the uncompressed model and the Stage 0 plan, not from Stage 1's output, so each stage's effect is measured
-on its own.
+Two paths:
+
+- Stage 0 > Stage 2 > Stage 4: prunes the uncompressed (FP16) model.
+- Stage 0 > Stage 1 > Stage 2 > Stage 4: a Stage 1 method quantizes first, then the Stage 2 method prunes the
+  quantized model (rows named `<pruning>_after_<quantization>`).
 
 ## Class diagram
 
@@ -22,104 +21,66 @@ on its own.
 classDiagram
     direction LR
 
-    class ActivationMethod {
-        <<planned, Protocol>>
+    class Method {
         +str name
-        +apply(model, layer_plans, candidate, batches) Module
+        +tuple plans
+        +tuple quant_plans
+        +apply(MethodCall)
     }
-    class SmoothQuant {
-        <<planned>>
-        +float alpha
-        +apply(...)
-    }
-    class QuaRot {
-        <<planned>>
-        +apply(...)
-    }
-    class RPTQ {
-        <<planned>>
-        +apply(...)
-    }
-    class SpinQuant {
-        <<planned>>
-        +apply(...)
-    }
-    class ChannelStats {
-        <<planned>>
-        +list max_abs_per_channel
-        +list outlier_channels
-        +collect(model, batches) ChannelStats
-    }
-    class Stage2Config {
-        <<planned>>
-        +list methods
-        +int protected_act_bits
-        +int compressed_act_bits
-    }
-    class stage2_run {
-        <<planned module>>
-        +run_stage2(ctx, candidate, stage0) StageResult
-    }
-    class Stage0Result
-    class StageReporter
-    class ArtifactCache
-    class measure_model {
+    class wanda_ {
         <<function>>
     }
+    class structured_prune_ {
+        <<function>>
+    }
+    class low_rank_ {
+        <<function>>
+    }
+    class series {
+        <<function>>
+        +series(quant, prune) Method
+    }
+    class combine_plans {
+        <<function>>
+    }
+    class run_stage {
+        <<function>>
+        +run_stage(ctx, 2, names, ...)
+    }
+    class Stage0Plans {
+        +dict plans
+    }
 
-    ActivationMethod <|.. SmoothQuant
-    ActivationMethod <|.. QuaRot
-    ActivationMethod <|.. RPTQ
-    ActivationMethod <|.. SpinQuant
-    SmoothQuant ..> ChannelStats : per-channel scales
-    RPTQ ..> ChannelStats : reorders channels
-    stage2_run ..> ActivationMethod
-    stage2_run ..> Stage0Result : reads plan
-    stage2_run ..> measure_model
-    stage2_run ..> ArtifactCache : original-method results
-    stage2_run ..> StageReporter : fp16 / original / framework rows
-    stage2_run ..> Stage2Config
+    Method ..> wanda_ : unstructured_prune
+    Method ..> structured_prune_ : structured_prune
+    Method ..> low_rank_ : low_rank
+    series ..> Method : quant then prune
+    run_stage ..> series : name contains _after_
+    run_stage ..> combine_plans : quant_plan + prune_plan
+    run_stage ..> Stage0Plans : prune_plan.json, prune_plan_same_size.json
 ```
-
-`smoothquant_alpha` joins `SEARCH_SPACE` when this stage is written.
 
 ## Sequence diagram
 
 ```mermaid
 sequenceDiagram
-    participant R as run_stage2 (planned)
-    participant A as ActivationMethod (planned)
+    participant R as run_stage (stage 2)
+    participant Q as Stage 1 method (series only)
+    participant P as Stage 2 method
     participant E as measure_model
     participant Rep as StageReporter
 
-    loop each method: SmoothQuant, QuaRot, RPTQ, SpinQuant
-        Note over R,Rep: original row: method defaults, same bits everywhere, cached like Stage 1
-        R->>A: apply(FP16 model, plan.layers, candidate, batches)
-        loop each calibration batch
-            A->>A: record each channel's largest value
+    loop each method (alone, then after each stage2_after method)
+        R->>P: original: every layer pruned at prune_ratio_aggressive
+        opt series
+            R->>Q: quantize fresh FP16 model with the bits of the plan
         end
-        A->>A: mark the outlier channels
-        alt smooth (SmoothQuant)
-            loop each linear layer
-                A->>A: scale per channel with smoothquant_alpha, move outliers into the weights
-            end
-        else rotate (QuaRot, SpinQuant)
-            A->>A: build rotation (Hadamard or learned)
-            loop each linear layer
-                A->>A: fold norm scale into weights, rotate to spread outliers
-            end
+        R->>P: prune with the plan's ratios (low-rank: factors at the plan's bits)
+        R->>E: measure_model
+        R->>Rep: row (method, original)
+        loop each plan: prune, prune_same_size
+            R->>P: same, with the Stage 0 plan
+            R->>Rep: row (method, framework)
         end
-        loop each linear layer
-            alt protected in the plan
-                A->>A: keep higher-precision activations
-            else
-                A->>A: quantise activations to the planned bits
-            end
-        end
-        A-->>R: activation-quantised model + outlier ratio, activation error
-        R->>E: measure_model(model, validation, held-out)
-        E-->>R: metrics incl. added latency per token
-        R->>Rep: row (method, framework)
     end
-    R->>Rep: finalize()
 ```

@@ -68,7 +68,7 @@ METRICS: dict[str, MetricSpec] = {
     "avg_activation_bits": MetricSpec(
         "Average activation bits", "bits", "lower", "storage used per number passed between layers",
         "How many bits the numbers flowing between the model's layers are rounded to, on average over the "
-        "layers (16 uncompressed). Planned here, applied in Stage 2."),
+        "layers (16 uncompressed). Planned here, applied in Stage 1."),
     "predicted_act_ppl_rise": MetricSpec(
         "Predicted perplexity rise from activation rounding", "", "lower",
         "expected accuracy loss from rounding the numbers passed between layers",

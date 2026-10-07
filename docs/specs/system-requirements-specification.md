@@ -6,7 +6,7 @@
 | Standard | ISO/IEC/IEEE 29148:2018, clause 9.6 (SyRS content) |
 | System | Sensitivity-Driven Framework (`sdf`), MSc thesis codebase |
 | Owner | Mohammad (GitHub `hamuutpls`) |
-| Version | 0.4 (draft), 2026-10-01 |
+| Version | 0.5 (draft), 2026-10-07 |
 | Companion | [Subsystem Design Description](subsystem-design-description.md) (IEEE 1016-2009) |
 
 ## Change history
@@ -17,6 +17,7 @@
 | 0.2 | 2026-09-30 | S0-01 now names layer removal as the default sensitivity score (Mohammad's decision, 2026-09-30), with one-layer compression and gradient × weight selectable; S0-09 covers ablation scores. New S0-10 to S0-13 for the Stage 0 KV cache plan. MET-06 and S3-02 updated to match. |
 | 0.3 | 2026-09-30 | New S0-14 (pruning guard), S0-15 (activation plan for Stage 2) and S0-16 (plans returned and loadable). S2-02 names the activation plan; open issue 3 narrowed to validating it. |
 | 0.4 | 2026-10-01 | S0-15: activation plan measured by default. New S0-17 (handoff.md). REP-09: build time does not decide the verdict; a run with no targets reports "no targets set". KV measured on 64 passages by default. |
+| 0.5 | 2026-10-07 | Mohammad's stage split: Stage 1 is quantization only (weights and activations, S1-01 to S1-07), Stage 2 is pruning only (S2-01 to S2-03), with the series path 0 > 1 > 2 > 4. New S0-18 (separate quantization and pruning plans). Old S2-01 to S2-03 became S1-05 to S1-07. |
 
 ---
 
@@ -40,7 +41,7 @@ tests, whether this beats shrinking every layer the same way.
 
 - Stage 0: per-layer sensitivity profiling and a per-layer compression plan (bit width, pruning ratio).
 - Stage 1: weight compression (GPTQ, AWQ, structured, unstructured and low-rank pruning).
-- Stage 2: activation compression (SmoothQuant, QuaRot, RPTQ, SpinQuant).
+- Stage 1 also quantizes activations (SmoothQuant, QuaRot, RPTQ, SpinQuant); Stage 2: pruning (Wanda, structured, low-rank).
 - Stage 3: KV-cache compression (QuaRot KV, KVQuant, H2O, SnapKV, InfiniGen).
 - Stage 4: evaluation across inference backends (HF Transformers, llama.cpp, vLLM, TensorRT-LLM).
 - A search layer that tunes the framework's hyperparameters with three multi-objective searchers (MOBO,
@@ -78,7 +79,7 @@ machine is a Windows PC with an RTX 5070 Ti, 16 GB).
 |---|---|---|
 | F-1 | Load one configuration, fix seeds, create a run folder, capture the environment. | Implemented |
 | F-2 | Profile per-layer sensitivity and build a compression plan (Stage 0). | Implemented |
-| F-3 | Apply the plan to weights (Stage 1), activations (Stage 2) and KV cache (Stage 3), each independently. | Planned |
+| F-3 | Apply the plan to weights and activations (Stage 1, quantization only), pruning (Stage 2) and KV cache (Stage 3), each independently. | Planned |
 | F-4 | Measure accuracy, memory, latency and build cost under identical conditions. | Implemented for HF backend |
 | F-5 | Evaluate the compressed models on several inference backends (Stage 4). | Planned |
 | F-6 | Search the hyperparameters with three searchers and benchmark them. | Planned |
@@ -219,26 +220,30 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | S0-12 | Stage 0 shall predict KV cache memory at `kv_context_len` tokens × `kv_batch_size` for the FP16 cache, the uniform cache and each plan. | M | Implemented | T | DEC (2026-09-30) | SDD §5.8 |
 | S0-13 | Stage 0 shall report the KV cache as rows original (uniform bits, no eviction), framework (bits and token budget) and framework bits only (no eviction), and save the KV profile and plans as JSON. | M | Implemented | T | DEC (2026-09-30) | SDD §5.8 |
 | S0-14 | No framework plan shall prune the `guard_top_k` layers with the highest layer-removal score, whichever score sets the bits; a removal profile shall be measured (and cached) when another score is used. | M | Implemented | T | DEC (2026-09-30) | SDD §5.4 |
-| S0-15 | Stage 0 shall plan activation bits per decoder layer for Stage 2. By default (`act_plan = measured`) it shall measure the calibration perplexity rise when only one layer's Linear inputs are rounded to each of `act_bits_options` and spend `act_avg_bits` where the rise is largest; `act_plan = from_weights` copies the weight plan (protected and guarded layers at the highest option). The original variant is `act_uniform_bits` everywhere. Rows `activations/original`, `activations/framework` and, when measured, `activations_from_weights/framework`; saved as `activation_plan.json` and `activation_profile.json`. | M | Implemented | T | DEC (2026-10-01) | SDD §5.9 |
+| S0-15 | Stage 0 shall plan activation bits per decoder layer for Stage 1. By default (`act_plan = measured`) it shall measure the calibration perplexity rise when only one layer's Linear inputs are rounded to each of `act_bits_options` and spend `act_avg_bits` where the rise is largest; `act_plan = from_weights` copies the weight plan (protected and guarded layers at the highest option). The original variant is `act_uniform_bits` everywhere. Rows `activations/original`, `activations/framework` and, when measured, `activations_from_weights/framework`; saved as `activation_plan.json` and `activation_profile.json`. | M | Implemented | T | DEC (2026-10-01) | SDD §5.9 |
 | S0-17 | Stage 0 shall write `handoff.md`: for each later stage and the search, the file it loads, the plan layer by layer, the predicted cost against the standard method and the uncompressed model, and what that stage must still measure, in plain language with every table column explained and the Original model section. | M | Implemented | T | DEC (2026-10-01) | SDD §5.10 |
+| S0-18 | Stage 0 shall save the plans for Stage 1 and Stage 2 separately: `quant_plan.json` (main plan, bits only), `quant_plan_budget_matched.json` (budget plan, nothing removed), `prune_plan.json` (the main plan's ratios, bits at the baseline) and `prune_plan_same_size.json` (as many numbers removed as the standard method, placed by sensitivity). | M | Implemented | T | DEC (2026-10-07) | SDD §5.10 |
 | S0-16 | `run_stage0` shall return every plan (threshold, budget, activation, KV cache) and each plan class shall load its saved JSON (`CompressionPlan.load`, `ActivationPlan.load`, `KVPlan.load`). | M | Implemented | T | DEC (2026-09-30) | SDD §5.2 |
 
-#### 3.1.7 Stage 1: weight compression (S1)
+#### 3.1.7 Stage 1: quantization (S1)
 
 | ID | Requirement | Pri | Status | Ver | Source | Design |
 |---|---|---|---|---|---|---|
-| S1-01 | Stage 1 shall support GPTQ, AWQ, structured pruning, unstructured pruning and low-rank decomposition. | M | Implemented | T | SPEC | SDD §6 |
-| S1-02 | In the framework variant, each layer's bit width and pruning ratio shall come from the Stage 0 plan. | M | Implemented | T | SPEC | SDD §6 |
+| S1-01 | Stage 1 shall support RTN, GPTQ and AWQ for weights. It shall quantize only: no method of Stage 1 removes any number, and a plan that does is refused. | M | Implemented | T | DEC (2026-10-07) | SDD §6 |
+| S1-02 | In the framework variant, each layer's bit width shall come from the Stage 0 quantization plan (`quant_plan.json`, `quant_plan_budget_matched.json`, S0-18), which carries no pruning ratios. | M | Implemented | T | DEC (2026-10-07) | SDD §6 |
 | S1-03 | GPTQ group size shall be the search parameter `gptq_groupsize`. | M | Implemented | I | SPEC | SDD §6 |
 | S1-04 | Stage 1 shall measure real (not predicted) size and accuracy, and report predicted vs measured memory. | M | Planned | T | SPEC | SDD §6 |
+| S1-05 | Stage 1 shall support RTN, SmoothQuant, QuaRot, RPTQ and SpinQuant for activations (formerly S2-01). | M | Partly (RTN) | T | DEC (2026-10-07) | SDD §6 |
+| S1-06 | In the framework variant, per-layer activation precision shall follow the Stage 0 activation plan (`activation_plan.json`, S0-15; formerly S2-02). | M | Implemented (RTN) | T | DEC (2026-10-07) | SDD §6 |
+| S1-07 | SmoothQuant's migration strength shall be the search parameter `smoothquant_alpha` (formerly S2-03). | M | Planned | I | SPEC | SDD §6 |
 
-#### 3.1.8 Stage 2: activation compression (S2)
+#### 3.1.8 Stage 2: pruning (S2)
 
 | ID | Requirement | Pri | Status | Ver | Source | Design |
 |---|---|---|---|---|---|---|
-| S2-01 | Stage 2 shall support SmoothQuant, QuaRot, RPTQ and SpinQuant. | M | Planned | T | SPEC | SDD §7 |
-| S2-02 | In the framework variant, per-layer activation precision shall follow the Stage 0 activation plan (`activation_plan.json`, S0-15). | M | Planned | T | SPEC | SDD §7 |
-| S2-03 | SmoothQuant's migration strength shall be the search parameter `smoothquant_alpha`. | M | Planned | I | SPEC | SDD §7 |
+| S2-01 | Stage 2 shall support Wanda (unstructured), structured pruning and low-rank decomposition. It shall round nothing, except that low-rank factors are stored at the plan's bits. | M | Implemented | T | DEC (2026-10-07) | SDD §7 |
+| S2-02 | In the framework variant, each layer's pruning ratio shall come from the Stage 0 pruning plan (`prune_plan.json`, `prune_plan_same_size.json`, S0-18): bits at the baseline, layers the guard protects never pruned. | M | Implemented | T | DEC (2026-10-07) | SDD §7 |
+| S2-03 | Stage 2 shall run on the uncompressed model (path 0 > 2 > 4) and, as `<pruning>_after_<quantization>`, on the model a Stage 1 weight method has quantized (path 0 > 1 > 2 > 4); the series plan takes bits from the quantization plan and ratios from the pruning plan. | M | Implemented | T | DEC (2026-10-07) | SDD §7 |
 
 #### 3.1.9 Stage 3: KV-cache compression (S3)
 
@@ -377,7 +382,7 @@ A full requirement-to-design-to-code matrix is in [SDD Appendix A](subsystem-des
 |---|---|
 | 1 | Downstream task suite (MET-03) not yet chosen. |
 | 2 | "Memory decreased" sanity check (MET-09) to be added to `StageReporter`. |
-| 3 | The Stage 0 activation plan (S0-15) assumes per-layer activation damages add up; Stage 2 measures the real effect. Stage 3 follows the Stage 0 KV cache plan (S0-10 to S0-13). |
+| 3 | The Stage 0 activation plan (S0-15) assumes per-layer activation damages add up; Stage 1 measures the real effect. Stage 3 follows the Stage 0 KV cache plan (S0-10 to S0-13). |
 | 4 | The fidelity schedule for MFBO (which cheaper evaluation stands in for the full one) to be fixed with the search layer. |
 
 ### 5.3 Acronyms
