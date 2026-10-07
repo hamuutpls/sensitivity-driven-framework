@@ -22,6 +22,8 @@ from sdf.stage0.planner import (
     baseline_cost,
     plan_compression,
     predict_cost,
+    pruning_only,
+    same_size_pruning_plan,
     uniform_plan,
 )
 from sdf.stage0.activation import (
@@ -82,11 +84,11 @@ class Stage0Result:
     """Everything later stages take from Stage 0. Each plan is also saved as JSON next to the report and can be
     read back with its class's `load` (CompressionPlan, KVPlan, ActivationPlan)."""
 
-    plan: CompressionPlan  # Stage 1: bits and pruning per layer (threshold plan)
+    plan: CompressionPlan  # Stages 1 and 2: bits and pruning per layer (threshold plan); each stage loads its half (quant_plan, prune_plan)
     profile: SensitivityProfile
     outputs: dict[str, Path]
     budget_plan: CompressionPlan | None = None  # fits in the uniform plan's memory
-    activation_plan: ActivationPlan | None = None  # Stage 2: activation bits per layer
+    activation_plan: ActivationPlan | None = None  # Stage 1: activation bits per layer
     activation_profile: ActivationProfile | None = None  # None when stage0.act_plan = "from_weights"
     kv_plan: KVPlan | None = None  # Stage 3: key/value bits and token budget per layer
     kv_plan_bits_only: KVPlan | None = None
@@ -406,6 +408,18 @@ def run_stage0(
                         act_prof)
     if budget is not None:
         budget.save(rep.dir / "compression_plan_budget_matched.json")
+    # What each later stage loads: Stage 1 bits only, Stage 2 pruning only (see handoff.md)
+    quant = plan_compression(scores, candidate["sensitive_threshold"], 0.0, s0.protected_bits, s0.compressed_bits,
+                             guarded)
+    prune = pruning_only(plan, s0.baseline_bits)
+    prune_uniform = uniform_plan(scores, s0.baseline_bits, candidate["prune_ratio_aggressive"])
+    prune_same = same_size_pruning_plan(scores, s0.baseline_bits, candidate["prune_ratio_aggressive"],
+                                        profile.layer_numel, guarded)
+    quant.save(rep.dir / "quant_plan.json")
+    if no_prune is not None:
+        no_prune.save(rep.dir / "quant_plan_budget_matched.json")
+    prune.save(rep.dir / "prune_plan.json")
+    prune_same.save(rep.dir / "prune_plan_same_size.json")
     if kv is not None:
         _add_kv_details(rep, *kv)
         kv[0].save(rep.dir / "kv_profile.json")
@@ -419,7 +433,8 @@ def run_stage0(
     profile.save(rep.dir / "sensitivity_profile.json")
     fp16_row = next((r for r in rep.rows if r.variant == "fp16"), None)
     handoff = write_handoff(rep.dir / "handoff.md", cfg=cfg, candidate=candidate, original_model=rep.original_model,
-                            profile=profile, plan=plan, budget=budget, uniform=uniform,
+                            profile=profile, plan=plan, budget=budget, quant=quant, quant_budget=no_prune,
+                            prune=prune, prune_same_size=prune_same, uniform=uniform, prune_uniform=prune_uniform,
                             predict=predict, fp16=fp16_row.metrics if fp16_row else {}, guarded=guarded, act=act,
                             act_prof=act_prof, kv=kv)
     rep.sections.append(("What later stages receive", f"See {handoff.name}: the plan each stage loads, layer by "
@@ -546,7 +561,7 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
                               else "n/a (CPU)."),
         "",
         "Stage 0 only allocates precision, so memory here is predicted from the plan. Accuracy and latency of "
-        "the two allocations are measured once Stage 1 applies them.",
+        "the two allocations are measured once Stages 1 and 2 apply them.",
     ])))
 
     k = rep.config["stage0"]["guard_top_k"]
@@ -561,7 +576,7 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
                "derived from the weight plan, not measured: layers it protects or guards get the most bits, the "
                "rest the fewest. This assumes a layer fragile for weights is fragile for activations too")
         top = [lp.layer for lp in act.layers if lp.protected]
-        rep.sections.append(("Activation plan (for Stage 2)", (
+        rep.sections.append(("Activation plan (for Stage 1)", (
             f"Activation bits per layer are {how}. Layers at the highest width: {top or 'none'}; average "
             f"{act.avg_bits:.2f} bits. Saved as activation_plan.json"
             + (" (measurements in activation_profile.json)." if act_prof is not None else "."))))
@@ -789,7 +804,7 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
          ("guarded", "Never pruned", "\"yes\" for the layers the model depends on most (removing one alone "
           "hurts the most), which no plan may trim, whatever their sensitivity score."),
          ("activation_bits", "Activation bits (framework)", "Bits for the numbers flowing into this layer, "
-          "planned for Stage 2."),
+          "planned for Stage 1."),
          ("activation_rise_low_bits", "Activation damage at fewest bits", "How much the prediction error "
           "(perplexity) rose when only this layer's incoming numbers were rounded to the fewest bits allowed. "
           "Bigger means the layer needs more bits. Empty when activations were not measured."),

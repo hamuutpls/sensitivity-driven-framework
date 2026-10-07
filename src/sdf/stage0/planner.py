@@ -10,7 +10,7 @@ The "original method" allocation used for comparison is uniform: every layer get
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Callable
 
 from sdf.search_space import PER_CHANNEL
@@ -60,6 +60,32 @@ class CompressionPlan(JsonFile):
     def from_dict(cls, d: dict[str, Any]) -> "CompressionPlan":
         return cls(tuple(LayerPlan(**lp) for lp in d["layers"]), d["kind"], d["sensitive_threshold"],
                    d["prune_ratio_aggressive"])
+
+
+def require_bits_only(plan: CompressionPlan, method: str) -> None:
+    """Stage 1 quantizes only: a plan that removes anything is a Stage 2 plan."""
+    if any(lp.pruning_ratio for lp in plan.layers):
+        raise ValueError(f"{method} is a quantization method and removes nothing, but the plan prunes layers "
+                         f"{[lp.layer for lp in plan.layers if lp.pruning_ratio]}; use a bits-only plan")
+
+
+def bits_only(plan: CompressionPlan) -> CompressionPlan:
+    """`plan` with nothing removed (the quantization half of a plan that has both)."""
+    return replace(plan, layers=tuple(replace(lp, pruning_ratio=0.0) for lp in plan.layers))
+
+
+def pruning_only(plan: CompressionPlan, baseline_bits: int) -> CompressionPlan:
+    """`plan` with every layer left at `baseline_bits` (no rounding): the pruning half of a plan that has both."""
+    return replace(plan, layers=tuple(replace(lp, bit_width=baseline_bits) for lp in plan.layers))
+
+
+def combine_plans(quant: CompressionPlan, prune: CompressionPlan) -> CompressionPlan:
+    """Bits of `quant` with the pruning ratios of `prune`, for Stage 2 run after Stage 1 (0 -> 1 -> 2 -> 4)."""
+    if len(quant.layers) != len(prune.layers):
+        raise ValueError(f"plans have {len(quant.layers)} and {len(prune.layers)} layers")
+    layers = tuple(replace(q, pruning_ratio=p.pruning_ratio, guarded=p.guarded)
+                   for q, p in zip(quant.layers, prune.layers))
+    return CompressionPlan(layers, prune.kind, prune.sensitive_threshold, prune.prune_ratio_aggressive)
 
 
 def guarded_layers(removal_scores: list[float], top_k: int) -> frozenset[int]:

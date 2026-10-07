@@ -46,7 +46,12 @@ def write_handoff(
     profile: SensitivityProfile,
     plan: CompressionPlan,
     budget: CompressionPlan | None,
+    quant: CompressionPlan,
+    quant_budget: CompressionPlan | None,
+    prune: CompressionPlan,
+    prune_same_size: CompressionPlan | None,
     uniform: CompressionPlan,
+    prune_uniform: CompressionPlan,
     predict: Callable[[CompressionPlan], PlanCost],
     fp16: dict[str, Any],
     guarded: frozenset[int],
@@ -60,26 +65,30 @@ def write_handoff(
         "# What Stage 0 hands to each stage",
         "",
         "Stage 0 does not compress anything. It measures which parts of the model are fragile and writes a plan "
-        "for every later stage: how many bits each layer's weights get and how much of each layer may be "
-        "removed (Stage 1), how many bits the numbers passed between layers get (Stage 2), and how the model's "
-        "short-term memory while writing is stored (Stage 3). Stage 4 and the search use the plans' predicted "
-        "costs and the uncompressed model's measured numbers as their reference. Every plan below is also a JSON "
-        "file next to this one, and each later stage loads that file rather than re-measuring.",
+        "for every later stage: how many bits each layer's weights and the numbers passed between layers get "
+        "(Stage 1, quantization only: nothing is removed), how much of each layer may be removed (Stage 2, "
+        "pruning only: nothing is rounded), and how the model's short-term memory while writing is stored "
+        "(Stage 3). Stage 4 and the search use the plans' predicted costs and the uncompressed model's measured "
+        "numbers as their reference. Every plan below is also a JSON file next to this one, and each later "
+        "stage loads that file rather than re-measuring.",
         "",
         "Each stage applies its plan on its own, starting from the original model, so the effect of each kind "
-        "of compression can be measured separately. Every stage compares three versions under identical "
-        "conditions: the original model, the method used the standard way (no Stage 0), and the method guided "
-        "by Stage 0.",
+        "of compression can be measured separately: paths 0 > 1 > 4, 0 > 2 > 4 and 0 > 3 > 4. One more path, "
+        "0 > 1 > 2 > 4, runs a pruning method on a model Stage 1 has already quantized. Every stage compares "
+        "three versions under identical conditions: the original model, the method used the standard way (no "
+        "Stage 0), and the method guided by Stage 0.",
         "",
     ]
     lines += original_model_lines(original_model)
 
     # ---- at a glance --------------------------------------------------------------------------------------
     rows = [
-        ["Stage 1: weights", "bits and share removed per layer; layers never to prune",
-         "`compression_plan.json` (+ `_budget_matched`)", "`CompressionPlan.load`"],
-        ["Stage 2: activations", "bits per layer for the numbers passed between layers",
+        ["Stage 1: weights", "bits per layer, nothing removed",
+         "`quant_plan.json` (+ `quant_plan_budget_matched.json`)", "`CompressionPlan.load`"],
+        ["Stage 1: activations", "bits per layer for the numbers passed between layers",
          "`activation_plan.json`" + (" (+ `activation_profile.json`)" if act_prof else ""), "`ActivationPlan.load`"],
+        ["Stage 2: pruning", "share removed per layer (nothing rounded); layers never to prune",
+         "`prune_plan.json` (+ `prune_plan_same_size.json`)", "`CompressionPlan.load`"],
         ["Stage 3: KV cache", "key bits, value bits and share of past words kept per layer",
          "`kv_cache_plan.json` (+ `_bits_only`, `kv_profile.json`)" if kv else "not planned (KV_CACHE off)",
          "`KVPlan.load`" if kv else "–"],
@@ -97,61 +106,55 @@ def write_handoff(
     ])
 
     # ---- Stage 1 ------------------------------------------------------------------------------------------
-    fw, un = predict(plan), predict(uniform)
+    qc, un, qb = predict(quant), predict(uniform), predict(quant_budget) if quant_budget is not None else None
     lines += [
-        "## Stage 1: weights (GPTQ, AWQ, pruning, low-rank)",
+        "## Stage 1: quantization (weights: RTN, GPTQ, AWQ; activations: SmoothQuant, QuaRot, RPTQ, SpinQuant)",
+        "",
+        "Quantization keeps every number with fewer bits and removes nothing. This holds for every plan below.",
+        "",
+        "### Weights",
         "",
         f"The main plan protects layers with sensitivity at or above {candidate['sensitive_threshold']:.2f} "
-        f"({len(plan.protected_layers)} of {n}: kept at {s0.protected_bits} bits, nothing removed) and "
-        f"compresses the rest to {s0.compressed_bits} bits with {candidate['prune_ratio_aggressive']:.0%} of "
-        "their numbers removed. The budget plan fits in the standard method's memory, so accuracy can be "
-        "compared size for size. "
-        + (f"Layers {', '.join(map(str, sorted(guarded)))} are never pruned in any plan, because removing any one of them alone "
-           f"hurts the model most (the {s0.guard_top_k} highest layer-removal scores)."
-           if guarded else "No layer is guarded against pruning (GUARD_TOP_K = 0)."),
+        f"({len(quant.protected_layers)} of {n}: kept at {s0.protected_bits} bits) and compresses the rest to "
+        f"{s0.compressed_bits} bits. The budget plan fits in the standard method's memory, so accuracy can be "
+        f"compared size for size: it also protects the sensitive layers and pays for them by dropping the rest "
+        f"to {s0.no_prune_compressed_bits} bits.",
         "",
     ]
-    budget_layers = budget.layers if budget else [None] * n
-    rows = [[lp.layer, f"{lp.sensitivity:.2f}", _n(lp.protected), _n(lp.guarded), lp.bit_width,
-             f"{lp.pruning_ratio:.0%}", "–" if bl is None else bl.bit_width,
-             "–" if bl is None else f"{bl.pruning_ratio:.0%}"]
-            for lp, bl in zip(plan.layers, budget_layers)]
-    lines += [_table(["Layer", "Sensitivity", "Protected", "Never pruned", "Bits", "Removed",
-                      "Bits (budget plan)", "Removed (budget plan)"], rows), ""]
+    budget_layers = quant_budget.layers if quant_budget else [None] * n
+    rows = [[lp.layer, f"{lp.sensitivity:.2f}", _n(lp.protected), lp.bit_width,
+             "–" if bl is None else bl.bit_width]
+            for lp, bl in zip(quant.layers, budget_layers)]
+    lines += [_table(["Layer", "Sensitivity", "Protected", "Bits", "Bits (budget plan)"], rows), ""]
     lines += _column_notes([
         ("Layer", "Position in the model, from 0 at the input end."),
         ("Sensitivity", f"How much the model suffers when this layer changes, from 0 (least) to 1 (most), "
                         f"measured by {profile.method.replace('_', ' ')}."),
         ("Protected", "\"yes\" if the main plan keeps this layer at high precision."),
-        ("Never pruned", "\"yes\" if no plan may remove numbers from this layer, whatever its sensitivity."),
         ("Bits", "Bits per number for this layer's weights in the main plan."),
-        ("Removed", "Share of this layer's numbers the main plan deletes."),
         ("Bits (budget plan)", "Bits per number in the plan that fits in the standard method's memory."),
-        ("Removed (budget plan)", "Share deleted in the budget plan."),
     ])
-    rows = [["Original model (uncompressed)", _mb(fp16.get("predicted_weight_memory_gb")), "16", "0%"],
+    rows = [["Original model (uncompressed)", _mb(fp16.get("predicted_weight_memory_gb")), "16"],
             [f"Standard method (uniform {s0.uniform_bits}-bit)", _mb(un.weight_memory_gb),
-             f"{un.avg_bits_per_weight:.2f}", f"{un.sparsity:.0%}"],
-            ["Main plan", _mb(fw.weight_memory_gb), f"{fw.avg_bits_per_weight:.2f}", f"{fw.sparsity:.0%}"]]
-    if budget is not None:
-        c = predict(budget)
-        rows.append(["Budget plan", _mb(c.weight_memory_gb), f"{c.avg_bits_per_weight:.2f}", f"{c.sparsity:.0%}"])
+             f"{un.avg_bits_per_weight:.2f}"],
+            ["Main plan", _mb(qc.weight_memory_gb), f"{qc.avg_bits_per_weight:.2f}"]]
+    if qb is not None:
+        rows.append(["Budget plan", _mb(qb.weight_memory_gb), f"{qb.avg_bits_per_weight:.2f}"])
     gs = candidate["gptq_groupsize"]
-    lines += [_table(["Version", "Predicted size", "Average bits per number", "Share removed"], rows), ""]
+    lines += [_table(["Version", "Predicted size", "Average bits per number"], rows), ""]
     lines += _column_notes([
         ("Version", "Which plan the row describes."),
         ("Predicted size", f"Memory for the model's numbers, predicted from the plan (group size "
                            f"{'per row' if gs == PER_CHANNEL else gs}). Stage 1 measures the real size."),
         ("Average bits per number", "Storage per number over the whole model, including parts never "
                                     "compressed (16 means uncompressed)."),
-        ("Share removed", "Share of all the model's numbers deleted by pruning."),
     ])
     lines += [f"Stage 1 also takes the search parameter `gptq_groupsize` (now {gs}). It must measure what "
               "Stage 0 only predicts: real size, perplexity on both halves of the test text, speed and peak "
               "memory, for each plan against the standard method.", ""]
 
     # ---- Stage 2 ------------------------------------------------------------------------------------------
-    lines += ["## Stage 2: activations (SmoothQuant, QuaRot, RPTQ, SpinQuant)", ""]
+    lines += ["### Activations", ""]
     if act is None:
         lines += ["No activation plan was made in this run; see the anomalies in report.md.", ""]
     else:
@@ -164,7 +167,7 @@ def write_handoff(
                if act_prof is not None else
                "The plan is copied from the weight plan, without a measurement: protected and never-pruned layers "
                "get the most bits, the rest the fewest.")
-        lines += [f"{how} Stage 2 applies its smoothing or rotation to every layer and rounds each layer's "
+        lines += [f"{how} Stage 1 applies its smoothing or rotation to every layer and rounds each layer's "
                   "activations to the planned bits.", ""]
         rise = act_prof.rise if act_prof else [None] * n
         rows = [[lp.layer, lp.act_bits, dl.act_bits,
@@ -174,7 +177,7 @@ def write_handoff(
                           f"Damage at {lo} bits", f"Damage at {hi} bits"], rows), ""]
         lines += _column_notes([
             ("Layer", "Position in the model, from 0 at the input end."),
-            ("Activation bits", "Bits Stage 2 rounds this layer's incoming numbers to."),
+            ("Activation bits", "Bits Stage 1 rounds this layer's incoming numbers to."),
             ("Bits if copied from the weight plan", "What the cheaper rule (fragile for weights means fragile "
                                                     "for activations) would give, for comparison."),
             (f"Damage at {lo} bits", "Rise in prediction error (perplexity) when only this layer's incoming "
@@ -193,10 +196,49 @@ def write_handoff(
                 ("Version", "Which activation plan the row describes."),
                 ("Average bits", "Bits per incoming number, averaged over the layers."),
                 ("Predicted perplexity rise", "The measured per-layer damages added up for that plan (assumes "
-                                              "they add up; Stage 2 measures the real effect). Lower is better; "
+                                              "they add up; Stage 1 measures the real effect). Lower is better; "
                                               "– means the plan uses a bit width that was not measured."),
             ])
-        lines += ["Stage 2 adds the search parameter `smoothquant_alpha` to the search space.", ""]
+        lines += ["Stage 1 adds the search parameter `smoothquant_alpha` to the search space.", ""]
+
+    # ---- Stage 2 ------------------------------------------------------------------------------------------
+    pc = predict(prune)
+    lines += ["## Stage 2: pruning (Wanda, structured pruning, low-rank)", "",
+              "Pruning removes numbers and rounds nothing. Alone (0 > 2 > 4) it prunes the uncompressed model; "
+              "after Stage 1 (0 > 1 > 2 > 4) it prunes the quantized model, using the Stage 1 bits above for the "
+              "size. The pruning plan removes "
+              f"{candidate['prune_ratio_aggressive']:.0%} of the numbers of every layer that is neither protected "
+              "nor never-pruned. The same-size plan removes exactly as many numbers as the standard method "
+              f"(every layer pruned at {candidate['prune_ratio_aggressive']:.0%}) but takes them from the least "
+              "sensitive layers first. "
+              + (f"Layers {', '.join(map(str, sorted(guarded)))} are never pruned in any plan, because removing any "
+                 f"one of them alone hurts the model most (the {s0.guard_top_k} highest layer-removal scores)."
+                 if guarded else "No layer is guarded against pruning (GUARD_TOP_K = 0)."), ""]
+    same_layers = prune_same_size.layers if prune_same_size else [None] * n
+    rows = [[lp.layer, _n(lp.guarded), f"{lp.pruning_ratio:.0%}", "–" if sl is None else f"{sl.pruning_ratio:.0%}"]
+            for lp, sl in zip(prune.layers, same_layers)]
+    lines += [_table(["Layer", "Never pruned", "Removed", "Removed (same-size plan)"], rows), ""]
+    lines += _column_notes([
+        ("Layer", "Position in the model, from 0 at the input end."),
+        ("Never pruned", "\"yes\" if no plan may remove numbers from this layer, whatever its sensitivity."),
+        ("Removed", "Share of this layer's numbers the pruning plan deletes."),
+        ("Removed (same-size plan)", "Share deleted in the plan that removes as many numbers as the standard method."),
+    ])
+    rows = [["Original model (uncompressed)", _mb(fp16.get("predicted_weight_memory_gb")), "0%"]]
+    uni_prune = predict(prune_uniform)
+    rows.append([f"Standard method (uniform, {candidate['prune_ratio_aggressive']:.0%} of every layer)",
+                 _mb(uni_prune.weight_memory_gb), f"{uni_prune.sparsity:.0%}"])
+    rows.append(["Pruning plan", _mb(pc.weight_memory_gb), f"{pc.sparsity:.0%}"])
+    if prune_same_size is not None:
+        c = predict(prune_same_size)
+        rows.append(["Same-size plan", _mb(c.weight_memory_gb), f"{c.sparsity:.0%}"])
+    lines += [_table(["Version", "Predicted size (uncompressed weights)", "Share removed"], rows), ""]
+    lines += _column_notes([
+        ("Version", "Which plan the row describes."),
+        ("Predicted size (uncompressed weights)", "Memory of the remaining numbers at 16 bits plus a record of "
+                                                  "which were kept; Stage 2 after Stage 1 stores them at Stage 1's bits."),
+        ("Share removed", "Share of all the model's numbers deleted by pruning."),
+    ])
 
     # ---- Stage 3 ------------------------------------------------------------------------------------------
     lines += ["## Stage 3: KV cache (QuaRot KV, KVQuant, H2O, SnapKV, InfiniGen)", ""]
@@ -283,7 +325,7 @@ def write_handoff(
     # ---- caveats ------------------------------------------------------------------------------------------
     notes = []
     for i in outlier_layers(profile.raw_scores):
-        notes.append(f"Layer {i}'s sensitivity score stands far from the others; check it separately in Stage 1.")
+        notes.append(f"Layer {i}'s sensitivity score stands far from the others; check it separately in Stage 2.")
     if act is not None and act_prof is None:
         notes.append("The activation plan is copied from the weight plan, not measured.")
     if not notes:

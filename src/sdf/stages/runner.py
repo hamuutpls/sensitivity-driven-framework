@@ -1,4 +1,5 @@
-"""The one runner for Stages 1-3: load the Stage 0 plans, then for each method build and measure
+"""The one runner for Stages 1-3 (1: quantization, 2: pruning, 3: KV cache): load the Stage 0 plans, then for each
+method build and measure
 
     fp16       the uncompressed model (cached, the same entry Stage 0 measured)
     original   the method on the uniform plan from the Stage 0 "original method" settings (cached by config)
@@ -27,19 +28,21 @@ from sdf.eval.metrics import measure_model
 from sdf.run import RunContext
 from sdf.stage0.activation import ActivationPlan, uniform_activation_plan
 from sdf.stage0.kv_cache import KVPlan, KVProfile, predict_kv, uniform_kv_plan
-from sdf.stage0.planner import CompressionPlan, baseline_cost, uniform_plan
+from sdf.stage0.planner import CompressionPlan, baseline_cost, combine_plans, uniform_plan
 from sdf.stage0.run import (_cost_metrics, _kv_metrics, calib_batches, fp16_key, load_fp16,
                             setup, stage_reporter, weight_cost)
 from sdf.stage0.sensitivity import SensitivityProfile, normalize
-from sdf.stages.methods import Method, MethodCall, methods_for
+from sdf.stages.methods import AFTER, Method, MethodCall, methods_for
 from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
 
 # Stage 0 output files the later stages read (see stage_0/handoff.md), by plan key.
 PLAN_FILES: dict[str, tuple[str, type]] = {
-    "weights": ("compression_plan.json", CompressionPlan),
-    "weights_same_size": ("compression_plan_budget_matched.json", CompressionPlan),
+    "quant": ("quant_plan.json", CompressionPlan),  # Stage 1: bits only
+    "quant_same_size": ("quant_plan_budget_matched.json", CompressionPlan),
+    "prune": ("prune_plan.json", CompressionPlan),  # Stage 2: pruning ratios only (bits at the baseline)
+    "prune_same_size": ("prune_plan_same_size.json", CompressionPlan),
     "activations": ("activation_plan.json", ActivationPlan),
     "kv": ("kv_cache_plan.json", KVPlan),
     "kv_bits_only": ("kv_cache_plan_bits_only.json", KVPlan),
@@ -48,31 +51,38 @@ PLAN_FILES: dict[str, tuple[str, type]] = {
 # Framework rows after the first plan get their own method name and are compared with the method's original row.
 # Values: (method-name suffix, label, plain description) as in the Stage 0 report.
 _PLAN_ROWS = {
-    "weights_same_size": (
+    "quant_same_size": (
         "_same_size", "Sensitivity-guided framework, budget plan (fits in the standard method's memory)",
-        "the framework limited to the memory the standard method uses: it protects as many of the most sensitive "
-        "layers as fit in that budget, so the two can be compared fairly, size for size."),
+        "the framework limited to the memory the standard method uses: the most sensitive layers keep more bits "
+        "and the least sensitive ones drop to fewer, so the two can be compared fairly, size for size."),
+    "prune_same_size": (
+        "_same_size", "Sensitivity-guided framework, same amount removed as the standard method",
+        "the framework removing exactly as many numbers as the standard method, but taking them from the least "
+        "sensitive layers instead of evenly, so the two can be compared fairly, size for size."),
 }
 
-TITLES = {1: "Weight compression", 2: "Activation compression", 3: "KV-cache compression"}
+TITLES = {1: "Quantization (weights and activations)", 2: "Pruning", 3: "KV-cache compression"}
 
 MAIN_METRICS = {
-    1: ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "avg_bits_per_weight", "sparsity", "peak_memory_gb",
-        "prefill_ms_mean", "decode_ms_per_token_mean", "build_time_s"],
-    2: ["ppl_val", "ppl_heldout", "avg_activation_bits", "peak_memory_gb", "prefill_ms_mean",
+    1: ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "avg_bits_per_weight", "avg_activation_bits",
+        "peak_memory_gb", "prefill_ms_mean", "decode_ms_per_token_mean", "build_time_s"],
+    2: ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "sparsity", "peak_memory_gb", "prefill_ms_mean",
         "decode_ms_per_token_mean", "build_time_s"],
     3: ["ppl_val", "ppl_heldout", "predicted_kv_memory_gb", "avg_kv_bits", "kv_kept_share", "peak_memory_gb",
         "prefill_ms_mean", "decode_ms_per_token_mean", "build_time_s"],
 }
 
 INTROS = {
-    1: "A model is a huge store of numbers (its \"weights\"). This stage makes that store smaller: it keeps each "
-       "number with fewer bits (like rounding prices to the nearest dollar) and removes numbers that barely "
-       "matter. Each technique is tried the standard way, treating every layer the same, and the framework way, "
-       "following the Stage 0 plan, then the compressed model is tested for accuracy, memory and speed.",
-    2: "While the model runs, every layer passes numbers to the next one (its \"activations\"). This stage stores "
-       "those numbers with fewer bits so the model needs less memory and can use faster arithmetic. The standard "
-       "way rounds every layer the same; the framework gives more bits to the layers Stage 0 found fragile.",
+    1: "A model is a huge store of numbers (its \"weights\"), and while it runs every layer passes numbers to the "
+       "next one (its \"activations\"). This stage keeps those numbers with fewer bits, like rounding prices to the "
+       "nearest dollar, and removes nothing. Each technique is tried the standard way, treating every layer the "
+       "same, and the framework way, following the Stage 0 plan, then the model is tested for accuracy, memory "
+       "and speed.",
+    2: "This stage makes the model smaller by removing numbers that barely matter (single weights, whole "
+       "channels, or the small part of a weight table that a low-rank copy can drop), and rounds nothing. The "
+       "standard way removes the same share from every layer; the framework removes more from the layers Stage "
+       "0 found robust and nothing from the fragile ones. Methods run on the uncompressed model, or after a "
+       "Stage 1 method (named \"<pruning>_after_<quantization>\").",
     3: "While writing a reply, the model keeps notes on every earlier word (the \"KV cache\"); for long texts these "
        "notes can take more memory than the model itself. This stage stores the notes with fewer bits or forgets "
        "the least-used ones. The standard way treats every layer the same; the framework follows the Stage 0 "
@@ -108,26 +118,52 @@ class Stage0Plans:
         return out
 
 
-def original_plan(stage: int, plans: Stage0Plans, s0, prune_ratio: float | None = None) -> Any:
-    """The uniform plan of the standard method, from the Stage 0 "original method" settings (`prune_ratio`:
-    the share a pruning method removes from every layer, instead of stage0.uniform_prune_ratio)."""
-    if stage == 1:
-        return uniform_plan(normalize(plans.profile.raw_scores, s0.normalization), s0.uniform_bits,
-                            s0.uniform_prune_ratio if prune_ratio is None else prune_ratio)
-    if stage == 2:
+# What a plan is about, by plan key: the standard method and the cost prediction differ by kind.
+PLAN_KIND = {"quant": "weights", "quant_same_size": "weights", "prune": "prune", "prune_same_size": "prune",
+             "activations": "activations", "kv": "kv", "kv_bits_only": "kv"}
+
+
+def kind_of(m: Method) -> str:
+    """weights | activations (Stage 1), prune (Stage 2, alone or after a Stage 1 method), kv (Stage 3)."""
+    return PLAN_KIND[m.plans[0]]
+
+
+def original_plan(m: Method, plans: Stage0Plans, s0, prune_ratio: float) -> Any:
+    """The uniform plan of the standard method, from the Stage 0 "original method" settings: `uniform_bits` and
+    nothing removed (Stage 1), `prune_ratio` removed from every layer and nothing rounded (Stage 2), both for a
+    Stage 2 method run after Stage 1."""
+    kind = kind_of(m)
+    scores = lambda: normalize(plans.profile.raw_scores, s0.normalization)  # noqa: E731
+    if kind == "weights":
+        return uniform_plan(scores(), s0.uniform_bits, 0.0)
+    if kind == "prune":
+        return uniform_plan(scores(), s0.uniform_bits if m.quant_plans else s0.baseline_bits, prune_ratio)
+    if kind == "activations":
         return uniform_activation_plan(plans.num_layers, s0.act_uniform_bits)
     return uniform_kv_plan(plans.num_layers, s0.kv_uniform_bits)
 
 
-# Stage 0 settings each stage's methods read that a plan does not carry; they join the cache key when not default
+def _plan_keys(m: Method, plan_key: str) -> list[str]:
+    """The plan files a framework row needs: its plan, plus the Stage 1 plan it follows in the series path."""
+    return [plan_key, m.quant_plans[m.plans.index(plan_key)]] if m.quant_plans else [plan_key]
+
+
+def framework_plan(m: Method, plans: Stage0Plans, plan_key: str) -> Any:
+    """The Stage 0 plan a method's framework row follows; after a Stage 1 method, its bits join the pruning plan."""
+    plan, *quant = (plans.plans[k] for k in _plan_keys(m, plan_key))
+    return combine_plans(quant[0], plan) if quant else plan
+
+
+# Stage 0 settings each kind of method reads that a plan does not carry; they join the cache key when not default
 # (so entries made with the defaults stay valid).
-_STAGE_SETTINGS = {1: ("weight_zero_point", "baseline_bits"), 2: ("act_group_size", "baseline_bits"),
-                   3: ("kv_group_size", "kv_module_names", "baseline_bits")}
+_KIND_SETTINGS = {"weights": ("weight_zero_point", "baseline_bits"), "activations": ("act_group_size", "baseline_bits"),
+                  "prune": ("weight_zero_point", "baseline_bits"),
+                  "kv": ("kv_group_size", "kv_module_names", "baseline_bits")}
 
 
-def _setting_key(stage: int, s0) -> dict[str, Any]:
+def _setting_key(kind: str, s0) -> dict[str, Any]:
     default = type(s0)()
-    return {k: getattr(s0, k) for k in _STAGE_SETTINGS[stage] if getattr(s0, k) != getattr(default, k)}
+    return {k: getattr(s0, k) for k in _KIND_SETTINGS[kind] if getattr(s0, k) != getattr(default, k)}
 
 
 def plan_metrics(plan: Any, plans: Stage0Plans, cfg, candidate: dict[str, Any],
@@ -148,10 +184,11 @@ def plan_metrics(plan: Any, plans: Stage0Plans, cfg, candidate: dict[str, Any],
 
 def _fp16_plan_metrics(stage: int, plans: Stage0Plans, cfg, candidate) -> dict[str, Any]:
     base = cfg.stage0.baseline_bits
+    weights = _cost_metrics(baseline_cost(plans.profile, base))
     if stage == 1:
-        return _cost_metrics(baseline_cost(plans.profile, base))
+        return {**weights, **plan_metrics(uniform_activation_plan(plans.num_layers, base), plans, cfg, candidate)}
     if stage == 2:
-        return plan_metrics(uniform_activation_plan(plans.num_layers, base), plans, cfg, candidate)
+        return weights
     return plan_metrics(uniform_kv_plan(plans.num_layers, base), plans, cfg, candidate)
 
 
@@ -199,7 +236,7 @@ def run_stage(
             return AutoModelForCausalLM.from_pretrained(cfg.model.name, torch_dtype=dtype).to(device)
     handle.factory = model_factory  # an FP16 cache miss builds the model like every row
 
-    use_llamacpp = stage == 1 and cfg.eval.llamacpp_dir is not None
+    use_llamacpp = stage == 1 and cfg.eval.llamacpp_dir is not None  # weight rows only (see lc_on)
     lc_key = [cfg.eval.llamacpp_dir, cfg.eval.llamacpp_convert, llamacpp.VERSION] if use_llamacpp else None
     calib = (f"{candidate['calib_dataset']}, {candidate['calib_samples']} x {cfg.calibration.seq_len} tokens")
     rep = stage_reporter(
@@ -233,6 +270,9 @@ def run_stage(
         return downstream.downstream_accuracy(model, handle.tokenizer, ev.downstream_tasks, ev.downstream_limit,
                                               ev.downstream_batch_size, cfg.run.seed)
 
+    def lc_on(method: Method) -> bool:
+        return use_llamacpp and kind_of(method) == "weights"
+
     def build_and_measure(method: Method, plan: Any) -> dict[str, Any]:
         model = model_factory()
         try:
@@ -242,7 +282,7 @@ def run_stage(
                 val, held = windows()
                 metrics, raw = measure_model(model, val, held, cfg.eval, device, seed=cfg.run.seed)
                 metrics.update(tasks(model))
-                if use_llamacpp:
+                if lc_on(method):
                     metrics.update(llamacpp.measure(model, handle.tokenizer, plan, val, held, cfg.eval,
                                                     s0.baseline_bits))
         finally:
@@ -250,7 +290,7 @@ def run_stage(
             _free_memory()
         metrics.update(extra)
         metrics["build_time_s"] = build_s
-        if method.simulated and stage == 1:
+        if method.simulated and stage in (1, 2):
             metrics.pop("model_size_gb", None)  # still FP16 in memory; predicted_weight_memory_gb is the size
         return {"metrics": metrics, "raw": raw}
 
@@ -278,14 +318,15 @@ def run_stage(
     simulated_any = False
     for m in methods:
         simulated_any |= m.simulated
-        orig = original_plan(stage, plans, s0, candidate["prune_ratio_aggressive"] if m.prunes else None)
+        orig = original_plan(m, plans, s0, candidate["prune_ratio_aggressive"])
         with rep.method(m.name, "original", description=f"{m.label}, standard settings: {_describe(orig)}",
                         simulated=m.simulated) as row:
             _require(m)
             key = {"stage": stage, "method": m.name, "version": m.version, "plan": orig.to_dict(),
                    "params": {p: candidate[p] for p in m.params}, **fp16_key(ctx, device),
-                   "downstream": [list(cfg.eval.downstream_tasks), cfg.eval.downstream_limit], "llamacpp": lc_key}
-            if settings := _setting_key(stage, s0):
+                   "downstream": [list(cfg.eval.downstream_tasks), cfg.eval.downstream_limit],
+                   "llamacpp": lc_key if lc_on(m) else None}
+            if settings := _setting_key(kind_of(m), s0):
                 key["settings"] = settings
             if m.calibrated:
                 key["calibration"] = {"dataset": candidate["calib_dataset"], "samples": candidate["calib_samples"],
@@ -304,10 +345,10 @@ def run_stage(
                 info["label"], info["plain_desc"] = plain
             with rep.method(m.name + suffix, "framework", **info) as row:
                 _require(m)
-                if plan_key not in plans.plans:
-                    raise FileNotFoundError(f"{PLAN_FILES[plan_key][0]} not in {plans.dir}; re-run Stage 0 with "
-                                            "this plan enabled")
-                plan = plans.plans[plan_key]
+                if gone := [PLAN_FILES[k][0] for k in _plan_keys(m, plan_key) if k not in plans.plans]:
+                    raise FileNotFoundError(f"{', '.join(gone)} not in {plans.dir}; re-run Stage 0 with this plan "
+                                            "enabled")
+                plan = framework_plan(m, plans, plan_key)
                 row.info["description"] = f"{m.label}, Stage 0 {_describe(plan)}"
                 result = build_and_measure(m, plan)
                 row.metrics.update(plan_metrics(plan, plans, cfg, candidate, m.storage))
@@ -332,10 +373,12 @@ def _require(m: Method) -> None:
 
 
 def run_stages(ctx: RunContext, candidate: dict[str, Any], stage0_dir: str | Path, **kwargs: Any) -> dict[str, Path]:
-    """Stages 1-3 with the methods in cfg.stages, each on top of the same Stage 0 plans."""
+    """Stages 1-3 with the methods in cfg.stages, each on top of the same Stage 0 plans. Stage 2 runs every
+    pruning method alone, then after each Stage 1 weight method in cfg.stages.stage2_after."""
     st = ctx.cfg.stages
+    stage2 = st.stage2_methods + [f"{p}{AFTER}{q}" for q in st.stage2_after for p in st.stage2_methods]
     outputs = {}
-    for stage, names in ((1, st.stage1_methods), (2, st.stage2_methods), (3, st.stage3_methods)):
+    for stage, names in ((1, st.stage1_methods), (2, stage2 if st.stage2_methods else []), (3, st.stage3_methods)):
         if names:
             for name, path in run_stage(ctx, stage, names, candidate, stage0_dir, **kwargs).items():
                 outputs[f"stage_{stage}_{name}"] = path

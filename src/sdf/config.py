@@ -147,9 +147,12 @@ class StagesConfig:
     """Stages 1-3 (sdf.stages.runner). Method names are keys of sdf.stages.methods.METHODS."""
 
     stage0_dir: str | None = None  # a finished run's stage_0/ folder; None = run Stage 0 first, in the same run
-    stage1_methods: list[str] = field(default_factory=lambda: ["rtn", "gptq", "awq", "unstructured_prune",
-                                                                  "structured_prune", "low_rank"])
-    stage2_methods: list[str] = field(default_factory=lambda: ["rtn_act"])
+    # Stage 1: quantization (weights and activations), nothing removed
+    stage1_methods: list[str] = field(default_factory=lambda: ["rtn", "gptq", "awq", "rtn_act"])
+    # Stage 2: pruning, nothing rounded; run on the FP16 model (path 0 -> 2 -> 4)
+    stage2_methods: list[str] = field(default_factory=lambda: ["unstructured_prune", "structured_prune", "low_rank"])
+    # Stage 1 weight methods to also run each Stage 2 method after (path 0 -> 1 -> 2 -> 4), e.g. ["gptq"]
+    stage2_after: list[str] = field(default_factory=list)
     stage3_methods: list[str] = field(default_factory=lambda: ["rtn_kv"])
 
 

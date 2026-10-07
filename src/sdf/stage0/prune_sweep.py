@@ -14,7 +14,7 @@ measures perplexity, for every ratio in `stage0.prune_sweep_ratios` (10% to 100%
 Pruning is unstructured magnitude pruning per output row (each row loses its smallest |w|), the usual
 baseline; rounding is round-to-nearest at the plan's bits and group size (`prune_sweep_quantize`). Both are
 simulated on FP16 weights, so speed and real file size are not measured; memory is the plan's prediction.
-Stage 1 replaces both with the real methods (GPTQ, AWQ, structured pruning).
+Stage 1 (GPTQ, AWQ) and Stage 2 (Wanda, structured pruning, low-rank) replace them with the real methods.
 
 Outputs under <run_dir>/stage_0_prune_sweep/: report.md, stage_0_comparison.xlsx, results.json.
 """
@@ -301,5 +301,5 @@ def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, 
     rep.next_steps += [
         "Pick the pruning range for the search (prune_ratio_aggressive, now 0 to 0.6) from where the error "
         "starts to climb.",
-        "Stage 1 repeats this with real methods (GPTQ/AWQ rounding, structured pruning) and real file sizes.",
+        "Stages 1 and 2 repeat this with real methods (GPTQ/AWQ rounding, Wanda/structured pruning) and real file sizes.",
     ]

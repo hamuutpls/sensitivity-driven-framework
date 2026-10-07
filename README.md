@@ -6,11 +6,14 @@ compression, applied to TinyLlama-1.1B-Chat.
 | Stage | What it does | Status |
 |---|---|---|
 | 0 | Per-layer sensitivity profiling, then a bit-width / pruning plan | implemented |
-| 1 | Weight compression (GPTQ, AWQ, structured / unstructured / low-rank pruning) | done (simulated) |
-| 2 | Activation compression (SmoothQuant, QuaRot, RPTQ, SpinQuant) | todo |
+| 1 | Quantization only, nothing removed: weights (RTN, GPTQ, AWQ) and activations (RTN, SmoothQuant, QuaRot, RPTQ, SpinQuant) | weights done (simulated); activations: RTN baseline |
+| 2 | Pruning only, nothing rounded (Wanda, structured, low-rank) | done (simulated) |
 | 3 | KV-cache compression (QuaRot KV, KVQuant, H2O, SnapKV, InfiniGen) | todo |
 | 4 | Evaluation across backends (HF Transformers, llama.cpp, vLLM, TensorRT-LLM) | todo |
 | Search | MOBO (Optuna), MFBO (successive halving), NSGA-III (pymoo), benchmarked against each other | todo |
+
+Paths: 0 > 1 > 4, 0 > 2 > 4 (prunes the FP16 model), 0 > 3 > 4, and 0 > 1 > 2 > 4 (a Stage 2 method on a model
+Stage 1 has quantized; `stage2_after` in `main.py`).
 
 Every stage compares, under identical conditions, three variants of each method: the **FP16** baseline, the
 **original** method used on its own, and the **framework** version (Stage 0 plan + the method).

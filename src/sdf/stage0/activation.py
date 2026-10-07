@@ -1,4 +1,4 @@
-"""Stage 0d: activation sensitivity and plan for Stage 2 (SmoothQuant, QuaRot, RPTQ, SpinQuant).
+"""Stage 0d: activation sensitivity and plan for Stage 1 (SmoothQuant, QuaRot, RPTQ, SpinQuant).
 
 Activations are the numbers flowing into each Linear weight while the model runs. Per decoder layer, Stage 0
 plans how many bits those inputs get.

@@ -7,7 +7,7 @@
 | System | Sensitivity-Driven Framework (`sdf`), MSc thesis codebase |
 | Owner | Mohammad (GitHub `hamuutpls`) |
 | Version | 0.2 (draft), 2026-09-30 |
-| Status of design | SS-CORE and SS-0 implemented (on `main`); the shared Stages 1-3 runner (§4.8) implemented with baselines only; SS-1 to SS-4 methods and SS-SRCH designed, not implemented |
+| Status of design | SS-CORE and SS-0 implemented (on `main`); the shared Stages 1-3 runner (§4.8) implemented; Stage 1 weights, Stage 2 and RTN activations implemented; the other Stage 1 activation methods, SS-3, SS-4 and SS-SRCH designed, not implemented |
 | Requirements | [System Requirements Specification](system-requirements-specification.md) (ISO/IEC/IEEE 29148) |
 | Diagrams | [`docs/diagrams/`](../diagrams/README.md) (Mermaid class and sequence diagrams) |
 
@@ -20,6 +20,7 @@
 | 0.3 | 2026-09-30 | §5.4: pruning guard. New §5.9: activation plan for Stage 2; §7.3 follows it. §5.2: `Stage0Result` returns every plan and each plan class loads its JSON. |
 | 0.4 | 2026-10-01 | §5.9: activation plan measured by default. New §5.10: `handoff.md`. §4.3: one-off costs out of the verdict; "no targets set". |
 | 0.5 | 2026-10-04 | §4.7 master report implemented; new §4.9 downstream tasks. New §4.8: the shared Stages 1-3 runner and method table (implemented, with round-to-nearest baselines); §6.2, §7.2, §8.2 use it. |
+| 0.6 | 2026-10-07 | Stage split (SyRS 0.5): §6 Stage 1 is quantization only (weights and activations), §7 Stage 2 is pruning only, including the series path 0 > 1 > 2 > 4. §4.8: methods, plan keys and `series`. §5.10: Stage 0 also saves `quant_plan*.json` and `prune_plan*.json`. |
 
 ---
 
@@ -115,8 +116,8 @@ results folder (Google Drive on Colab), and (planned) drives four inference back
 |---|---|---|---|---|
 | SS-CORE | Shared core: configuration, run setup, measurement, reporting, cache, deployment requirement | `config.py`, `run.py`, `cli.py`, `data.py`, `requirements.py`, `search_space.py`, `eval/metrics.py`, `reporting/`, `utils/` | Implemented (master report planned) | CFG-*, CMP-*, MET-*, REP-*, USE-* |
 | SS-0 | Stage 0: sensitivity profiling and planning | `stage0/sensitivity.py`, `stage0/planner.py`, `stage0/run.py` | Implemented | S0-*, PIPE-03 |
-| SS-1 | Stage 1: weight compression | `stage1/` *(planned)* | Planned | S1-* |
-| SS-2 | Stage 2: activation compression | `stage2/` *(planned)* | Planned | S2-* |
+| SS-1 | Stage 1: quantization (weights, activations) | `stages/weights.py`, `stages/methods.py` | Implemented (weights, RTN activations) | S1-* |
+| SS-2 | Stage 2: pruning | `stages/pruning.py`, `stages/methods.py` | Implemented | S2-* |
 | SS-3 | Stage 3: KV-cache compression | `stage3/` *(planned)* | Planned | S3-*, MET-06 |
 | SS-4 | Stage 4: evaluation across backends | `stage4/` *(planned)*; HF measurement in `eval/metrics.py` today | Partial | S4-*, MET-03 |
 | SS-SRCH | Search layer | `search/` *(planned)*; `search_space.py` today | Partial | SRCH-* |
@@ -131,8 +132,8 @@ flowchart TB
         SPACE[SEARCH_SPACE]
     end
     SS0[SS-0 Stage 0<br/>profile + plan]
-    SS1[SS-1 Stage 1<br/>weights]:::planned
-    SS2[SS-2 Stage 2<br/>activations]:::planned
+    SS1[SS-1 Stage 1<br/>quantization]:::planned
+    SS2[SS-2 Stage 2<br/>pruning]:::planned
     SS3[SS-3 Stage 3<br/>KV cache]:::planned
     SS4[SS-4 Stage 4<br/>backends]:::planned
     SRCH[SS-SRCH search]:::planned
@@ -374,7 +375,7 @@ cached separately (`fp16_downstream`), so the FP16 perplexity cache stays valid.
 **Purpose.** One runner for Stages 1-3, so every method is built, measured and reported the same way.
 **Interface.** `run_stage(ctx, stage, method_names, candidate, stage0_dir, model_factory=None, ...)` and
 `run_stages(ctx, candidate, stage0_dir)` (methods from `cfg.stages`). `Stage0Plans.load(stage0_dir)` reads the plans
-listed in `handoff.md`. A `Method` (`name`, `stage`, `plans`, `apply`, `params`, `calibrated`, `simulated`, `version`)
+listed in `handoff.md`. A `Method` (`name`, `stage`, `plans`, `quant_plans`, `apply`, `params`, `calibrated`, `simulated`, `version`)
 is applied as a context manager on a fresh FP16 model: `with method.apply(MethodCall(model, plan, candidate, cfg,
 batches)) as extra_metrics`. **Behaviour.** Rows: `baseline/fp16` (the Stage 0 cache entry), `<method>/original` (the
 method on the uniform plan from the Stage 0 "original method" settings; cached by method, version, plan, its search
@@ -382,7 +383,9 @@ parameters, calibration when used, and the FP16 key), `<method>[_suffix]/framewo
 method accepts, compared with the method's original row). A method whose `apply` is `None` is a failed row saying
 "not implemented yet". Predicted plan costs (weight memory, activation bits, KV memory) sit next to the measured
 metrics. **Rationale.** Original and framework run the same code and differ only in the plan, which is exactly
-the comparison the thesis makes; fresh models keep the stages independent (PIPE-02). Library choices per method:
+the comparison the thesis makes; fresh models keep the stages independent (PIPE-02). Plan keys: `quant`, `quant_same_size`, `prune`, `prune_same_size`, `activations`, `kv`, `kv_bits_only`; the
+kind of plan decides the standard method (`original_plan`). `<pruning>_after_<quantization>` names a series method
+(`series`, config `stages.stage2_after`). Library choices per method:
 [`stage-methods-feasibility.md`](../stage-methods-feasibility.md).
 
 ---
@@ -561,86 +564,68 @@ Rows: `activations/original` (uniform `act_uniform_bits` = 8), `activations/fram
 ### 5.10 Information: hand-off report (S0-17)
 
 `handoff.md` next to `report.md`: Original model; at a glance (stage, what it receives, file, loader); Stage 1
-per-layer bits, share removed and guard for the main and budget plans with predicted sizes; Stage 2 per-layer activation
-bits, measured damage and predicted rise per plan; Stage 3 per-layer key/value bits and words kept with
+per-layer bits for the main and budget plans with predicted sizes, and per-layer activation bits, measured damage
+and predicted rise per plan; Stage 2 per-layer share removed and guard for the pruning and same-size plans (S0-18); Stage 3 per-layer key/value bits and words kept with
 predicted memory and rise; Stage 4 FP16 reference numbers and measurement conditions; search parameters with
 current values and ranges; caveats. Every table has column explanations.
 
 ---
 
-## 6. SS-1: Stage 1, weight compression *(planned)*
+## 6. SS-1: Stage 1, quantization
 
 ### 6.1 Purpose
 
-Really compress the stored weights, following the Stage 0 plan in the framework variant, and measure the
-result (S1-01 to S1-04). Diagrams: [`stage1.md`](../diagrams/stage1.md).
+Store the model's numbers with fewer bits and remove nothing: weights (RTN, GPTQ, AWQ) and activations (RTN,
+SmoothQuant, QuaRot, RPTQ, SpinQuant), following the Stage 0 plans in the framework variant (S1-01 to S1-07).
+Path 0 > 1 > 4. Diagrams: [`stage1.md`](../diagrams/stage1.md).
 
-*In plain words:* store each number with fewer digits (quantisation) and throw away the numbers that matter
-least (pruning), gently in protected layers and hard elsewhere.
+*In plain words:* round each number to fewer digits, gently in protected layers and harder elsewhere. Nothing is
+thrown away.
 
-### 6.2 Composition and interfaces *(proposed)*
+### 6.2 Composition and interfaces
 
 | Member | Contract |
 |---|---|
-| `WeightMethod` (strategy) | `name`, `kind` (`quantise` / `prune` / `low_rank`), `apply(model, layer_plans, candidate, batches) -> nn.Module`. |
-| `GPTQ`, `AWQ` | Quantise each layer to `layer_plans[l].bit_width` with group size `candidate["gptq_groupsize"]`. |
-| `StructuredPrune`, `UnstructuredPrune` | Remove `pruning_ratio` of each layer's channels / weights. |
-| `LowRank` | Replace each Linear weight with a rank-*r* factorisation, *r* chosen so the layer's size matches its planned bits. |
-| `Stage1Config` | `methods`, `original_defaults` per method (e.g. GPTQ 4-bit, group 128). |
-| `run_stage1(ctx, candidate, stage0) -> StageResult(artifacts, outputs)` | fp16 row (from cache), original row per method (from cache when possible), framework row per method. |
+| `Method` rows `rtn`, `gptq`, `awq` (`stages/methods.py`) | Plans `quant`, `quant_same_size` (bits only). `apply(MethodCall)` rounds a fresh FP16 model in place. |
+| `gptq_`, `awq_` (`stages/weights.py`) | Quantize each layer to `plan.layers[l].bit_width`, group size `gptq_groupsize`. `require_bits_only` refuses a plan with pruning ratios. |
+| `Method` rows `rtn_act`, `smoothquant`, `quarot`, `rptq`, `spinquant` | Plan `activations` (S0-15). Only `rtn_act` is written. |
+| `run_stage(ctx, 1, names, ...)` | fp16 row (cache), original row per method (uniform `uniform_bits`, nothing removed), framework row per plan. |
 
-### 6.3 Interaction
-
-For each method: original = `apply(model, uniform layer plans from Stage1Config.original_defaults)`;
-framework = `apply(model, stage0.plan.layers)`; each followed by `measure_model` and a reporter row. The
-compressed model is saved as an artifact for Stage 4.
-
-### 6.4 Algorithm notes
+### 6.3 Algorithm notes
 
 - GPTQ per layer: collect the layer-input Hessian `H = 2XXᵀ` from calibration batches, quantise column by column,
   and spread each column's rounding error over the remaining columns using `H⁻¹`.
 - AWQ: scale salient input channels (by activation magnitude) before quantising, search the scale per layer.
-- Pruning before quantisation in compressed layers, so the quantiser sees the final weights.
 - Report predicted (Stage 0) vs measured size per layer, closing the loop on the cost model (S1-04).
 
-### 6.5 Resources and rationale
+### 6.4 Resources and rationale
 
 GPTQ on TinyLlama processes one decoder layer at a time, so peak memory stays near one layer's Hessians plus the
-model. **Rationale:** a strategy interface keeps the runner identical for five methods and makes each method
-testable alone on a tiny random Llama.
+model. **Rationale:** quantization and pruning are separate stages so each effect is measured alone; the
+combination is the series path of Stage 2.
 
 ---
 
-## 7. SS-2: Stage 2, activation compression *(planned)*
+## 7. SS-2: Stage 2, pruning
 
 ### 7.1 Purpose
 
-Quantise the activations (the numbers the model computes while running) and handle their outliers, keeping
-higher activation precision in layers Stage 0 protected (S2-01 to S2-03). Starts from the uncompressed model
-and the plan, not from Stage 1's output (PIPE-02). Diagrams: [`stage2.md`](../diagrams/stage2.md).
+Remove numbers and round nothing (S2-01 to S2-03): Wanda, structured pruning (feed-forward channels) and
+low-rank decomposition. Path 0 > 2 > 4 prunes the uncompressed model; path 0 > 1 > 2 > 4 prunes the model a Stage 1
+weight method has quantized. Diagrams: [`stage2.md`](../diagrams/stage2.md).
 
-### 7.2 Composition and interfaces *(proposed)*
+### 7.2 Composition and interfaces
 
 | Member | Contract |
 |---|---|
-| `ActivationMethod` | `name`, `apply(model, layer_plans, candidate, batches) -> nn.Module`. |
-| `SmoothQuant` | Migrates difficulty from activations to weights with `s_j = max|X_j|^α / max|W_j|^(1−α)`, `α = candidate["smoothquant_alpha"]`. |
-| `QuaRot`, `SpinQuant` | Rotate hidden states with a Hadamard (QuaRot) or learned (SpinQuant) orthogonal matrix, folded into the weights, so outliers spread evenly. |
-| `RPTQ` | Cluster and reorder channels by range, quantise each cluster with its own scale. |
-| `ChannelStats` | `collect(model, batches)`: per-channel max-abs and outlier channels. |
-| `Stage2Config` | `methods`; activation bits come from the Stage 0 activation plan (`stage0.act_*`). |
-| `run_stage2(ctx, candidate, stage0) -> StageResult` | Same three-variant protocol as Stage 1. |
+| `unstructured_prune`, `structured_prune`, `low_rank` (`stages/pruning.py`) | Plans `prune`, `prune_same_size` (ratios; bits at the baseline). Round nothing; low-rank stores its factors at the plan's bits (none at the baseline). |
+| `series(quant, prune)` (`stages/methods.py`) | Method `<pruning>_after_<quantization>`: `quant.apply` with `bits_only(plan)`, then `prune.apply` with the combined plan (`combine_plans(quant_plan, prune_plan)`). Selected by `stages.stage2_after`. |
+| `run_stage(ctx, 2, names, ...)` | Original row: every layer pruned at `prune_ratio_aggressive` (uniform `uniform_bits` first in the series path). Framework rows: `prune` (the main plan's ratios) and `prune_same_size` (as many numbers removed as the original, placed by sensitivity). |
 
-### 7.3 Mapping the plan (open issue SyRS §5.2 #3)
+### 7.3 Rationale
 
-Stage 2 reads `activation_plan.json` (§5.9): each layer's input activations get the planned bits
-(measured by default). The rotation or smoothing transform itself is applied to every layer, since it does not
-change the output before rounding.
-
-### 7.4 Rationale
-
-Keeping Stage 2 independent of Stage 1 means its effect can be attributed to activation compression alone;
-combining stages is a Stage 4 question.
+Pruning alone and after quantization are separate runs, so the thesis can show whether the two compose. Stage 0
+derives the pruning plans from the same sensitivity scores and guard as the quantization plans (§5.10).
 
 ---
 

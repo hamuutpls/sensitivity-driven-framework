@@ -112,9 +112,10 @@ GUARD_SWEEP = [0, 3, 5, 8]  # MODE "threshold_sweep": never-pruned layer counts 
 # =====================================================================================================
 STAGE0_DIR = None  # a finished run's stage_0 folder, e.g. "thesis_compression/results/<run_id>/stage_0";
 #                    None = run Stage 0 first with the settings above, in the same run
-STAGE1_METHODS = ["rtn", "gptq", "awq", "unstructured_prune", "structured_prune", "low_rank"]  # weights; pruning
-#   methods (last three) remove PRUNE_RATIO_AGGRESSIVE from every layer in their standard version
-STAGE2_METHODS = ["rtn_act"]  # activations: rtn_act | smoothquant | quarot | rptq | spinquant
+STAGE1_METHODS = ["rtn", "gptq", "awq", "rtn_act"]  # quantization only, nothing removed. Weights: rtn | gptq | awq;
+#   activations: rtn_act | smoothquant | quarot | rptq | spinquant
+STAGE2_METHODS = ["unstructured_prune", "structured_prune", "low_rank"]  # pruning only, nothing rounded (FP16 model)
+STAGE2_AFTER = []  # Stage 1 weight methods to also run each Stage 2 method after (0 -> 1 -> 2 -> 4), e.g. ["gptq"]
 STAGE3_METHODS = ["rtn_kv"]  # KV cache: rtn_kv | quarot_kv | kvquant | h2o | snapkv | infinigen
 SMOOTHQUANT_ALPHA = 0.5  # 0.0-1.0: how much of the activation outliers SmoothQuant moves into the weights
 QUAROT_K_BITS = 4  # 2 | 3 | 4 | 8: key bits for QuaRot KV (standard method)
@@ -137,6 +138,7 @@ def build_config():
         "stages.stage0_dir": STAGE0_DIR,
         "stages.stage1_methods": STAGE1_METHODS,
         "stages.stage2_methods": STAGE2_METHODS,
+        "stages.stage2_after": STAGE2_AFTER,
         "stages.stage3_methods": STAGE3_METHODS,
         "stage0.score": SENSITIVITY_SCORE,
         "stage0.normalization": NORMALIZATION,
