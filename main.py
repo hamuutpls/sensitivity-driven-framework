@@ -44,7 +44,6 @@ SENSITIVITY_SCORE = "layer_removal"  # how a layer's sensitivity is measured:
 NORMALIZATION = "rank"  # rank | minmax: how raw sensitivity scores are put on the 0-1 scale
 PROTECTED_BITS = 8  # bits per number in protected layers
 COMPRESSED_BITS = 4  # bits per number in unprotected layers
-NO_PRUNE_COMPRESSED_BITS = 3  # bits for unprotected layers in the same-size plan that removes nothing
 UNIFORM_BITS = 4  # the standard method: every layer at this many bits ...
 UNIFORM_PRUNE_RATIO = 0.0  # ... with this share removed
 SPARSE_STORAGE = "bitmask"  # size of pruned weights: "bitmask" +1 bit/weight, "dense" no saving, "free" ideal (old)
@@ -144,7 +143,6 @@ def build_config():
         "stage0.normalization": NORMALIZATION,
         "stage0.protected_bits": PROTECTED_BITS,
         "stage0.compressed_bits": COMPRESSED_BITS,
-        "stage0.no_prune_compressed_bits": NO_PRUNE_COMPRESSED_BITS,
         "stage0.uniform_bits": UNIFORM_BITS,
         "stage0.uniform_prune_ratio": UNIFORM_PRUNE_RATIO,
         "stage0.weight_zero_point": WEIGHT_ZERO_POINT,

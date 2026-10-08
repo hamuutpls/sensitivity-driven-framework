@@ -100,7 +100,7 @@ def test_run_threshold_sweep(tiny_llama, tokenizer, small_cfg):
     out = run_threshold_sweep(start_run(cfg), SEARCH_SPACE.make({"calib_samples": 16}), model=tiny_llama,
                               tokenizer=tokenizer, text_loader=fake_texts)
     rows = {r["method"]: r for r in json.loads(out["json"].read_text())["rows"]}
-    assert all(r["status"] == "ok" for r in rows.values()) and len(rows) == 2 + 2 * 4  # fp16, standard, 4 per guard
+    assert all(r["status"] == "ok" for r in rows.values()) and len(rows) == 2 + 2 * 2  # fp16, standard, 2 thresholds per guard
     # a lower threshold protects more layers and needs more memory
     lo, hi = rows["t020_k1"]["metrics"], rows["t090_k1"]["metrics"]
     assert lo["protected_layers"] > hi["protected_layers"]

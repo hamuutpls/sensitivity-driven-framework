@@ -6,9 +6,8 @@ a high one few (small, riskier). `MODE "sweep"` only predicts this trade-off; he
 real weights (as in prune_sweep: magnitude pruning per row + round-to-nearest, simulated) and its perplexity
 measured, for every threshold in `stage0.threshold_sweep` and guard size in `stage0.guard_sweep`.
 
-Reference rows: the uncompressed model, the standard method (every layer at `uniform_bits`) and, per guard size,
-the two budget plans (fit in the standard method's memory) (they do not depend on the threshold). Measurements are cached per plan and shared with
-prune_sweep, so identical plans (e.g. guard layers already protected) are measured once.
+Reference rows: the uncompressed model and the standard method (every layer at `uniform_bits`). Measurements are
+cached per plan and shared with prune_sweep, so identical plans (e.g. guard layers already protected) are measured once.
 
 Outputs under <run_dir>/stage_0_threshold_sweep/: report.md, stage_0_comparison.xlsx, results.json.
 """
@@ -20,7 +19,7 @@ from typing import Any, Callable
 from sdf.reporting.markdown import _table
 from sdf.reporting.reporter import StageReporter
 from sdf.run import RunContext
-from sdf.stage0.planner import baseline_cost, budget_matched_plan, plan_compression, uniform_plan
+from sdf.stage0.planner import baseline_cost, plan_compression, uniform_plan
 from sdf.stage0.prune_sweep import METRICS, make_evaluator
 from sdf.stage0.run import _cost_metrics, load_fp16, load_guard, load_profile, setup, stage_reporter, weight_cost
 from sdf.stage0.sensitivity import normalize
@@ -63,17 +62,8 @@ def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, 
     uniform = uniform_plan(scores, s0.uniform_bits, s0.uniform_prune_ratio)
     row("standard", "original", uniform, label="Standard method",
         description=f"every layer at {s0.uniform_bits} bits, {s0.uniform_prune_ratio:.0%} removed")
-    budget = predict(uniform).weight_memory_gb
     for k in guards:
         guarded, _ = load_guard(ctx, candidate, handle, text_loader, profile, k)
-        row(f"same_k{k}", "framework", budget_matched_plan(scores, budget, pr, s0.protected_bits, s0.compressed_bits,
-                                                           predict, guarded),
-            label=f"Budget plan, guard {k}", guard=k, description="as many top layers protected as fit in the "
-                                                                 "standard method's size")
-        row(f"noprune_k{k}", "framework", budget_matched_plan(scores, budget, 0.0, s0.protected_bits,
-                                                              s0.no_prune_compressed_bits, predict, guarded),
-            label=f"Benchmark: budget size, nothing removed, guard {k}", guard=k,
-            description=f"benchmark, robust layers at {s0.no_prune_compressed_bits} bits, nothing removed")
         for t in thresholds:
             row(f"t{round(t * 100):03d}_k{k}", "framework",
                 plan_compression(scores, t, pr, s0.protected_bits, s0.compressed_bits, guarded),

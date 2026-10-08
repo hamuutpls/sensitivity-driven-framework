@@ -6,7 +6,7 @@
 | Standard | ISO/IEC/IEEE 29148:2018, clause 9.6 (SyRS content) |
 | System | Sensitivity-Driven Framework (`sdf`), MSc thesis codebase |
 | Owner | Mohammad (GitHub `hamuutpls`) |
-| Version | 0.5 (draft), 2026-10-07 |
+| Version | 0.6 (draft), 2026-10-08 |
 | Companion | [Subsystem Design Description](subsystem-design-description.md) (IEEE 1016-2009) |
 
 ## Change history
@@ -18,6 +18,7 @@
 | 0.3 | 2026-09-30 | New S0-14 (pruning guard), S0-15 (activation plan for Stage 2) and S0-16 (plans returned and loadable). S2-02 names the activation plan; open issue 3 narrowed to validating it. |
 | 0.4 | 2026-10-01 | S0-15: activation plan measured by default. New S0-17 (handoff.md). REP-09: build time does not decide the verdict; a run with no targets reports "no targets set". KV measured on 64 passages by default. |
 | 0.5 | 2026-10-07 | Mohammad's stage split: Stage 1 is quantization only (weights and activations, S1-01 to S1-07), Stage 2 is pruning only (S2-01 to S2-03), with the series path 0 > 1 > 2 > 4. New S0-18 (separate quantization and pruning plans). Old S2-01 to S2-03 became S1-05 to S1-07. |
+| 0.6 | 2026-10-08 | Mohammad: the budget plan is removed (CMP-07 withdrawn, S0-18 and S1-02 updated). The comparison is standard quantization against our method. |
 
 ---
 
@@ -171,7 +172,7 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | CMP-04 | Each row shall state whether the `DeploymentRequirement` is met, and if not, the shortfall per target. | M | Implemented | T | SPEC | SDD §4.4 |
 | CMP-05 | Results for fp16 and for the original variant shall be cached, keyed by every setting that determines them, and reused by later runs and trials. | M | Partial (fp16 cached; original-method cache arrives with Stages 1–3) | T | SPEC | SDD §4.5 |
 | CMP-06 | A failure in one method or variant shall be recorded in the report (error and traceback) and shall not stop the other rows of the stage. | M | Implemented | T | SPEC | SDD §4.3 |
-| CMP-07 | When the framework's plan uses more memory than the original, the stage should also report a size-matched framework plan, so accuracy is compared at equal memory. | D | Implemented (Stage 0) | T | DEC | SDD §5.4 |
+| CMP-07 | ~~The stage should also report a size-matched framework plan.~~ Withdrawn 2026-10-08: the budget plan is removed. The comparison is two-way, standard quantization (every weight at one bit length) against our method (bit lengths mixed per layer). | D | Withdrawn | – | DEC (2026-10-08) | SDD §5.4 |
 
 #### 3.1.4 Measurements (MET)
 
@@ -222,15 +223,15 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | S0-14 | No framework plan shall prune the `guard_top_k` layers with the highest layer-removal score, whichever score sets the bits; a removal profile shall be measured (and cached) when another score is used. | M | Implemented | T | DEC (2026-09-30) | SDD §5.4 |
 | S0-15 | Stage 0 shall plan activation bits per decoder layer for Stage 1. By default (`act_plan = measured`) it shall measure the calibration perplexity rise when only one layer's Linear inputs are rounded to each of `act_bits_options` and spend `act_avg_bits` where the rise is largest; `act_plan = from_weights` copies the weight plan (protected and guarded layers at the highest option). The original variant is `act_uniform_bits` everywhere. Rows `activations/original`, `activations/framework` and, when measured, `activations_from_weights/framework`; saved as `activation_plan.json` and `activation_profile.json`. | M | Implemented | T | DEC (2026-10-01) | SDD §5.9 |
 | S0-17 | Stage 0 shall write `handoff.md`: for each later stage and the search, the file it loads, the plan layer by layer, the predicted cost against the standard method and the uncompressed model, and what that stage must still measure, in plain language with every table column explained and the Original model section. | M | Implemented | T | DEC (2026-10-01) | SDD §5.10 |
-| S0-18 | Stage 0 shall save the plans for Stage 1 and Stage 2 separately: `quant_plan.json` (main plan, bits only), `quant_plan_budget_matched.json` (budget plan, nothing removed), `prune_plan.json` (the main plan's ratios, bits at the baseline) and `prune_plan_same_size.json` (as many numbers removed as the standard method, placed by sensitivity). | M | Implemented | T | DEC (2026-10-07) | SDD §5.10 |
-| S0-16 | `run_stage0` shall return every plan (threshold, budget, activation, KV cache) and each plan class shall load its saved JSON (`CompressionPlan.load`, `ActivationPlan.load`, `KVPlan.load`). | M | Implemented | T | DEC (2026-09-30) | SDD §5.2 |
+| S0-18 | Stage 0 shall save the plans for Stage 1 and Stage 2 separately: `quant_plan.json` (our method, bits only), `prune_plan.json` (our method's ratios, bits at the baseline) and `prune_plan_same_size.json` (as many numbers removed as the standard method, placed by sensitivity). | M | Implemented | T | DEC (2026-10-07) | SDD §5.10 |
+| S0-16 | `run_stage0` shall return every plan (threshold, activation, KV cache) and each plan class shall load its saved JSON (`CompressionPlan.load`, `ActivationPlan.load`, `KVPlan.load`). | M | Implemented | T | DEC (2026-09-30) | SDD §5.2 |
 
 #### 3.1.7 Stage 1: quantization (S1)
 
 | ID | Requirement | Pri | Status | Ver | Source | Design |
 |---|---|---|---|---|---|---|
 | S1-01 | Stage 1 shall support RTN, GPTQ and AWQ for weights. It shall quantize only: no method of Stage 1 removes any number, and a plan that does is refused. | M | Implemented | T | DEC (2026-10-07) | SDD §6 |
-| S1-02 | In the framework variant, each layer's bit width shall come from the Stage 0 quantization plan (`quant_plan.json`, `quant_plan_budget_matched.json`, S0-18), which carries no pruning ratios. | M | Implemented | T | DEC (2026-10-07) | SDD §6 |
+| S1-02 | In the framework variant, each layer's bit width shall come from the Stage 0 quantization plan (`quant_plan.json`, S0-18), which carries no pruning ratios. | M | Implemented | T | DEC (2026-10-07) | SDD §6 |
 | S1-03 | GPTQ group size shall be the search parameter `gptq_groupsize`. | M | Implemented | I | SPEC | SDD §6 |
 | S1-04 | Stage 1 shall measure real (not predicted) size and accuracy, and report predicted vs measured memory. | M | Planned | T | SPEC | SDD §6 |
 | S1-05 | Stage 1 shall support RTN, SmoothQuant, QuaRot, RPTQ and SpinQuant for activations (formerly S2-01). | M | Partly (RTN) | T | DEC (2026-10-07) | SDD §6 |
@@ -359,7 +360,7 @@ Current automated coverage (`main`):
 | Test file | Requirements covered |
 |---|---|
 | `tests/test_config.py` | CFG-01, CFG-02, SRCH-01 (partial), SRCH-02, CMP-04, IF-01 |
-| `tests/test_stage0.py` | S0-01 … S0-05, S0-07, S0-14 … S0-17, CMP-07, MET-01, MET-04 … MET-07, PIPE-03 (end-to-end) |
+| `tests/test_stage0.py` | S0-01 … S0-05, S0-07, S0-14 … S0-17, MET-01, MET-04 … MET-07, PIPE-03 (end-to-end) |
 | `tests/test_kv_cache.py` | S0-10 … S0-12, MET-06 (predicted) |
 | `tests/test_reporting.py` | REP-02 … REP-06, REP-08, CMP-03, CMP-06 |
 

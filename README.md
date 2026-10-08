@@ -86,15 +86,11 @@ Stage 0 compares:
 
 - **fp16**: the uncompressed model, measured once and cached (perplexity on both halves, size, peak memory,
   prefill and decode latency).
-- **original**: a uniform allocation (every layer 4-bit, no pruning), i.e. what a method uses with no guidance.
-- **framework**: the sensitivity plan.
-- **framework, budget plan**: the sensitivity plan limited to the uniform plan's predicted memory (it protects
-  as many of the most sensitive layers as fit). This is the fair quality comparison, since the threshold plan
-  is usually bigger than uniform.
-- **benchmark, nothing removed**: the budget plan without pruning (robust layers at 3 bits). A Stage 0
-  comparison only; later stages do not receive it.
+- **standard quantization** (`original`): a uniform allocation, every layer at one bit length (4-bit, no pruning),
+  i.e. what a method uses with no guidance.
+- **our method** (`framework`): the sensitivity plan, which mixes bit lengths per layer.
 
-For the two plans it reports predicted weight memory, average bits per weight, sparsity and *sensitivity
+For both it reports predicted weight memory, average bits per weight, sparsity and *sensitivity
 exposure*, which measures how much compression lands on sensitive layers (lower is better). Accuracy and
 latency of the plans are measured once Stage 1 applies them.
 

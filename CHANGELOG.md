@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-08: the budget plan is removed; standard quantization against our method
+
+- Removed: the Stage 0 budget plan and its nothing-removed benchmark (rows `allocation_same_size`,
+  `allocation_same_size_no_prune`, `planner.budget_matched_plan`, `stage0.no_prune_compressed_bits`, the files
+  `compression_plan_budget_matched.json` and `quant_plan_budget_matched.json`, the budget columns and sections of
+  the Stage 0 report and handoff, the budget parts of the sweeps) and the Stage 1 plan key `quant_same_size`.
+- The comparison is two-way: standard quantization (every weight at one bit length) against our method (bit lengths
+  mixed per layer, the Stage 0 plan). Reports label the two rows "Standard method" and "Our method". The uniform
+  6-bit and 8-bit activation rows stay as the standard side for activations. Stage 2 keeps its same-size pruning plan.
+- Cached results on disk are untouched; budget rows in older run folders are just no longer read.
+
 ## 2026-10-08: TensorRT-LLM backend; vLLM backend fixes from the first real run (Colab A100)
 
 - `eval.trtllm_python` (the Python with TensorRT-LLM; Linux only) adds TensorRT-LLM rows: the same GPTQ export,

@@ -45,9 +45,7 @@ def write_handoff(
     original_model: dict[str, Any],
     profile: SensitivityProfile,
     plan: CompressionPlan,
-    budget: CompressionPlan | None,
     quant: CompressionPlan,
-    quant_budget: CompressionPlan | None,
     prune: CompressionPlan,
     prune_same_size: CompressionPlan | None,
     uniform: CompressionPlan,
@@ -84,7 +82,7 @@ def write_handoff(
     # ---- at a glance --------------------------------------------------------------------------------------
     rows = [
         ["Stage 1: weights", "bits per layer, nothing removed",
-         "`quant_plan.json` (+ `quant_plan_budget_matched.json`)", "`CompressionPlan.load`"],
+         "`quant_plan.json`", "`CompressionPlan.load`"],
         ["Stage 1: activations", "bits per layer for the numbers passed between layers",
          "`activation_plan.json`" + (" (+ `activation_profile.json`)" if act_prof else ""), "`ActivationPlan.load`"],
         ["Stage 2: pruning", "share removed per layer (nothing rounded); layers never to prune",
@@ -106,7 +104,7 @@ def write_handoff(
     ])
 
     # ---- Stage 1 ------------------------------------------------------------------------------------------
-    qc, un, qb = predict(quant), predict(uniform), predict(quant_budget) if quant_budget is not None else None
+    qc, un = predict(quant), predict(uniform)
     lines += [
         "## Stage 1: quantization (weights: RTN, GPTQ, AWQ; activations: SmoothQuant, QuaRot, RPTQ, SpinQuant)",
         "",
@@ -114,33 +112,25 @@ def write_handoff(
         "",
         "### Weights",
         "",
-        f"The main plan protects layers with sensitivity at or above {candidate['sensitive_threshold']:.2f} "
+        f"Our method protects layers with sensitivity at or above {candidate['sensitive_threshold']:.2f} "
         f"({len(quant.protected_layers)} of {n}: kept at {s0.protected_bits} bits) and compresses the rest to "
-        f"{s0.compressed_bits} bits. The budget plan fits in the standard method's memory, so accuracy can be "
-        f"compared size for size: it also protects the sensitive layers and pays for them by dropping the rest "
-        f"to {s0.no_prune_compressed_bits} bits. This budget plan replaces the earlier one that paid by pruning "
-        "(now Stage 2's same-size plan), so numbers from the two must not be mixed.",
+        f"{s0.compressed_bits} bits, mixing bit lengths across layers. Standard quantization gives every layer "
+        f"the same {s0.uniform_bits} bits.",
         "",
     ]
-    budget_layers = quant_budget.layers if quant_budget else [None] * n
-    rows = [[lp.layer, f"{lp.sensitivity:.2f}", _n(lp.protected), lp.bit_width,
-             "–" if bl is None else bl.bit_width]
-            for lp, bl in zip(quant.layers, budget_layers)]
-    lines += [_table(["Layer", "Sensitivity", "Protected", "Bits", "Bits (budget plan)"], rows), ""]
+    rows = [[lp.layer, f"{lp.sensitivity:.2f}", _n(lp.protected), lp.bit_width] for lp in quant.layers]
+    lines += [_table(["Layer", "Sensitivity", "Protected", "Bits"], rows), ""]
     lines += _column_notes([
         ("Layer", "Position in the model, from 0 at the input end."),
         ("Sensitivity", f"How much the model suffers when this layer changes, from 0 (least) to 1 (most), "
                         f"measured by {profile.method.replace('_', ' ')}."),
-        ("Protected", "\"yes\" if the main plan keeps this layer at high precision."),
-        ("Bits", "Bits per number for this layer's weights in the main plan."),
-        ("Bits (budget plan)", "Bits per number in the plan that fits in the standard method's memory."),
+        ("Protected", "\"yes\" if our method keeps this layer at high precision."),
+        ("Bits", "Bits per number for this layer's weights in our method."),
     ])
     rows = [["Original model (uncompressed)", _mb(fp16.get("predicted_weight_memory_gb")), "16"],
-            [f"Standard method (uniform {s0.uniform_bits}-bit)", _mb(un.weight_memory_gb),
+            [f"Standard quantization (uniform {s0.uniform_bits}-bit)", _mb(un.weight_memory_gb),
              f"{un.avg_bits_per_weight:.2f}"],
-            ["Main plan", _mb(qc.weight_memory_gb), f"{qc.avg_bits_per_weight:.2f}"]]
-    if qb is not None:
-        rows.append(["Budget plan", _mb(qb.weight_memory_gb), f"{qb.avg_bits_per_weight:.2f}"])
+            ["Our method", _mb(qc.weight_memory_gb), f"{qc.avg_bits_per_weight:.2f}"]]
     gs = candidate["gptq_groupsize"]
     lines += [_table(["Version", "Predicted size", "Average bits per number"], rows), ""]
     lines += _column_notes([

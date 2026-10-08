@@ -31,7 +31,7 @@ from sdf.stage0.activation import (ActivationLayerPlan, ActivationPlan, Activati
                                    activation_plan_from_weights, plan_activations, predicted_rise,
                                    profile_activations, quantize_inputs, uniform_activation_plan)
 from sdf.stage0.kv_cache import _coverage, eager_attention, keep_ratio_for  # noqa: E402
-from sdf.stage0.planner import (CompressionPlan, LayerPlan, budget_matched_plan, guarded_layers,  # noqa: E402
+from sdf.stage0.planner import (CompressionPlan, LayerPlan, guarded_layers,  # noqa: E402
                                 plan_compression, predict_cost, uniform_plan)
 from sdf.stage0.prune_sweep import apply_plan  # noqa: E402
 from sdf.stage0.run import _ModelHandle, activation_profile_key, load_profile  # noqa: E402
@@ -141,10 +141,7 @@ def prune_section() -> None:
         bitmask_cost = functools.partial(predict_cost, profile=prof, group_size=GS, sparse_storage="bitmask",
                                          group_overhead_bits=s0.group_overhead_bits, baseline_bits=s0.baseline_bits)
         plans = {"t0.8_g5": plan_compression(scores, 0.8, PR, s0.protected_bits, s0.compressed_bits, g5),
-                 "t0.9_g8": plan_compression(scores, 0.9, PR, s0.protected_bits, s0.compressed_bits, g8),
-                 "budget_bitmask_g5": budget_matched_plan(
-                     scores, out["standard"]["0"]["gb"]["bitmask"], PR, s0.protected_bits, s0.compressed_bits,
-                     bitmask_cost, g5)}
+                 "t0.9_g8": plan_compression(scores, 0.9, PR, s0.protected_bits, s0.compressed_bits, g8)}
         for name, plan in plans.items():
             res = eval_plan(plan)
             row = {"seed": seed, "plan": name, "protected": plan.protected_layers, "guard": sorted(plan.guarded_layers),
