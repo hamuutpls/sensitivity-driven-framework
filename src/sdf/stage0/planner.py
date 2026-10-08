@@ -11,7 +11,7 @@ The "original method" allocation used for comparison is uniform: every layer get
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
-from typing import Any, Callable
+from typing import Any
 
 from sdf.search_space import PER_CHANNEL
 from sdf.stage0.sensitivity import SensitivityProfile
@@ -32,7 +32,7 @@ class LayerPlan:
 @dataclass(frozen=True)
 class CompressionPlan(JsonFile):
     layers: tuple[LayerPlan, ...]
-    kind: str  # "sensitivity" | "budget" | "uniform" | "same_size_pruning"
+    kind: str  # "sensitivity" | "uniform" | "same_size_pruning"
     sensitive_threshold: float | None
     prune_ratio_aggressive: float
 
@@ -124,36 +124,6 @@ def uniform_plan(scores: list[float], bits: int, prune_ratio: float) -> Compress
     layers = tuple(LayerPlan(layer=i, bit_width=bits, pruning_ratio=prune_ratio, protected=False, sensitivity=s)
                    for i, s in enumerate(scores))
     return CompressionPlan(layers, "uniform", None, prune_ratio)
-
-
-def budget_matched_plan(
-    scores: list[float],
-    budget_gb: float,
-    prune_ratio_aggressive: float,
-    protected_bits: int,
-    compressed_bits: int,
-    cost: "Callable[[CompressionPlan], PlanCost]",
-    guarded: frozenset[int] = frozenset(),
-) -> CompressionPlan:
-    """The sensitivity plan that fits in `budget_gb` (normally the uniform plan's predicted size).
-
-    Protects the k most sensitive layers, with k as large as the budget allows; every other layer is
-    compressed and pruned as usual (guarded layers are not pruned, and that is counted in the budget). This makes the framework-vs-original comparison size-for-size fair: any
-    accuracy difference then comes from *where* the bits go, not from spending more of them.
-    """
-    _check_ratio(prune_ratio_aggressive)
-    ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-    best = None
-    for k in range(len(ranked) + 1):
-        protected = set(ranked[:k])
-        layers = tuple(_layer(i, s, i in protected, protected_bits, compressed_bits, prune_ratio_aggressive,
-                              guarded) for i, s in enumerate(scores))
-        plan = CompressionPlan(layers, "budget", None, prune_ratio_aggressive)
-        if cost(plan).weight_memory_gb > budget_gb * (1 + 1e-9):
-            best = best or plan  # even protecting nothing is over budget: the k = 0 plan, caller flags it
-            break
-        best = plan
-    return best
 
 
 def same_size_pruning_plan(

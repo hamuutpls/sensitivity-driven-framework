@@ -59,7 +59,7 @@ classDiagram
     gptq_ ..> require_bits_only
     awq_ ..> require_bits_only
     run_stage ..> Method : each method
-    run_stage ..> Stage0Plans : quant_plan.json, quant_plan_budget_matched.json, activation_plan.json
+    run_stage ..> Stage0Plans : quant_plan.json, activation_plan.json
     Stage0Plans ..> CompressionPlan : bits only
     Stage0Plans ..> ActivationPlan
 ```
@@ -83,7 +83,7 @@ sequenceDiagram
             C->>E: measure_model
         end
         R->>Rep: row (method, original)
-        loop each Stage 0 plan: quant, quant_same_size
+        our method: the Stage 0 plan quant
             R->>M: apply(fresh FP16 model, plan)
             M->>M: round every layer to its planned bits (GPTQ: Hessian error feedback, AWQ: channel scaling)
             R->>E: measure_model

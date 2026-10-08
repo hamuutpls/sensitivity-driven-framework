@@ -118,7 +118,7 @@ def _rtn_kv(call: MethodCall) -> Iterator[dict[str, Any]]:
         yield {}
 
 
-_WEIGHT_PLANS = ("quant", "quant_same_size")
+_WEIGHT_PLANS = ("quant",)
 _PRUNE_PLANS = ("prune", "prune_same_size")
 
 METHODS: dict[str, Method] = {m.name: m for m in [
@@ -185,7 +185,7 @@ def series(quant: Method, prune: Method) -> Method:
     return Method(prune.name + AFTER + quant.name, 2, f"{prune.label} after {quant.label}", prune.plans, apply,
                   version=quant.version * 1000 + prune.version, params=tuple(dict.fromkeys(quant.params + prune.params)),
                   calibrated=quant.calibrated or prune.calibrated, library=prune.library, storage=prune.storage,
-                  quant_plans=quant.plans)
+                  quant_plans=quant.plans * len(prune.plans))  # every pruning plan follows the one bits plan
 
 
 def methods_for(stage: int, names: list[str]) -> list[Method]:

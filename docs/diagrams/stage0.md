@@ -40,7 +40,6 @@ classDiagram
         +str profile_dtype
         +int protected_bits
         +int compressed_bits
-        +int no_prune_compressed_bits
         +int uniform_bits
         +float uniform_prune_ratio
         +int group_overhead_bits
@@ -132,7 +131,6 @@ classDiagram
         +CompressionPlan plan
         +SensitivityProfile profile
         +dict outputs
-        +CompressionPlan budget_plan
         +ActivationPlan activation_plan
         +KVPlan kv_plan
         +KVPlan kv_plan_bits_only
@@ -194,7 +192,6 @@ classDiagram
         +guarded_layers(removal_scores, top_k) frozenset
         +plan_compression(scores, threshold, prune_ratio, protected_bits, compressed_bits, guarded) CompressionPlan
         +uniform_plan(scores, bits, prune_ratio) CompressionPlan
-        +budget_matched_plan(scores, budget_gb, prune_ratio, protected_bits, compressed_bits, cost, guarded) CompressionPlan
         +predict_cost(plan, profile, group_size, group_overhead_bits, baseline_bits) PlanCost
         +baseline_cost(profile, baseline_bits) PlanCost
     }
@@ -317,15 +314,8 @@ sequenceDiagram
     end
     R->>P: predict_cost(plan)
 
-    Note over R,Rep: row 4 budget plan, row 5 benchmark (nothing removed), both at the original size
-    R->>P: budget_matched_plan(scores, uniform size, prune_ratio, 8, 4)
-    R->>P: budget_matched_plan(scores, uniform size, 0, 8, 3)
-    loop k = 0, 1, 2 ... layers
-        P->>P: protect the k most sensitive, stop when over budget
-    end
-
     opt kv_cache (default on)
-        Note over R,Rep: rows 6 to 8, KV cache
+        Note over R,Rep: rows 4 to 6, KV cache
         R->>C: get_or_compute("kv_profile", kv_profile_key)
         alt cache miss
             C->>K: profile_kv(model, kv_calib_samples batches)

@@ -40,7 +40,6 @@ log = get_logger(__name__)
 # Stage 0 output files the later stages read (see stage_0/handoff.md), by plan key.
 PLAN_FILES: dict[str, tuple[str, type]] = {
     "quant": ("quant_plan.json", CompressionPlan),  # Stage 1: bits only
-    "quant_same_size": ("quant_plan_budget_matched.json", CompressionPlan),
     "prune": ("prune_plan.json", CompressionPlan),  # Stage 2: pruning ratios only (bits at the baseline)
     "prune_same_size": ("prune_plan_same_size.json", CompressionPlan),
     "activations": ("activation_plan.json", ActivationPlan),
@@ -51,13 +50,9 @@ PLAN_FILES: dict[str, tuple[str, type]] = {
 # Framework rows after the first plan get their own method name and are compared with the method's original row.
 # Values: (method-name suffix, label, plain description) as in the Stage 0 report.
 _PLAN_ROWS = {
-    "quant_same_size": (
-        "_same_size", "Sensitivity-guided framework, budget plan (fits in the standard method's memory)",
-        "the framework limited to the memory the standard method uses: the most sensitive layers keep more bits "
-        "and the least sensitive ones drop to fewer, so the two can be compared fairly, size for size."),
     "prune_same_size": (
-        "_same_size", "Sensitivity-guided framework, same amount removed as the standard method",
-        "the framework removing exactly as many numbers as the standard method, but taking them from the least "
+        "_same_size", "Our method, same amount removed as the standard method",
+        "our method removing exactly as many numbers as the standard method, but taking them from the least "
         "sensitive layers instead of evenly, so the two can be compared fairly, size for size."),
 }
 
@@ -75,17 +70,17 @@ MAIN_METRICS = {
 INTROS = {
     1: "A model is a huge store of numbers (its \"weights\"), and while it runs every layer passes numbers to the "
        "next one (its \"activations\"). This stage keeps those numbers with fewer bits, like rounding prices to the "
-       "nearest dollar, and removes nothing. Each technique is tried the standard way, treating every layer the "
-       "same, and the framework way, following the Stage 0 plan, then the model is tested for accuracy, memory "
+       "nearest dollar, and removes nothing. Each technique is tried as standard quantization, which gives every "
+       "weight the same bit length, and as our method, which mixes bit lengths following the Stage 0 plan, then the model is tested for accuracy, memory "
        "and speed.",
     2: "This stage makes the model smaller by removing numbers that barely matter (single weights, whole "
        "channels, or the small part of a weight table that a low-rank copy can drop), and rounds nothing. The "
-       "standard way removes the same share from every layer; the framework removes more from the layers Stage "
+       "standard way removes the same share from every layer; our method removes more from the layers Stage "
        "0 found robust and nothing from the fragile ones. Methods run on the uncompressed model, or after a "
        "Stage 1 method (named \"<pruning>_after_<quantization>\").",
     3: "While writing a reply, the model keeps notes on every earlier word (the \"KV cache\"); for long texts these "
        "notes can take more memory than the model itself. This stage stores the notes with fewer bits or forgets "
-       "the least-used ones. The standard way treats every layer the same; the framework follows the Stage 0 "
+       "the least-used ones. The standard way treats every layer the same; our method follows the Stage 0 "
        "plan for each layer.",
 }
 
@@ -119,7 +114,7 @@ class Stage0Plans:
 
 
 # What a plan is about, by plan key: the standard method and the cost prediction differ by kind.
-PLAN_KIND = {"quant": "weights", "quant_same_size": "weights", "prune": "prune", "prune_same_size": "prune",
+PLAN_KIND = {"quant": "weights", "prune": "prune", "prune_same_size": "prune",
              "activations": "activations", "kv": "kv", "kv_bits_only": "kv"}
 
 
@@ -385,11 +380,6 @@ def run_stage(
         rep.plain_why.append(
             "Structured pruning and low-rank remove whole channels or store smaller factors, so their predicted size "
             "has no extra record of which numbers were kept; unstructured pruning does (one bit per number).")
-    if stage == 1 and any(kind_of(m) == "weights" for m in methods):
-        rep.plain_why.append(
-            "The budget plan here removes nothing: it keeps the sensitive layers at more bits and pays for them by "
-            "dropping the robust layers to fewer. It replaces the earlier budget plan, which paid by pruning; that "
-            "one now belongs to Stage 2 as the same-size pruning plan. Do not compare numbers across the two.")
     if simulated_any:
         rep.plain_why.append(
             "Some techniques here are simulated: the numbers are rounded as the compressed model would store them, "

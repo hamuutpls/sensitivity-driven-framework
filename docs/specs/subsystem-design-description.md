@@ -6,7 +6,7 @@
 | Standard | IEEE 1016-2009; viewpoint vocabulary from ISO/IEC/IEEE 42010:2022 |
 | System | Sensitivity-Driven Framework (`sdf`), MSc thesis codebase |
 | Owner | Mohammad (GitHub `hamuutpls`) |
-| Version | 0.2 (draft), 2026-09-30 |
+| Version | 0.7 (draft), 2026-10-08 |
 | Status of design | SS-CORE and SS-0 implemented (on `main`); the shared Stages 1-3 runner (§4.8) implemented; Stage 1 weights, Stage 2 and RTN activations implemented; the other Stage 1 activation methods, SS-3, SS-4 and SS-SRCH designed, not implemented |
 | Requirements | [System Requirements Specification](system-requirements-specification.md) (ISO/IEC/IEEE 29148) |
 | Diagrams | [`docs/diagrams/`](../diagrams/README.md) (Mermaid class and sequence diagrams) |
@@ -21,6 +21,7 @@
 | 0.4 | 2026-10-01 | §5.9: activation plan measured by default. New §5.10: `handoff.md`. §4.3: one-off costs out of the verdict; "no targets set". |
 | 0.5 | 2026-10-04 | §4.7 master report implemented; new §4.9 downstream tasks. New §4.8: the shared Stages 1-3 runner and method table (implemented, with round-to-nearest baselines); §6.2, §7.2, §8.2 use it. |
 | 0.6 | 2026-10-07 | Stage split (SyRS 0.5): §6 Stage 1 is quantization only (weights and activations), §7 Stage 2 is pruning only, including the series path 0 > 1 > 2 > 4. §4.8: methods, plan keys and `series`. §5.10: Stage 0 also saves `quant_plan*.json` and `prune_plan*.json`. |
+| 0.7 | 2026-10-08 | Budget plan removed (§5.4, §5.10, §6, traceability): two-way comparison, standard quantization against our method. |
 
 ---
 
@@ -383,7 +384,7 @@ parameters, calibration when used, and the FP16 key), `<method>[_suffix]/framewo
 method accepts, compared with the method's original row). A method whose `apply` is `None` is a failed row saying
 "not implemented yet". Predicted plan costs (weight memory, activation bits, KV memory) sit next to the measured
 metrics. **Rationale.** Original and framework run the same code and differ only in the plan, which is exactly
-the comparison the thesis makes; fresh models keep the stages independent (PIPE-02). Plan keys: `quant`, `quant_same_size`, `prune`, `prune_same_size`, `activations`, `kv`, `kv_bits_only`; the
+the comparison the thesis makes; fresh models keep the stages independent (PIPE-02). Plan keys: `quant`, `prune`, `prune_same_size`, `activations`, `kv`, `kv_bits_only`; the
 kind of plan decides the standard method (`original_plan`). `<pruning>_after_<quantization>` names a series method
 (`series`, config `stages.stage2_after`). Library choices per method:
 [`stage-methods-feasibility.md`](../stage-methods-feasibility.md).
@@ -408,12 +409,12 @@ get, and how many earlier words each layer keeps.
 | Module | Main members |
 |---|---|
 | `stage0/sensitivity.py` | `SensitivityProfile`, `profile_by_ablation(model, batches, method, device, bits, group_size, meta)` (`layer_removal`, `layer_quant`), `profile_sensitivity(model, batches, device, meta)` (`grad_x_weight`), `normalize(scores, method)`, `outlier_layers(raw, cutoff=3.5)`, `find_decoder_layers`, `layer_shapes`, `skip_layer`, `quantize_layer` |
-| `stage0/planner.py` | `LayerPlan` (incl. `guarded`), `CompressionPlan` (`load`, `from_dict`), `guarded_layers(removal_scores, top_k)`, `plan_compression(...)`, `uniform_plan(...)`, `budget_matched_plan(...)`, `PlanCost`, `predict_cost(...)`, `baseline_cost(...)` |
+| `stage0/planner.py` | `LayerPlan` (incl. `guarded`), `CompressionPlan` (`load`, `from_dict`), `guarded_layers(removal_scores, top_k)`, `plan_compression(...)`, `uniform_plan(...)`, `PlanCost`, `predict_cost(...)`, `baseline_cost(...)` |
 | `stage0/activation.py` | `ActivationProfile`, `profile_activations(model, batches, bits_options, group_size, device, meta)`, `quantize_inputs(layer, bits, group_size)`, `ActivationLayerPlan`, `ActivationPlan` (`avg_bits`, `load`), `plan_activations(profile, avg_bits)`, `activation_plan_from_weights(weight_plan, high, low)`, `uniform_activation_plan(n, bits)`, `predicted_rise(plan, profile)` |
 | `stage0/handoff.py` | `write_handoff(path, ...)`: `handoff.md` (§5.10) |
 | `stage0/kv_cache.py` | `KVProfile`, `profile_kv(...)`, `KVLayerPlan`, `KVPlan` (`load`), `uniform_kv_plan(n, bits)`, `plan_kv(profile, avg_bits, coverage_target)`, `KVCost`, `predict_kv(...)` |
 | `stage0/compare.py` | `compare_scores(ctx, candidate)`: profiles all three scores on the same text and reports rank agreement (`MODE = "compare_scores"`) |
-| `stage0/run.py` | `run_stage0(ctx, candidate, model=None, tokenizer=None, text_loader=None, measure_fp16=True) -> Stage0Result(plan, profile, outputs, budget_plan, activation_plan, kv_plan, kv_plan_bits_only)`; `load_guard(...)` |
+| `stage0/run.py` | `run_stage0(ctx, candidate, model=None, tokenizer=None, text_loader=None, measure_fp16=True) -> Stage0Result(plan, profile, outputs, activation_plan, kv_plan, kv_plan_bits_only)`; `load_guard(...)` |
 
 **Contract handed to later stages (PIPE-03).** `CompressionPlan` JSON:
 
@@ -422,7 +423,7 @@ get, and how many earlier words each layer keeps.
  "layers": [{"layer": 0, "bit_width": 4, "pruning_ratio": 0.3, "protected": false, "sensitivity": 0.0, "guarded": false}, ...]}
 ```
 
-`kind` is `sensitivity` (threshold plan), `budget` (size-matched plan) or `uniform` (original variant).
+`kind` is `sensitivity` (threshold plan), `same_size_pruning` (Stage 2) or `uniform` (standard quantization).
 
 ### 5.3 Algorithm: sensitivity score (S0-01 to S0-03)
 
@@ -465,16 +466,9 @@ compressed (`compressed_bits` = 4, pruned at `prune_ratio_aggressive`).
 **Original variant.** Uniform: every layer `uniform_bits` = 4, pruning `uniform_prune_ratio` = 0.
 
 **Pruning guard (S0-14).** The `guard_top_k` (5) layers with the highest raw layer-removal score are never
-pruned in any framework plan (threshold, budget plan and the no-pruning benchmark); they keep the bits their plan gives
+pruned in the framework plan; they keep the bits their plan gives
 them. When `stage0.score` is not `layer_removal`, `load_guard` measures a removal profile as well (cached like
-any profile) and its time is added to the framework rows' build time. In the size-matched plans the unpruned
-guarded layers count against the budget. The uniform original variant is not guarded: it has no Stage 0.
-
-**Size-matched plans.** Rank layers by sensitivity; protect the top *k* for the largest *k* whose predicted
-memory fits the uniform plan's (the budget plan: robust layers 4-bit, pruned). A benchmark at the same budget
-without pruning (robust layers `no_prune_compressed_bits` = 3, nothing removed) isolates the effect of the
-guidance from the effect of pruning. It is a Stage 0 comparison row only: it is not saved as a plan file nor
-handed to later stages.
+any profile) and its time is added to the framework rows' build time. The uniform original variant is not guarded: it has no Stage 0.
 
 **Cost model (`predict_cost`).** Per decoder layer: `kept = numel · (1 − prune)`; `bits = kept · bit_width`,
 plus `group_overhead_bits` (32: one scale and zero point) per quantisation group of `gptq_groupsize` weights
@@ -485,15 +479,14 @@ weight memory (GB), average bits per weight, sparsity, and
 
 the share of compression that lands on sensitive layers (lower is better).
 
-**Rows reported.** fp16 (measured once, cached); original (uniform); framework (threshold plan); framework,
-budget plan; benchmark, budget size, nothing removed; then the three KV cache rows of §5.8 when `stage0.kv_cache`
+**Rows reported.** fp16 (measured once, cached); original (uniform); framework (threshold plan); then the three KV cache rows of §5.8 when `stage0.kv_cache`
 is on (the default). Plan rows carry *predicted* metrics; accuracy and latency of
 plans are measured once Stage 1 applies them.
 
 ### 5.5 Information
 
 Outputs in `stage_0/`: `report.md`, `stage_0_comparison.xlsx`, `results.json`, `compression_plan.json`,
-`compression_plan_budget_matched*.json`, `sensitivity_profile.json`, and with the KV cache plan `kv_profile.json`,
+`sensitivity_profile.json`, and with the KV cache plan `kv_profile.json`,
 `kv_cache_plan.json`, `kv_cache_plan_bits_only.json`, and `activation_plan.json`. The KV profile is cached under `kv_profile/`, keyed by
 model, calibration text, `kv_calib_samples`, bits options, group size, keep ratios and module names. The profile is cached under
 `sensitivity_profile/` keyed by model and calibration settings only, so a trial that changes
@@ -505,8 +498,7 @@ applied after the cache, so changing it reuses the profile.
 Non-finite gradient scores raise `FloatingPointError` naming `stage0.profile_dtype` (S0-09). An ablation that
 sends perplexity to infinity is capped at the largest float, so that layer ranks as most sensitive. A model
 without the `kv_module_names` projections (for example a fused QKV projection) raises `ValueError`. A pruning ratio outside
-[0, 1) raises `ValueError`. A size budget that even *k* = 0 exceeds returns the *k* = 0 plan and the report
-flags it. Leftover budget after packing (e.g. 0.011 GB on TinyLlama) is stated in the report.
+[0, 1) raises `ValueError`.
 
 ### 5.7 Resources
 
@@ -564,7 +556,7 @@ Rows: `activations/original` (uniform `act_uniform_bits` = 8), `activations/fram
 ### 5.10 Information: hand-off report (S0-17)
 
 `handoff.md` next to `report.md`: Original model; at a glance (stage, what it receives, file, loader); Stage 1
-per-layer bits for the main and budget plans with predicted sizes, and per-layer activation bits, measured damage
+per-layer bits for our method with predicted sizes (and the standard quantization size), and per-layer activation bits, measured damage
 and predicted rise per plan; Stage 2 per-layer share removed and guard for the pruning and same-size plans (S0-18); Stage 3 per-layer key/value bits and words kept with
 predicted memory and rise; Stage 4 FP16 reference numbers and measurement conditions; search parameters with
 current values and ranges; caveats. Every table has column explanations.
@@ -586,7 +578,7 @@ thrown away.
 
 | Member | Contract |
 |---|---|
-| `Method` rows `rtn`, `gptq`, `awq` (`stages/methods.py`) | Plans `quant`, `quant_same_size` (bits only). `apply(MethodCall)` rounds a fresh FP16 model in place. |
+| `Method` rows `rtn`, `gptq`, `awq` (`stages/methods.py`) | Plan `quant` (bits only). `apply(MethodCall)` rounds a fresh FP16 model in place. |
 | `gptq_`, `awq_` (`stages/weights.py`) | Quantize each layer to `plan.layers[l].bit_width`, group size `gptq_groupsize`. `require_bits_only` refuses a plan with pruning ratios. |
 | `Method` rows `rtn_act`, `smoothquant`, `quarot`, `rptq`, `spinquant` | Plan `activations` (S0-15). Only `rtn_act` is written. |
 | `run_stage(ctx, 1, names, ...)` | fp16 row (cache), original row per method (uniform `uniform_bits`, nothing removed), framework row per plan. |
@@ -620,7 +612,7 @@ weight method has quantized. Diagrams: [`stage2.md`](../diagrams/stage2.md).
 |---|---|
 | `unstructured_prune`, `structured_prune`, `low_rank` (`stages/pruning.py`) | Plans `prune`, `prune_same_size` (ratios; bits at the baseline). Round nothing; low-rank stores its factors at the plan's bits (none at the baseline). |
 | `series(quant, prune)` (`stages/methods.py`) | Method `<pruning>_after_<quantization>`: `quant.apply` with `bits_only(plan)`, then `prune.apply` with the combined plan (`combine_plans(quant_plan, prune_plan)`). Selected by `stages.stage2_after`. |
-| `run_stage(ctx, 2, names, ...)` | Original row: every layer pruned at `prune_ratio_aggressive` (uniform `uniform_bits` first in the series path). Framework rows: `prune` (the main plan's ratios) and `prune_same_size` (as many numbers removed as the original, placed by sensitivity). |
+| `run_stage(ctx, 2, names, ...)` | Original row: every layer pruned at `prune_ratio_aggressive` (uniform `uniform_bits` first in the series path). Framework rows: `prune` (our method's ratios) and `prune_same_size` (as many numbers removed as the original, placed by sensitivity). |
 
 ### 7.3 Rationale
 
@@ -750,7 +742,7 @@ Keeping the searchers separate (not pooled) is what allows benchmarking them aga
 | PIPE-04, CFG-01, CFG-02 | §4.1 | `config.py` | `test_config.py::test_config_overrides_and_yaml` |
 | CFG-03 … CFG-08 | §4.2 | `run.py`, `utils/` | end-to-end test |
 | CMP-01 … CMP-06 | §4.3, §4.4, §4.5 | `reporting/reporter.py`, `requirements.py`, `utils/cache.py` | `test_reporting.py`, `test_config.py::test_requirement_check` |
-| CMP-07 | §5.4 | `planner.budget_matched_plan` | `test_budget_matched_plan_fits_uniform_size`, `test_no_prune_budget_plan_matches_size_with_bits_only` |
+| CMP-07 | §5.4 | withdrawn (budget plan removed 2026-10-08) | – |
 | MET-01, MET-02 | §4.6, §10.3 | `data.eval_windows` | `test_data_windows` |
 | MET-03 | §9.2 | — | — |
 | MET-04 … MET-08 | §4.6 | `eval/metrics.py` | `test_measure_model` |

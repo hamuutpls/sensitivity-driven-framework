@@ -38,7 +38,7 @@ VARIANT_PLAIN = {
              "the reference point: the best accuracy we can hope for, and the most memory."),
     "original": ("Standard method", "the compression technique applied the usual way, treating every part of "
                  "the model the same."),
-    "framework": ("Sensitivity-guided framework", "our approach: first measure which parts of the model are "
+    "framework": ("Our method", "our approach: first measure which parts of the model are "
                   "fragile, then compress the robust parts hard and leave the fragile parts mostly intact."),
 }
 

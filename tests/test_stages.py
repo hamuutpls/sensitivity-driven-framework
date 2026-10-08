@@ -34,7 +34,7 @@ def test_registry_lists_every_spec_method():
 
 def test_series_methods_pair_a_pruning_method_with_a_stage1_weight_method():
     (m,) = methods_for(2, ["low_rank_after_gptq"])
-    assert m.stage == 2 and m.quant_plans == ("quant", "quant_same_size") and m.plans == ("prune", "prune_same_size")
+    assert m.stage == 2 and m.quant_plans == ("quant", "quant") and m.plans == ("prune", "prune_same_size")
     assert m.calibrated and m.version != METHODS["low_rank"].version
     for bad in ("low_rank_after_rtn_act", "low_rank_after_low_rank", "rtn_after_gptq"):
         with pytest.raises(ValueError):
@@ -43,8 +43,8 @@ def test_series_methods_pair_a_pruning_method_with_a_stage1_weight_method():
 
 def test_stage0_plans_load(stage0_dir):
     plans = Stage0Plans.load(stage0_dir)
-    assert {"quant", "quant_same_size", "prune", "prune_same_size", "activations", "kv", "kv_bits_only"} <= set(plans.plans)
-    assert all(lp.pruning_ratio == 0 for k in ("quant", "quant_same_size") for lp in plans.plans[k].layers)
+    assert {"quant", "prune", "prune_same_size", "activations", "kv", "kv_bits_only"} <= set(plans.plans)
+    assert all(lp.pruning_ratio == 0 for lp in plans.plans["quant"].layers)
     assert all(lp.bit_width == 16 for k in ("prune", "prune_same_size") for lp in plans.plans[k].layers)
     assert plans.num_layers == 4 and plans.kv_profile is not None
     with pytest.raises(FileNotFoundError):
@@ -82,8 +82,9 @@ def test_run_stage_end_to_end(stage0_dir, tiny_llama, tokenizer, small_cfg, stag
     # every variant starts from a fresh model: the source model is untouched
     assert all((v == tiny_llama.state_dict()[k]).all() for k, v in pristine.items())
 
-    if stage in (1, 2) and method != "rtn_act":
+    if stage == 2:
         assert rows[f"{method}_same_size/framework"]["info"]["compare_to"] == method
+    if stage in (1, 2) and method != "rtn_act":
         assert "model_size_gb" not in rows[f"{method}/framework"]["metrics"]  # simulated: FP16 in memory
     if stage == 1 and method != "rtn_act":
         assert rows[f"{method}/original"]["metrics"]["avg_bits_per_weight"] < 16

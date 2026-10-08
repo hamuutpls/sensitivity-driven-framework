@@ -20,7 +20,7 @@ from sdf.reporting.excel import save_workbook
 from sdf.reporting.markdown import original_model_lines
 from sdf.run import RunContext
 from sdf.search_space import PER_CHANNEL, SEARCH_SPACE
-from sdf.stage0.planner import budget_matched_plan, guarded_layers, plan_compression, uniform_plan
+from sdf.stage0.planner import guarded_layers, plan_compression, uniform_plan
 from sdf.stage0.run import load_profile, original_model_info, setup, weight_cost
 from sdf.stage0.sensitivity import SensitivityProfile, normalize, outlier_layers
 from sdf.utils.cache import atomic_write_text
@@ -49,7 +49,7 @@ def _gs(g: int) -> str:
 
 def plan_rows(profile: SensitivityProfile, calib: dict[str, Any], grid: dict[str, list[Any]],
               s0) -> list[dict[str, Any]]:
-    """One row per (threshold, prune ratio, group size): the framework, same-size and no-prune plans vs uniform."""
+    """One row per (threshold, prune ratio, group size): the framework plan vs uniform."""
     scores = normalize(profile.raw_scores, s0.normalization)
     # The sweep guards only when the profile is itself a layer-removal one (the default score); run_stage0
     # measures a removal profile for the guard whatever the score.
@@ -58,15 +58,9 @@ def plan_rows(profile: SensitivityProfile, calib: dict[str, Any], grid: dict[str
     for gs in grid["gptq_groupsize"]:
         cost = weight_cost(profile, gs, s0)
         uni = cost(uniform_plan(scores, s0.uniform_bits, s0.uniform_prune_ratio))
-        no_prune = budget_matched_plan(scores, uni.weight_memory_gb, 0.0, s0.protected_bits,
-                                       s0.no_prune_compressed_bits, cost, guard)
-        np_cost = cost(no_prune)
         for t, pr in itertools.product(grid["sensitive_threshold"], grid["prune_ratio_aggressive"]):
             fw_plan = plan_compression(scores, t, pr, s0.protected_bits, s0.compressed_bits, guard)
             fw = cost(fw_plan)
-            same = budget_matched_plan(scores, uni.weight_memory_gb, pr, s0.protected_bits, s0.compressed_bits, cost,
-                                       guard)
-            sc = cost(same)
             rows.append({
                 **calib, "sensitive_threshold": t, "prune_ratio_aggressive": pr, "gptq_groupsize": gs,
                 "uniform_gb": uni.weight_memory_gb, "uniform_exposure": uni.sensitivity_exposure,
@@ -75,10 +69,6 @@ def plan_rows(profile: SensitivityProfile, calib: dict[str, Any], grid: dict[str
                 "fw_exposure": fw.sensitivity_exposure,
                 "fw_beats_uniform": fw.weight_memory_gb <= uni.weight_memory_gb
                 and fw.sensitivity_exposure < uni.sensitivity_exposure,
-                "same_protected": len(same.protected_layers), "same_gb": sc.weight_memory_gb,
-                "same_sparsity": sc.sparsity, "same_exposure": sc.sensitivity_exposure,
-                "noprune_protected": len(no_prune.protected_layers), "noprune_gb": np_cost.weight_memory_gb,
-                "noprune_exposure": np_cost.sensitivity_exposure,
             })
     return rows
 
@@ -197,7 +187,6 @@ def _report(res: dict[str, Any], s0) -> str:
     # summary
     by_t = _pick(base, prune_ratio_aggressive=d["prune_ratio_aggressive"])
     wins = [r for r in _pick(rows, **ref) if r["fw_beats_uniform"]]
-    best_same = min(base, key=lambda r: r["same_exposure"])
     calib = res["calibration"]
     worst = min(calib, key=lambda c: c["rank_agreement"])
     L += ["## Summary", "",
@@ -210,10 +199,6 @@ def _report(res: dict[str, Any], s0) -> str:
              "and safer for the fragile layers" + (", and every one of them removes numbers. "
              if all(r["prune_ratio_aggressive"] > 0 for r in wins) else ". ") if wins else
              "No combination with the reference calibration is both smaller than the standard method and safer. ")
-          + f"At exactly the standard method's size, the safest option removes {best_same['prune_ratio_aggressive']:.0%} "
-          f"of the numbers in unprotected layers and protects {best_same['same_protected']} layers (score "
-          f"{best_same['same_exposure']:.2f}); without removing anything, {best_same['noprune_protected']} layers "
-          f"can be protected (score {best_same['noprune_exposure']:.2f}). "
           + ("Only one calibration setting was profiled, so the effect of the calibration text is not "
              "measured yet. " if len(calib) == 1 else
              f"Changing the calibration text barely changes which layers count as sensitive (lowest agreement "
@@ -237,9 +222,6 @@ def _report(res: dict[str, Any], s0) -> str:
           "- **Fragile-parts score**: 0 to 1, how much of the compression lands on sensitive layers. Lower is "
           "safer. It counts removed numbers as a milder form of rounding, which probably flatters plans that "
           "remove numbers.",
-          "- **Same-size plan**: protects as many of the most sensitive layers as fit in the standard method's "
-          "memory. The **benchmark, nothing removed** stores the other layers at "
-          f"{s0.no_prune_compressed_bits} bits instead of removing numbers.",
           "- **Rank agreement**: 1 means two calibration settings rank the layers in exactly the same order; 0 "
           "means no relation.", ""]
 
@@ -256,11 +238,9 @@ def _report(res: dict[str, Any], s0) -> str:
     # 2. prune ratio
     by_p = _pick(base, sensitive_threshold=d["sensitive_threshold"])
     L += ["## 2. Prune ratio", "",
-          f"Threshold {d['sensitive_threshold']}; the same-size columns do not depend on the threshold.", ""]
-    L += _table(["Prune ratio", "Memory (GB)", "Fragile-parts score", "Same-size: protected",
-                 "Same-size: memory (GB)", "Same-size: score"],
-                [[r["prune_ratio_aggressive"], r["fw_gb"], r["fw_exposure"], r["same_protected"], r["same_gb"],
-                  r["same_exposure"]] for r in by_p])
+          f"Threshold {d['sensitive_threshold']}.", ""]
+    L += _table(["Prune ratio", "Memory (GB)", "Fragile-parts score"],
+                [[r["prune_ratio_aggressive"], r["fw_gb"], r["fw_exposure"]] for r in by_p])
 
     # 3. group size
     gs_rows = [_pick(rows, **ref, sensitive_threshold=d["sensitive_threshold"],
@@ -268,10 +248,8 @@ def _report(res: dict[str, Any], s0) -> str:
                for g in grid["gptq_groupsize"]]
     L += ["## 3. Group size", "",
           f"Threshold {d['sensitive_threshold']}, prune ratio {d['prune_ratio_aggressive']}.", ""]
-    L += _table(["Group size", "Standard method (GB)", "Framework (GB)", "Same-size: protected",
-                 "Benchmark: protected", "Benchmark: score"],
-                [[_gs(r["gptq_groupsize"]), r["uniform_gb"], r["fw_gb"], r["same_protected"],
-                  r["noprune_protected"], r["noprune_exposure"]] for r in gs_rows])
+    L += _table(["Group size", "Standard method (GB)", "Framework (GB)"],
+                [[_gs(r["gptq_groupsize"]), r["uniform_gb"], r["fw_gb"]] for r in gs_rows])
 
     # plans that beat the standard method
     if wins:
@@ -306,10 +284,6 @@ def _report(res: dict[str, Any], s0) -> str:
              f"bigger. At {lo['sensitive_threshold']} the plan protects {lo['fw_protected']} layers and needs "
              f"{lo['fw_gb']:.3f} GB against {uni['uniform_gb']:.3f} GB, with a score of {lo['fw_exposure']:.3f} "
              f"against {uni['uniform_exposure']:.3f}.")
-    np0 = by_p[0]
-    L.append(f"- Removing numbers is what buys room for protection at the same size. With no removal the "
-             f"same-size plan can only protect {np0['same_protected']} layers at 4 bits, or "
-             f"{np0['noprune_protected']} if the rest drop to {s0.no_prune_compressed_bits} bits.")
     L.append("- Group size moves every plan's memory by the same amount, so it hardly changes which plan wins; "
              "it matters for accuracy in Stage 1.")
     L.append("- The best settings here are the ones to carry into Stage 1, where accuracy is measured; the "

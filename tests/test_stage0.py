@@ -12,7 +12,7 @@ from sdf.search_space import PER_CHANNEL, SEARCH_SPACE
 from sdf.stage0.activation import (ActivationPlan, ActivationProfile, activation_plan_from_weights,
                                    plan_activations, predicted_rise, profile_activations, uniform_activation_plan)
 from sdf.stage0.kv_cache import KVPlan
-from sdf.stage0.planner import (CompressionPlan, baseline_cost, budget_matched_plan, guarded_layers, plan_compression,
+from sdf.stage0.planner import (CompressionPlan, baseline_cost, guarded_layers, plan_compression,
                                 predict_cost, uniform_plan)
 from sdf.stage0.run import _MEASURE_PLAIN, profile_key, run_stage0
 from sdf.stage0.sensitivity import SCORES, SensitivityProfile, normalize, outlier_layers, profile_sensitivity
@@ -54,37 +54,6 @@ def test_outlier_layer_does_not_protect_everything():
     assert len(plan_compression(normalize(raw), 0.8, 0.3, 8, 4).protected_layers) == 5
 
 
-def test_budget_matched_plan_fits_uniform_size():
-    raw = [2705.0] + [6596.0 + i * (8647.0 - 6596.0) / 20 for i in range(21)]
-    scores = normalize(raw)
-    prof = SensitivityProfile(raw, [44_000_000] * 22, [12_000] * 22, 260_000_000)
-    cost = lambda p: predict_cost(p, prof, 128, 32, 16)  # noqa: E731
-    budget = cost(uniform_plan(scores, 4, 0.0)).weight_memory_gb
-    plan = budget_matched_plan(scores, budget, 0.3, 8, 4, cost)
-    assert cost(plan).weight_memory_gb <= budget
-    k = len(plan.protected_layers)
-    assert 0 < k < 22
-    assert set(plan.protected_layers) == set(sorted(range(22), key=lambda i: raw[i])[-k:])  # the most sensitive
-    one_more = budget_matched_plan(scores, budget * 10, 0.3, 8, 4, cost)
-    assert len(one_more.protected_layers) == 22  # a generous budget protects everything
-    assert budget_matched_plan(scores, 0.0, 0.3, 8, 4, cost).protected_layers == []  # over budget: the k = 0 plan
-
-
-def test_no_prune_budget_plan_matches_size_with_bits_only():
-    raw = [2705.0] + [6596.0 + i * (8647.0 - 6596.0) / 20 for i in range(21)]
-    scores = normalize(raw)
-    prof = SensitivityProfile(raw, [44_000_000] * 22, [12_000] * 22, 260_000_000)
-    cost = lambda p: predict_cost(p, prof, 128, 32, 16)  # noqa: E731
-    uni = cost(uniform_plan(scores, 4, 0.0))
-    plan = budget_matched_plan(scores, uni.weight_memory_gb, 0.0, 8, 3, cost)
-    c = cost(plan)
-    assert c.weight_memory_gb <= uni.weight_memory_gb and c.sparsity == 0
-    # 8k + 3(22 - k) <= 4 * 22 bits per weight  ->  k = 4 protected layers, the 4 most sensitive
-    assert set(plan.protected_layers) == set(sorted(range(22), key=lambda i: raw[i])[-4:])
-    assert {lp.bit_width for lp in plan.layers if not lp.protected} == {3}
-    assert c.sensitivity_exposure < uni.sensitivity_exposure
-
-
 def test_outlier_layers():
     raw = [2705.0] + [6596.0 + i * (8647.0 - 6596.0) / 20 for i in range(21)]
     assert outlier_layers(raw) == [0]
@@ -115,13 +84,6 @@ def test_guard_blocks_pruning_of_critical_layers():
     assert plan.guarded_layers == [0, 3]
     assert [lp.pruning_ratio for lp in plan.layers] == [0.0, 0.3, 0.3, 0.0]
     assert plan.layers[0].bit_width == 4  # the guard blocks pruning only, bits still follow the plan
-
-    prof = toy_profile()
-    cost = lambda p: predict_cost(p, prof, 100, 32, 16)  # noqa: E731
-    budget = cost(uniform_plan(TOY_SCORES, 4, 0.0)).weight_memory_gb
-    same = budget_matched_plan(TOY_SCORES, budget, 0.5, 8, 4, cost, guard)
-    assert all(same.layers[i].pruning_ratio == 0 for i in guard)
-    assert cost(same).weight_memory_gb <= budget  # the unpruned guarded layers are paid for within the budget
 
     assert CompressionPlan.from_dict(plan.to_dict()) == plan
 
@@ -208,16 +170,15 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
 
     stage_dir = ctx.run_dir / "stage_0"
     for name in ("report.md", "stage_0_comparison.xlsx", "results.json", "compression_plan.json",
-                 "compression_plan_budget_matched.json", "sensitivity_profile.json",
+                 "sensitivity_profile.json",
                  "kv_cache_plan.json", "kv_cache_plan_bits_only.json", "kv_profile.json", "activation_plan.json",
-                 "activation_profile.json", "quant_plan.json", "quant_plan_budget_matched.json", "prune_plan.json",
+                 "activation_profile.json", "quant_plan.json", "prune_plan.json",
                  "prune_plan_same_size.json"):
         assert (stage_dir / name).exists(), name
-    assert not (stage_dir / "compression_plan_budget_matched_no_prune.json").exists()  # benchmark, not handed on
+    assert not list(stage_dir.glob("*budget*"))  # the budget plan is gone
     data = json.loads((stage_dir / "results.json").read_text())
     rows = {f"{r['method']}/{r['variant']}": r for r in data["rows"]}
     assert set(rows) == {"baseline/fp16", "allocation/original", "allocation/framework",
-                         "allocation_same_size/framework", "allocation_same_size_no_prune/framework",
                          "kv_cache/original", "kv_cache/framework", "kv_cache_bits_only/framework",
                          "activations/original", "activations/framework", "activations_from_weights/framework"}
     kv_fw, kv_un = rows["kv_cache/framework"]["metrics"], rows["kv_cache/original"]["metrics"]
@@ -225,14 +186,6 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     assert kv_fw["avg_kv_bits"] <= 4 + 1e-9
     assert rows["baseline/fp16"]["metrics"]["predicted_kv_memory_gb"] > kv_un["predicted_kv_memory_gb"]
     assert "vs_original_abs" in rows["kv_cache_bits_only/framework"]["deltas"]["predicted_kv_ppl_rise"]
-    no_prune = rows["allocation_same_size_no_prune/framework"]
-    assert no_prune["metrics"]["sparsity"] == 0 and no_prune["info"]["label"].startswith("Benchmark")
-    assert no_prune["metrics"]["predicted_weight_memory_gb"] <= rows["allocation/original"]["metrics"][
-        "predicted_weight_memory_gb"] * (1 + 1e-9)
-    same = rows["allocation_same_size/framework"]
-    assert same["metrics"]["predicted_weight_memory_gb"] <= rows["allocation/original"]["metrics"][
-        "predicted_weight_memory_gb"] * (1 + 1e-9)
-    assert "vs_original_abs" in same["deltas"]["predicted_weight_memory_gb"]  # compared to the uniform plan
     assert all(r["status"] == "ok" for r in rows.values())
     assert rows["baseline/fp16"]["metrics"]["ppl_val"] > 1
     fw = rows["allocation/framework"]
@@ -241,13 +194,10 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
 
     # the plans later stages read: returned, and loadable from the JSON files
     assert len(res.plan.guarded_layers) == 1
-    for p in (res.plan, res.budget_plan):
-        assert all(p.layers[i].pruning_ratio == 0 for i in p.guarded_layers)
+    assert all(res.plan.layers[i].pruning_ratio == 0 for i in res.plan.guarded_layers)
     assert CompressionPlan.load(stage_dir / "compression_plan.json") == res.plan
-    assert CompressionPlan.load(stage_dir / "compression_plan_budget_matched.json") == res.budget_plan
     # Stage 1 gets bits only, Stage 2 pruning only (bits at the baseline)
-    for f in ("quant_plan.json", "quant_plan_budget_matched.json"):
-        assert all(lp.pruning_ratio == 0 for lp in CompressionPlan.load(stage_dir / f).layers), f
+    assert all(lp.pruning_ratio == 0 for lp in CompressionPlan.load(stage_dir / "quant_plan.json").layers)
     quant = CompressionPlan.load(stage_dir / "quant_plan.json")
     assert [lp.bit_width for lp in quant.layers] == [lp.bit_width for lp in res.plan.layers]
     for f in ("prune_plan.json", "prune_plan_same_size.json"):
@@ -286,11 +236,9 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     assert data2["rows"][0]["info"]["cached"] is True
     assert data2["rows"][2]["info"]["profile_cached"] is True
     report = (stage_dir / "report.md").read_text(encoding="utf-8")
-    assert "also includes a budget plan" in report and "Size floor" in report
+    assert "budget plan" not in report and "Size floor" in report
     assert "## Sensitivity of every layer" in report
-    assert "Unused budget: benchmark, nothing removed" in report
     assert "## KV cache plan" in report and "Key bits (cache)" in report and "short-term memory" in report
-    assert "Share removed (budget plan)" in report and "pruning caveat" in report
     assert "Perplexity (held-out half)" in report.split("# Technical details")[1]
     assert report.split("## Summary")[1].split("##")[0].count("\n\n") <= 2  # one paragraph
     assert data2["original_model"]["num_parameters"] == n_params
@@ -335,8 +283,6 @@ def test_sweep_end_to_end(tiny_llama, tokenizer, small_cfg):
     data = json.loads(out["json"].read_text())
     assert len(data["rows"]) == 2 * 2 * 2 * 2 * 2
     assert len(data["calibration"]) == 4 and not data["failures"]
-    assert all(r["same_gb"] <= r["uniform_gb"] * (1 + 1e-9) and r["noprune_gb"] <= r["uniform_gb"] * (1 + 1e-9)
-               for r in data["rows"])
     report = out["report"].read_text(encoding="utf-8")
     for heading in ("## Summary", "## 1. Threshold", "## 2. Prune ratio", "## 3. Group size", "## 4. Calibration"):
         assert heading in report
