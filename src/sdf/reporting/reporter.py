@@ -36,7 +36,7 @@ VARIANTS = ("fp16", "original", "framework")
 VARIANT_PLAIN = {
     "fp16": ("Original model (uncompressed)", "the model exactly as published, with nothing removed or simplified. It is "
              "the reference point: the best accuracy we can hope for, and the most memory."),
-    "original": ("Standard method", "the compression technique applied the usual way, treating every part of "
+    "original": ("Standard quantization", "the compression technique applied the usual way, treating every part of "
                  "the model the same."),
     "framework": ("Our method", "our approach: first measure which parts of the model are "
                   "fragile, then compress the robust parts hard and leave the fragile parts mostly intact."),

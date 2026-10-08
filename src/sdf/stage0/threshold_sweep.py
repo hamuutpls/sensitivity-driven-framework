@@ -60,7 +60,7 @@ def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, 
         r.metrics.update({k: fp16["metrics"][k] for k in ("ppl_val", "ppl_heldout")})
         r.metrics.update(_cost_metrics(baseline_cost(profile, s0.baseline_bits)), protected_layers=0)
     uniform = uniform_plan(scores, s0.uniform_bits, s0.uniform_prune_ratio)
-    row("standard", "original", uniform, label="Standard method",
+    row("standard", "original", uniform, label="Standard quantization",
         description=f"every layer at {s0.uniform_bits} bits, {s0.uniform_prune_ratio:.0%} removed")
     for k in guards:
         guarded, _ = load_guard(ctx, candidate, handle, text_loader, profile, k)
