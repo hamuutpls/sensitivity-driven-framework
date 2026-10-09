@@ -25,15 +25,20 @@ Until a method is written, `main.py` (MODE `"stages"`) lists it as a failed row 
 | GPTQ | `gptqmodel` 7.5.0: source only, compiles CUDA kernels; `auto-gptq` 0.7.1: abandoned (2024) | build is unreliable, no Blackwell wheel | works | **done** (`gptq`, `sdf/stages/weights.py`) |
 | AWQ | `autoawq` 0.2.9: deprecated (last release May 2025), source only; successor is `llmcompressor` 0.14 (pure Python) | `llmcompressor` installs, its output runs in vLLM (Linux) | works | **done** (`awq`: scale search + RTN, no clip search) |
 
+| OmniQuant, SqueezeLLM, SpQR, EfficientQAT (Block-AP) | forks `hamuutpls/<name>`: research repos | – | works | **done**, simplified torch ports in `sdf/stages/weights_a.py` (fork file and commit above each method) |
+| AQLM, QuIP, QuIP#, PB-LLM, BiLLM | forks `hamuutpls/<name>`: research repos, custom kernels | – | works | **done**, simplified torch ports in `sdf/stages/weights_b.py`; BiLLM has no per-layer bit width, so only its standard row runs |
+| bitsandbytes | `bitsandbytes` 0.50 | CUDA wheel | works | **done** (`sdf/stages/bnb.py`): NF4 and int8 only |
+| QTIP, ABQ-LLM | forks: CUDA pipelines with their own packed checkpoints | – | – | **not ported**: recorded as failed rows with the reason |
+
 ## Stage 1: quantization, activations
 
 | Method | Library | Windows + 5070 Ti | Colab | Plan |
 |---|---|---|---|---|
 | RTN (baseline) | none | yes | yes | **done** (`rtn_act`) |
-| SmoothQuant | none needed | yes | yes | in repo, `smoothquant_alpha` is in the search space |
-| QuaRot | `fast-hadamard-transform` 1.1.0: source only (CUDA) | build is unreliable | works | in repo with a torch Hadamard matrix. TinyLlama's feed-forward width 5632 = 44 x 128 is not a power of two, so the down-projection needs the Kronecker product of a 44 x 44 and a 128 x 128 Hadamard matrix, |
-| RPTQ | research repo only | – | – | in repo (channel clustering + per-cluster scales) |
-| SpinQuant | research repo only | – | – | in repo; learns its rotations, so it is the slowest Stage 1 activation method |
+| SmoothQuant | none needed | yes | yes | **done** (`sdf/stages/activation_methods.py`), `smoothquant_alpha` is in the search space |
+| QuaRot | `fast-hadamard-transform` 1.1.0: source only (CUDA) | build is unreliable | works | **done** with a torch Hadamard matrix. TinyLlama's feed-forward width 5632 = 44 x 128 is not a power of two, so the down-projection needs the Kronecker product of a 44 x 44 and a 128 x 128 Hadamard matrix, |
+| RPTQ | research repo only | – | – | **done**: channel clustering + per-cluster scales, no physical reorder |
+| SpinQuant | research repo only | – | – | **done**: learns R1 on a proxy loss; the slowest Stage 1 activation method |
 
 ## Stage 2: pruning
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-09: every Stage 1 technique from the forks
+
+- New Stage 1 weight methods (simplified plain-torch ports of the forks, one commit and file cited above each):
+  `omniquant`, `squeezellm`, `spqr`, `efficientqat`, `aqlm`, `quip`, `quipsharp`, `pbllm`, `billm`, `bitsandbytes`;
+  activation methods `smoothquant`, `quarot`, `spinquant`, `rptq`. `qtip` and `abqllm` are registered as failed rows
+  with the reason. All follow the plan's per-layer bits and refuse a plan that removes anything.
+- BiLLM has no bit-width knob: its standard row runs, its plan-following row fails with that reason
+  (`Method.fixed_bits`). Rows carry a `note` (simplified port, nominal size) and the metric `zero_weight_share`.
+- `scripts/colab_stage1.py` runs Stage 0 + Stage 1 on Colab with no Drive and prints every number.
+
 ## 2026-10-08: the budget plan is removed; standard quantization against our method
 
 - Removed: the Stage 0 budget plan and its nothing-removed benchmark (rows `allocation_same_size`,

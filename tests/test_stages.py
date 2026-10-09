@@ -21,7 +21,9 @@ def stage0_dir(tiny_llama, tokenizer, small_cfg):
 
 
 def test_registry_lists_every_spec_method():
-    spec = {1: {"rtn", "gptq", "awq", "rtn_act", "smoothquant", "quarot", "rptq", "spinquant"},
+    spec = {1: {"rtn", "gptq", "awq", "omniquant", "squeezellm", "spqr", "efficientqat", "aqlm", "quip", "quipsharp",
+                "pbllm", "billm", "bitsandbytes", "qtip", "abqllm", "rtn_act", "smoothquant", "quarot", "rptq",
+                "spinquant"},
             2: {"structured_prune", "unstructured_prune", "low_rank"},
             3: {"quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"}}
     for stage, names in spec.items():
@@ -51,7 +53,13 @@ def test_stage0_plans_load(stage0_dir):
         Stage0Plans.load(stage0_dir.parent)
 
 
-@pytest.mark.parametrize("stage,method", [(1, "rtn"), (1, "gptq"), (1, "awq"), (1, "rtn_act"),
+ACTIVATION_METHODS_1 = ("rtn_act", "smoothquant", "quarot", "spinquant", "rptq")
+FORK_WEIGHT_METHODS = ("omniquant", "squeezellm", "spqr", "efficientqat", "aqlm", "quip", "quipsharp", "pbllm", "billm",
+                       "bitsandbytes")
+
+
+@pytest.mark.parametrize("stage,method", [(1, "rtn"), (1, "gptq"), (1, "awq")]
+                         + [(1, m) for m in ACTIVATION_METHODS_1 + FORK_WEIGHT_METHODS] + [
                                           (2, "unstructured_prune"), (2, "structured_prune"), (2, "low_rank"),
                                           (2, "unstructured_prune_after_gptq"), (2, "low_rank_after_awq"),
                                           (3, "rtn_kv")])
@@ -59,6 +67,7 @@ def test_run_stage_end_to_end(stage0_dir, tiny_llama, tokenizer, small_cfg, stag
     ctx = start_run(small_cfg)
     cand = SEARCH_SPACE.make({"calib_samples": 16})
     pristine = {k: v.clone() for k, v in tiny_llama.state_dict().items()}
+    spec = methods_for(stage, [method])[0]
     unimplemented = next((m.name for m in METHODS.values() if m.stage == stage and m.apply is None
                           and m.plans == methods_for(stage, [method])[0].plans), None)
     kwargs = dict(model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
@@ -68,30 +77,37 @@ def test_run_stage_end_to_end(stage0_dir, tiny_llama, tokenizer, small_cfg, stag
     rows = {f"{r['method']}/{r['variant']}": r for r in res["rows"]}
     assert rows["baseline/fp16"]["info"]["cached"]  # same cache entry Stage 0 measured
     assert rows[f"{method}/original"]["status"] == "ok"
-    assert rows[f"{method}/framework"]["status"] == "ok"
+    if spec.fixed_bits:  # BiLLM: no per-layer bit widths
+        assert rows[f"{method}/framework"]["status"] == "failed"
+        assert "cannot follow a per-layer bit plan" in rows[f"{method}/framework"]["error"]
+    else:
+        assert rows[f"{method}/framework"]["status"] == "ok"
     for r in rows.values():
         if r["status"] == "ok":
             assert r["metrics"]["ppl_val"] > 1 and r["metrics"]["ppl_heldout"] > 1
     # a method that is not written yet is a failed row saying so, not a crash or a silent gap
     if unimplemented:
         assert rows[f"{unimplemented}/original"]["status"] == "failed"
-        assert "not implemented" in rows[f"{unimplemented}/original"]["error"]
+        assert METHODS[unimplemented].unavailable in rows[f"{unimplemented}/original"]["error"]
     # framework rows are compared with the original row of their method
-    assert "vs_original_abs" in rows[f"{method}/framework"]["deltas"]["ppl_val"]
+    if not spec.fixed_bits:
+        assert "vs_original_abs" in rows[f"{method}/framework"]["deltas"]["ppl_val"]
     assert out["report"].exists() and out["xlsx"].exists() and out["report"].parent.name == f"stage_{stage}"
     # every variant starts from a fresh model: the source model is untouched
     assert all((v == tiny_llama.state_dict()[k]).all() for k, v in pristine.items())
 
     if stage == 2:
         assert rows[f"{method}_same_size/framework"]["info"]["compare_to"] == method
-    if stage in (1, 2) and method != "rtn_act":
+    if stage in (1, 2) and method not in ACTIVATION_METHODS_1 and not spec.fixed_bits:
         assert "model_size_gb" not in rows[f"{method}/framework"]["metrics"]  # simulated: FP16 in memory
-    if stage == 1 and method != "rtn_act":
+    if stage == 1 and method not in ACTIVATION_METHODS_1:
         assert rows[f"{method}/original"]["metrics"]["avg_bits_per_weight"] < 16
-        # Stage 1 removes nothing, in any row
+        # Stage 1 removes nothing, in any row; the zero share is reported next to the FP16 row's
         assert all(r["metrics"].get("sparsity", 0) == 0 for r in rows.values() if r["status"] == "ok")
-    if stage == 1 and method == "rtn_act":
-        assert rows["rtn_act/original"]["metrics"]["avg_activation_bits"] < 16
+        assert "zero_weight_share" in rows["baseline/fp16"]["metrics"]
+        assert rows[f"{method}/original"]["info"]["note"] if spec.note else True
+    if stage == 1 and method in ACTIVATION_METHODS_1:
+        assert rows[f"{method}/original"]["metrics"]["avg_activation_bits"] < 16
     if stage == 2:
         # the standard version removes prune_ratio_aggressive from every layer; the Stage 2 framework plans keep
         # the never-pruned layers whole

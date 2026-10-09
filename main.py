@@ -111,8 +111,9 @@ GUARD_SWEEP = [0, 3, 5, 8]  # MODE "threshold_sweep": never-pruned layer counts 
 # =====================================================================================================
 STAGE0_DIR = None  # a finished run's stage_0 folder, e.g. "thesis_compression/results/<run_id>/stage_0";
 #                    None = run Stage 0 first with the settings above, in the same run
-STAGE1_METHODS = ["rtn", "gptq", "awq", "rtn_act"]  # quantization only, nothing removed. Weights: rtn | gptq | awq;
-#   activations: rtn_act | smoothquant | quarot | rptq | spinquant
+STAGE1_METHODS = ["rtn", "gptq", "awq", "rtn_act"]  # quantization only, nothing removed. Weights: rtn | gptq | awq |
+#   omniquant | squeezellm | spqr | efficientqat | aqlm | quip | quipsharp | pbllm | billm | bitsandbytes (| qtip | abqllm:
+#   not ported, shown as failed rows). Activations: rtn_act | smoothquant | quarot | rptq | spinquant
 STAGE2_METHODS = ["unstructured_prune", "structured_prune", "low_rank"]  # pruning only, nothing rounded (FP16 model)
 STAGE2_AFTER = []  # Stage 1 weight methods to also run each Stage 2 method after (0 -> 1 -> 2 -> 4), e.g. ["gptq"]
 STAGE3_METHODS = ["rtn_kv"]  # KV cache: rtn_kv | quarot_kv | kvquant | h2o | snapkv | infinigen

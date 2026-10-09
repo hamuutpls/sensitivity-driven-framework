@@ -35,7 +35,11 @@ from sdf.stage0.prune_sweep import apply_plan
 from sdf.stage0.sensitivity import int_zero
 from sdf.stage0.sensitivity import find_decoder_layers
 from sdf.stages.pruning import low_rank_, structured_prune_, wanda_
+from sdf.stages.activation_methods import ACTIVATION_METHODS
+from sdf.stages.bnb import WEIGHT_METHODS_BNB
 from sdf.stages.weights import awq_, gptq_
+from sdf.stages.weights_a import WEIGHT_METHODS_A
+from sdf.stages.weights_b import WEIGHT_METHODS_B
 
 
 @dataclass
@@ -65,6 +69,12 @@ class Method:
     # how removed weights are stored in the predicted size, when not stage0.sparse_storage ("free": whole channels or
     # low-rank factors are removed, so no mask of kept weights is needed)
     storage: str | None = None
+    # why the method cannot follow a per-layer bit plan (its bit width is fixed); its standard row still runs
+    fixed_bits: str = ""
+    # why a method without `apply` cannot run here at all (shown on its failed row)
+    unavailable: str = ""
+    # shown on the method's rows: what is a simplified port of the fork's algorithm, and how its size is counted
+    note: str = ""
 
 
 # ----------------------------------------------------------------------------------------------- baselines
@@ -121,6 +131,48 @@ def _rtn_kv(call: MethodCall) -> Iterator[dict[str, Any]]:
 _WEIGHT_PLANS = ("quant",)
 _PRUNE_PLANS = ("prune", "prune_same_size")
 
+
+def _transformed_activations(fn: Callable, extra: Callable[[MethodCall], dict[str, Any]] = lambda call: {}):
+    """apply() for an activation_methods.py fn(model, plan, batches, group_size, **extra): it rewrites the model into an
+    equivalent one, then returns the context manager that rounds the activations at the plan's bits."""
+    @contextmanager
+    def apply(call: MethodCall) -> Iterator[dict[str, Any]]:
+        with fn(call.model, call.plan, call.batches(), call.cfg.stage0.act_group_size, **extra(call)):
+            yield {}
+    return apply
+
+
+_SIMPLIFIED = "simplified port of the fork: "
+_SIZE_NOTE = "size column is the plan's nominal bits; codebooks, outliers and scale overhead are not counted"
+_UNAVAILABLE = {
+    "qtip": "QTIP (trellis-coded quantization with a bitshift trellis and tail-biting Viterbi) is a CUDA pipeline that "
+            "writes its own packed checkpoint; it is not ported to this simulated, per-layer-bit setting",
+    "abqllm": "ABQ-LLM's gain is its arbitrary-bit CUDA kernels (W2A8-type); its quantizer is OmniQuant-style "
+              "training and is not ported separately (see the omniquant row)",
+}
+
+
+def _fork_methods() -> list[Method]:
+    out = []
+    for registry in (WEIGHT_METHODS_A, WEIGHT_METHODS_B, WEIGHT_METHODS_BNB):
+        for name, (fn, label, params, library, *rest) in registry.items():
+            takes_bits, simplified = (rest[0], rest[1]) if len(rest) == 2 else (True, rest[0])
+            out.append(Method(
+                name, 1, label, _WEIGHT_PLANS, _calibrated(fn), params=params, calibrated=name != "bitsandbytes",
+                library=library, note=f"{_SIMPLIFIED}{simplified}; {_SIZE_NOTE}" if simplified else _SIZE_NOTE,
+                fixed_bits="" if takes_bits else "it binarizes every layer the same way (about 1 bit), so its "
+                "standard row runs at its own width and the plan-following row is not possible"))
+    out += [Method(name, 1, label, _WEIGHT_PLANS, library=reason, unavailable=reason)
+            for name, label, reason in (("qtip", "QTIP", _UNAVAILABLE["qtip"]), ("abqllm", "ABQ-LLM", _UNAVAILABLE["abqllm"]))]
+    extra = {"smoothquant": lambda c: {"alpha": c.candidate["smoothquant_alpha"]},
+             "quarot": lambda c: {"seed": c.cfg.run.seed}, "spinquant": lambda c: {"seed": c.cfg.run.seed},
+             "rptq": lambda c: {"seed": c.cfg.run.seed}}
+    for name, (fn, label, library, simplified) in ACTIVATION_METHODS.items():
+        out.append(Method(name, 1, label, ("activations",), _transformed_activations(fn, extra[name]),
+                          params=("smoothquant_alpha",) if name == "smoothquant" else (), calibrated=True,
+                          library=library, note=_SIMPLIFIED + simplified + "; weights stay unquantized in this stage"))
+    return out
+
 METHODS: dict[str, Method] = {m.name: m for m in [
     # Stage 1: quantization, weights (plans carry bits only)
     # baseline; same rounding as the Stage 0 pruning-levels study
@@ -134,14 +186,6 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     # Stage 1: quantization, activations
     Method("rtn_act", 1, "Round-to-nearest activations", ("activations",), _rtn_activations,
            library="in repo (torch)"),  # baseline; same rounding as the Stage 0 activation measurement
-    Method("smoothquant", 1, "SmoothQuant", ("activations",), params=("smoothquant_alpha",), calibrated=True,
-           library="in repo (torch)"),  # moves outliers from activations into weights
-    # fast-hadamard-transform is a CUDA source build; a torch matmul Hadamard is fast enough at 1B
-    Method("quarot", 1, "QuaRot", ("activations",), library="in repo (torch Hadamard)"),
-    # reorder channels into clusters, one scale per cluster
-    Method("rptq", 1, "RPTQ", ("activations",), calibrated=True, library="in repo (research code only)"),
-    # learned rotations: a short optimisation run, the most expensive activation method
-    Method("spinquant", 1, "SpinQuant", ("activations",), calibrated=True, library="in repo (research code only)"),
     # Stage 2: pruning (plans carry pruning ratios; weights stay FP16 unless run after Stage 1)
     Method("unstructured_prune", 2, "Unstructured pruning (Wanda)", _PRUNE_PLANS, _calibrated(wanda_),
            calibrated=True, library="in repo (torch)", version=3),  # |w| x input norm per output row; 3: prunes only
@@ -165,7 +209,7 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     Method("snapkv", 3, "SnapKV", ("kv",), library="in repo (attention hook)"),
     # offloads the cache to CPU and prefetches; latency results depend on PCIe
     Method("infinigen", 3, "InfiniGen", ("kv",), library="research code only (custom offloading)"),
-]}
+] + _fork_methods()}
 
 AFTER = "_after_"  # "<Stage 2 method>_after_<Stage 1 weight method>": the series path 0 -> 1 -> 2 -> 4
 
