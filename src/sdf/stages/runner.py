@@ -31,7 +31,7 @@ from sdf.stage0.kv_cache import KVPlan, KVProfile, predict_kv, uniform_kv_plan
 from sdf.stage0.planner import CompressionPlan, baseline_cost, combine_plans, uniform_plan
 from sdf.stage0.run import (_cost_metrics, _kv_metrics, calib_batches, fp16_key, load_fp16,
                             setup, stage_reporter, weight_cost)
-from sdf.stage0.sensitivity import SensitivityProfile, normalize
+from sdf.stage0.sensitivity import SensitivityProfile, find_decoder_layers, normalize
 from sdf.stages.methods import AFTER, Method, MethodCall, methods_for
 from sdf.utils.logging import get_logger
 
@@ -60,7 +60,7 @@ TITLES = {1: "Quantization (weights and activations)", 2: "Pruning", 3: "KV-cach
 
 MAIN_METRICS = {
     1: ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "avg_bits_per_weight", "avg_activation_bits",
-        "peak_memory_gb", "prefill_ms_mean", "decode_ms_per_token_mean", "build_time_s"],
+        "zero_weight_share", "peak_memory_gb", "prefill_ms_mean", "decode_ms_per_token_mean", "build_time_s"],
     2: ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "sparsity", "peak_memory_gb", "prefill_ms_mean",
         "decode_ms_per_token_mean", "build_time_s"],
     3: ["ppl_val", "ppl_heldout", "predicted_kv_memory_gb", "avg_kv_bits", "kv_kept_share", "peak_memory_gb",
@@ -198,6 +198,13 @@ def _describe(plan: Any) -> str:
     return f"{plan.kind} plan, KV bits {bits}, kept share min {min(lp.keep_ratio for lp in plan.layers):.2g}"
 
 
+def zero_weight_share(model: nn.Module) -> float:
+    """Share of the decoder Linear weights that are exactly 0 (evidence that a Stage 1 method removed nothing: rounding
+    onto a grid that contains 0 makes some, so compare each row with the FP16 row and the round-to-nearest row)."""
+    ws = [m.weight for layer in find_decoder_layers(model) for m in layer.modules() if isinstance(m, nn.Linear)]
+    return sum(int((w == 0).sum()) for w in ws) / sum(w.numel() for w in ws)
+
+
 def _free_memory() -> None:
     gc.collect()
     if torch.cuda.is_available():
@@ -287,6 +294,8 @@ def run_stage(
                 val, held = windows()
                 metrics, raw = measure_model(model, val, held, cfg.eval, device, seed=cfg.run.seed)
                 metrics.update(tasks(model))
+                if kind_of(method) == "weights":
+                    metrics["zero_weight_share"] = zero_weight_share(model)
                 if lc_on(method):
                     metrics.update(llamacpp.measure(model, handle.tokenizer, plan, val, held, cfg.eval,
                                                     s0.baseline_bits))
@@ -313,6 +322,8 @@ def run_stage(
         if measure_fp16:
             fp16, cached = load_fp16(ctx, handle, text_loader)
             row.metrics.update(fp16["metrics"])
+            if stage == 1:
+                row.metrics["zero_weight_share"] = zero_weight_share(model_factory())
             row.info["cached"] = cached
             rep.add_raw("baseline", "fp16", fp16["raw"])
             if cfg.eval.downstream_tasks:
@@ -340,6 +351,10 @@ def run_stage(
         with rep.method(m.name, "original", description=f"{m.label}, standard settings: {_describe(orig)}",
                         simulated=m.simulated) as row:
             _require(m)
+            if m.note:
+                row.info["note"] = m.note
+            if m.fixed_bits:
+                row.info["note"] = f"{m.note}; {m.fixed_bits}".strip("; ")
             key = {"stage": stage, "method": m.name, "version": m.version, "plan": orig.to_dict(),
                    "params": {p: candidate[p] for p in m.params}, **fp16_key(ctx, device),
                    "downstream": [list(cfg.eval.downstream_tasks), cfg.eval.downstream_limit],
@@ -365,6 +380,8 @@ def run_stage(
                 info["label"], info["plain_desc"] = plain
             with rep.method(m.name + suffix, "framework", **info) as row:
                 _require(m)
+                if m.note:
+                    row.info["note"] = m.note
                 if m.fixed_bits:
                     raise ValueError(f"{m.label} cannot follow a per-layer bit plan: {m.fixed_bits}")
                 if gone := [PLAN_FILES[k][0] for k in _plan_keys(m, plan_key) if k not in plans.plans]:

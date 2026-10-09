@@ -118,6 +118,10 @@ METRICS: dict[str, MetricSpec] = {
         "Weight sparsity", "", None, "share of the model's numbers removed",
         "Pruning deletes numbers that matter least. This is the share of all the model's numbers that the "
         "plan deletes (0.1 means 10%)."),
+    "zero_weight_share": MetricSpec(
+        "Weights exactly 0", "", None, "share of the layers' numbers that are exactly zero",
+        "A check that quantization removed nothing. Rounding onto a grid that contains 0 turns some small numbers "
+        "into exactly 0, so compare a row with the uncompressed model and with plain rounding."),
     "protected_layers": MetricSpec(
         "Protected layers", "", None, "number of protected layers",
         "How many of the model's layers the plan leaves at high precision because they are sensitive."),
