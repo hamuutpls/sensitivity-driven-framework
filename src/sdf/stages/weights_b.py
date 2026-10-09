@@ -21,7 +21,12 @@ from sdf.stages.weights import gptq_quantize_, input_hessians
 
 BILLM_FIXED_BITS = True  # BiLLM binarizes every layer the same way: it has no per-layer bit-width knob
 VEC = 8  # AQLM group size and QuIP# lattice dimension
-_GEN_SEED = 0
+_GEN_SEED = 0  # random rotations, k-means starts and samples; the runner sets it to the run seed (`set_seed`)
+
+
+def set_seed(seed: int) -> None:
+    global _GEN_SEED
+    _GEN_SEED = seed
 
 
 def _apply(model: nn.Module, plan: CompressionPlan, batches: list[torch.Tensor], baseline_bits: int, name: str,
@@ -372,5 +377,6 @@ WEIGHT_METHODS_B = {
     "pbllm": (pbllm_, "PB-LLM", ("gptq_groupsize",), f"partial binarization, salient weights at 8 bits ({_NOTE})", True,
               "row mean/scale over binarized weights only, one group per matrix, no quantization-aware training"),
     "billm": (billm_, "BiLLM", ("gptq_groupsize",), f"about 1-bit residual binarization, ignores plan bits ({_NOTE})",
-              False, ""),
+              False, "searches batched over the candidates (same values); quantile on at most 2**24 values of a block; "
+              "ignores the plan's bit width (about 1 bit for every layer)"),
 }

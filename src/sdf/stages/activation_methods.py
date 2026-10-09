@@ -90,15 +90,16 @@ def smoothquant(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tens
 
 
 # ------------------------------------------------------------------------------------------------ rotations
-def _orthogonal(n: int, gen: torch.Generator) -> torch.Tensor:
+def _orthogonal(n: int, gen: torch.Generator, device: torch.device | str = "cpu") -> torch.Tensor:
     """Random orthogonal n x n: a Hadamard matrix with random column signs when n is a power of two, otherwise
-    a QR-based random orthogonal matrix (Hadamard matrices of other sizes are not built here)."""
+    a QR-based random orthogonal matrix (Hadamard matrices of other sizes are not built here). The QR runs on
+    `device` (a 5632 x 5632 float64 QR takes tens of seconds on the CPU)."""
     if n & (n - 1) == 0:
         h = torch.ones(1, 1, dtype=torch.float64)
         while h.shape[0] < n:
             h = torch.cat([torch.cat([h, h], 1), torch.cat([h, -h], 1)])
         return (h / math.sqrt(n) * (torch.randint(0, 2, (n,), generator=gen) * 2 - 1)).float()
-    q, r = torch.linalg.qr(torch.randn(n, n, generator=gen, dtype=torch.float64))
+    q, r = torch.linalg.qr(torch.randn(n, n, generator=gen, dtype=torch.float64).to(device))
     return (q * r.diagonal().sign()).float()
 
 
@@ -134,7 +135,9 @@ def _rotate(model: nn.Module, q: torch.Tensor, seed: int) -> None:
     a per-head rotation on v_proj outputs / o_proj inputs and an online rotation before down_proj."""
     gen = torch.Generator().manual_seed(seed)
     cfg = model.config
-    r2 = _orthogonal(cfg.hidden_size // cfg.num_attention_heads, gen)
+    device = model.model.embed_tokens.weight.device
+    r2 = _orthogonal(cfg.hidden_size // cfg.num_attention_heads, gen, device)
+    online = _orthogonal(cfg.intermediate_size, gen, device)  # one matrix, reused by every layer
     _rot_in(model.model.embed_tokens.weight, q)
     _rot_in(model.lm_head.weight, q)
     for l in find_decoder_layers(model):
@@ -144,7 +147,6 @@ def _rotate(model: nn.Module, q: torch.Tensor, seed: int) -> None:
         _rot_out(a.v_proj.weight, r2)
         _rot_in(a.o_proj.weight, r2)
         _rot_out(a.o_proj.weight, q)
-        online = _orthogonal(cfg.intermediate_size, gen)
         _rot_in(m.down_proj.weight, online)
         _rot_out(m.down_proj.weight, q)
         m.down_proj.register_buffer("online_rotation", online.to(m.down_proj.weight.device), persistent=False)
@@ -160,7 +162,8 @@ def quarot(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tensor], 
     (intermediate size is not a power of two) and the o_proj input gets only a per-head rotation (the paper's
     cross-head Hadamard is not applied); the rotations are plain matmuls, not fast Hadamard kernels."""
     _fuse_norms(model)
-    _rotate(model, _orthogonal(model.config.hidden_size, torch.Generator().manual_seed(seed)), seed + 1)
+    _rotate(model, _orthogonal(model.config.hidden_size, torch.Generator().manual_seed(seed),
+                               model.model.embed_tokens.weight.device), seed + 1)
     return _round_inputs(model, plan, group_size)
 
 
@@ -207,7 +210,7 @@ def spinquant(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tensor
         x = torch.cat(xs[m])
         data.append((x[torch.randperm(len(x), generator=gen)[:max_tokens]], b))
     device = data[0][0].device if data else next(model.parameters()).device
-    r = _orthogonal(model.config.hidden_size, gen).to(device)
+    r = _orthogonal(model.config.hidden_size, gen, device)
     best, best_loss = r, float("inf")
     for _ in range(steps if data else 0):
         r.requires_grad_(True)
@@ -217,7 +220,7 @@ def spinquant(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tensor
         if loss.item() < best_loss:
             best, best_loss = r, loss.item()
         r = _cayley_step(r, grad, lr)
-    _rotate(model, best.cpu(), seed + 1)
+    _rotate(model, best, seed + 1)
     return _round_inputs(model, plan, group_size)
 
 
