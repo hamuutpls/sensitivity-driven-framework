@@ -39,6 +39,7 @@ from sdf.stages.activation_methods import ACTIVATION_METHODS
 from sdf.stages.bnb import WEIGHT_METHODS_BNB
 from sdf.stages.weights import awq_, gptq_
 from sdf.stages.weights_a import WEIGHT_METHODS_A
+from sdf.stages import weights_b
 from sdf.stages.weights_b import WEIGHT_METHODS_B
 
 
@@ -95,6 +96,8 @@ def _calibrated(fn: Callable) -> Callable[[MethodCall], ContextManager[dict[str,
     @contextmanager
     def apply(call: MethodCall) -> Iterator[dict[str, Any]]:
         s0 = call.cfg.stage0
+        if fn.__module__ == weights_b.__name__:  # its random draws follow the run seed
+            weights_b.set_seed(call.cfg.run.seed)
         fn(call.model, call.plan, call.batches(), call.candidate["gptq_groupsize"], s0.baseline_bits, int_zero(s0))
         yield {}
     return apply

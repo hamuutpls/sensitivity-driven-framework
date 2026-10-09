@@ -36,7 +36,7 @@ Until a method is written, `main.py` (MODE `"stages"`) lists it as a failed row 
 |---|---|---|---|---|
 | RTN (baseline) | none | yes | yes | **done** (`rtn_act`) |
 | SmoothQuant | none needed | yes | yes | **done** (`sdf/stages/activation_methods.py`), `smoothquant_alpha` is in the search space |
-| QuaRot | `fast-hadamard-transform` 1.1.0: source only (CUDA) | build is unreliable | works | **done** with a torch Hadamard matrix. TinyLlama's feed-forward width 5632 = 44 x 128 is not a power of two, so the down-projection needs the Kronecker product of a 44 x 44 and a 128 x 128 Hadamard matrix, |
+| QuaRot | `fast-hadamard-transform` 1.1.0: source only (CUDA) | build is unreliable | works | **done** with torch matrices. The residual stream gets a random-sign Hadamard matrix (2048 is a power of two); the down-projection input (width 5632 = 44 x 128, not a power of two) gets a random orthogonal matrix from a QR factorisation instead of the repo's Kronecker-product Hadamard, and the `o_proj` input only a per-head rotation. |
 | RPTQ | research repo only | – | – | **done**: channel clustering + per-cluster scales, no physical reorder |
 | SpinQuant | research repo only | – | – | **done**: learns R1 on a proxy loss; the slowest Stage 1 activation method |
 
