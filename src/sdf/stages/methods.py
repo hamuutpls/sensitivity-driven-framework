@@ -65,6 +65,10 @@ class Method:
     # how removed weights are stored in the predicted size, when not stage0.sparse_storage ("free": whole channels or
     # low-rank factors are removed, so no mask of kept weights is needed)
     storage: str | None = None
+    # why the method cannot follow a per-layer bit plan (its bit width is fixed); its standard row still runs
+    fixed_bits: str = ""
+    # why a method without `apply` cannot run here at all (shown on its failed row)
+    unavailable: str = ""
 
 
 # ----------------------------------------------------------------------------------------------- baselines

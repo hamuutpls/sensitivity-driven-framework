@@ -365,6 +365,8 @@ def run_stage(
                 info["label"], info["plain_desc"] = plain
             with rep.method(m.name + suffix, "framework", **info) as row:
                 _require(m)
+                if m.fixed_bits:
+                    raise ValueError(f"{m.label} cannot follow a per-layer bit plan: {m.fixed_bits}")
                 if gone := [PLAN_FILES[k][0] for k in _plan_keys(m, plan_key) if k not in plans.plans]:
                     raise FileNotFoundError(f"{', '.join(gone)} not in {plans.dir}; re-run Stage 0 with this plan "
                                             "enabled")
@@ -390,7 +392,7 @@ def run_stage(
 
 def _require(m: Method) -> None:
     if m.apply is None:
-        raise NotImplementedError(f"{m.label} is not implemented yet ({m.library})")
+        raise NotImplementedError(m.unavailable or f"{m.label} is not implemented yet ({m.library})")
 
 
 def run_stages(ctx: RunContext, candidate: dict[str, Any], stage0_dir: str | Path, **kwargs: Any) -> dict[str, Path]:
