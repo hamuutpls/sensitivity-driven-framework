@@ -1,0 +1,47 @@
+---
+title: "Stage 0: run_stage0(ctx, candidate) builds the plans every later stage loads"
+---
+sequenceDiagram
+    autonumber
+    participant R0 as run_stage0
+    participant H as _ModelHandle
+    participant C as ArtifactCache
+    participant Sens as sensitivity
+    participant Pl as planner
+    participant Act as activation
+    participant KV as kv_cache
+    participant Rep as StageReporter
+    participant HO as handoff
+
+    R0->>R0: setup(): device, lazy model handle, text loader
+    R0->>C: get_or_compute("sensitivity_profile", key)
+    opt cache miss
+        C->>H: model(profile_dtype)
+        C->>Sens: profile_by_ablation(layer_removal, default) or profile_sensitivity(gradient scores)
+        Sens-->>C: SensitivityProfile
+    end
+    C-->>R0: profile
+    R0->>Sens: normalize(raw_scores, rank)
+    R0->>Pl: guarded_layers(layer-removal scores, guard_top_k)
+    R0->>Rep: stage_reporter(...)
+    R0->>Rep: row baseline / fp16
+    R0->>C: get_or_compute("fp16_baseline"): measure_model on the FP16 model
+    R0->>Rep: row allocation / original
+    R0->>Pl: uniform_plan(scores, uniform_bits, uniform_prune_ratio)
+    R0->>Rep: row allocation / framework
+    R0->>Pl: plan_compression(scores, threshold, prune ratio, protected_bits, compressed_bits, guarded)
+    Pl-->>R0: CompressionPlan
+    R0->>Pl: predict_cost(plan) for each row
+    R0->>Act: rows activations: uniform plan, then measured plan
+    Act->>C: get_or_compute("activation_profile") -> profile_activations
+    Act-->>R0: ActivationPlan = plan_activations(profile, act_avg_bits)
+    opt stage0.kv_cache
+        R0->>KV: rows kv_cache: profile_kv (cached), plan_kv with and without eviction
+        KV-->>R0: KVProfile, KVPlan, KVPlan bits only
+    end
+    R0->>Pl: quant = plan_compression(prune ratio 0), pruning_only(plan), same_size_pruning_plan
+    Note over R0: stage_0/ files: quant_plan.json (Stage 1 weights),<br/>activation_plan.json (Stage 1 activations),<br/>prune_plan.json + prune_plan_same_size.json (Stage 2),<br/>kv_cache_plan.json + kv_cache_plan_bits_only.json (Stage 3),<br/>compression_plan.json, sensitivity_profile.json
+    R0->>HO: write_handoff(...)
+    HO-->>R0: handoff.md
+    R0->>Rep: finalize()
+    Rep-->>R0: report.md, stage_0_comparison.xlsx, results.json

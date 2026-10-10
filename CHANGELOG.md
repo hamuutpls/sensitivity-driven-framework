@@ -10,6 +10,11 @@
 - `scripts/colab_stage1_joint.py` runs the working weight techniques with `rtn_act`, plus SmoothQuant + RTN, QuaRot +
   GPTQ and SpinQuant + GPTQ, on Colab.
 
+## 2026-10-10: diagrams redrawn from the code
+
+- `docs/diagrams/`: 4 class and 4 sequence diagrams of the current code (Mermaid `.mmd` + `.svg` + `.png`),
+  indexed in its README. Replaces the stale per-stage pages (stage0-4.md); `search.md` (planned) stays.
+
 ## 2026-10-09: every Stage 1 technique from the forks
 
 - New Stage 1 weight methods (simplified plain-torch ports of the forks, one commit and file cited above each):

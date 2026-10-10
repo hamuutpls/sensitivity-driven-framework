@@ -1,0 +1,173 @@
+---
+title: "Stage 0: sensitivity profiles and the plans later stages load (sdf.stage0)"
+---
+classDiagram
+    direction TB
+
+    class JsonFile {
+        <<mixin>>
+        +save(path)
+        +load(path)$
+    }
+    class SensitivityProfile {
+        +list raw_scores
+        +list layer_numel
+        +list layer_rows
+        +int other_numel
+        +str method
+        +dict cost
+        +dict meta
+        +num_layers int
+    }
+    class CompressionPlan {
+        +tuple~LayerPlan~ layers
+        +str kind
+        +float sensitive_threshold
+        +float prune_ratio_aggressive
+        +protected_layers() list
+        +compressed_layers() list
+        +guarded_layers() list
+    }
+    class LayerPlan {
+        +int layer
+        +int bit_width
+        +float pruning_ratio
+        +bool protected
+        +float sensitivity
+        +bool guarded
+    }
+    class PlanCost {
+        +float weight_memory_gb
+        +float avg_bits_per_weight
+        +float sparsity
+        +float sensitivity_exposure
+        +tuple per_layer_mb
+        +float fixed_memory_gb
+    }
+    class ActivationProfile {
+        +list bits_options
+        +list rise
+        +dict cost
+        +num_layers int
+    }
+    class ActivationPlan {
+        +tuple~ActivationLayerPlan~ layers
+        +str kind
+        +avg_bits float
+    }
+    class ActivationLayerPlan {
+        +int layer
+        +int act_bits
+        +bool protected
+    }
+    class KVProfile {
+        +list bits_options
+        +list key_rise
+        +list value_rise
+        +list keep_ratios
+        +list coverage
+        +dict cost
+    }
+    class KVPlan {
+        +tuple~KVLayerPlan~ layers
+        +str kind
+    }
+    class KVLayerPlan {
+        +int layer
+        +int key_bits
+        +int value_bits
+        +float keep_ratio
+    }
+    class KVCost {
+        +float memory_gb
+        +float avg_bits
+        +float kept_share
+        +float ppl_rise
+        +float attention_kept
+    }
+    class Stage0Result {
+        +CompressionPlan plan
+        +SensitivityProfile profile
+        +dict outputs
+        +ActivationPlan activation_plan
+        +ActivationProfile activation_profile
+        +KVPlan kv_plan
+        +KVPlan kv_plan_bits_only
+    }
+    class _ModelHandle {
+        +tokenizer
+        +factory
+        +model(dtype) Module
+    }
+    class sensitivity {
+        <<module>>
+        +profile_sensitivity(model, batches, method) SensitivityProfile
+        +profile_by_ablation(model, batches, method) SensitivityProfile
+        +normalize(scores, method) list
+        +find_decoder_layers(model) ModuleList
+        +round_to_nearest(x, bits, group_size)
+    }
+    class planner {
+        <<module>>
+        +plan_compression(scores, threshold, prune_ratio, bits...) CompressionPlan
+        +uniform_plan(scores, bits, prune_ratio) CompressionPlan
+        +same_size_pruning_plan(...) CompressionPlan
+        +pruning_only(plan, baseline_bits) CompressionPlan
+        +bits_only(plan) CompressionPlan
+        +combine_plans(quant, prune) CompressionPlan
+        +guarded_layers(removal_scores, top_k) frozenset
+        +predict_cost(plan, profile, ...) PlanCost
+    }
+    class activation {
+        <<module>>
+        +profile_activations(model, batches, bits_options) ActivationProfile
+        +plan_activations(profile, avg_bits) ActivationPlan
+        +activation_plan_from_weights(plan, hi, lo) ActivationPlan
+        +uniform_activation_plan(n, bits) ActivationPlan
+    }
+    class kv_cache {
+        <<module>>
+        +profile_kv(model, batches, ...) KVProfile
+        +plan_kv(profile, avg_bits, coverage) KVPlan
+        +uniform_kv_plan(n, bits) KVPlan
+        +predict_kv(plan, profile, ...) KVCost
+    }
+    class stage0_run {
+        <<module sdf.stage0.run>>
+        +run_stage0(ctx, candidate) Stage0Result
+        +load_profile(ctx, candidate, handle, ...) tuple
+        +load_guard(...) tuple
+        +load_fp16(ctx, handle, ...) tuple
+        +weight_cost(profile, group_size, s0) callable
+    }
+    class handoff {
+        <<module>>
+        +write_handoff(path, ...) Path
+    }
+
+    JsonFile <|-- SensitivityProfile
+    JsonFile <|-- CompressionPlan
+    JsonFile <|-- ActivationProfile
+    JsonFile <|-- ActivationPlan
+    JsonFile <|-- KVProfile
+    JsonFile <|-- KVPlan
+    CompressionPlan *-- LayerPlan
+    ActivationPlan *-- ActivationLayerPlan
+    KVPlan *-- KVLayerPlan
+    Stage0Result o-- CompressionPlan
+    Stage0Result o-- SensitivityProfile
+    Stage0Result o-- ActivationPlan
+    Stage0Result o-- KVPlan
+    sensitivity ..> SensitivityProfile : measures
+    planner ..> CompressionPlan : builds
+    planner ..> PlanCost : predicts
+    activation ..> ActivationPlan : builds
+    kv_cache ..> KVPlan : builds
+    kv_cache ..> KVCost : predicts
+    stage0_run ..> _ModelHandle : loads model only on a cache miss
+    stage0_run ..> sensitivity
+    stage0_run ..> planner
+    stage0_run ..> activation
+    stage0_run ..> kv_cache
+    stage0_run ..> handoff
+    stage0_run ..> Stage0Result : returns
