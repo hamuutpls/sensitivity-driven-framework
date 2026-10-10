@@ -35,6 +35,7 @@ from sdf.stage0.activation import (
     uniform_activation_plan,
 )
 from sdf.stage0.handoff import write_handoff
+from sdf.stage0 import joint_curves
 from sdf.stage0.joint import (JointProfile, combos, interaction, joint_plans, plan_joint, predicted_joint_rise,
                               profile_joint, refine_joint)
 from sdf.stage0.kv_cache import KVCost, KVPlan, KVProfile, plan_kv, predict_kv, profile_kv, uniform_kv_plan
@@ -378,6 +379,7 @@ def run_stage0(
         joint[0].save(rep.dir / "joint_weight_plan.json")
         joint[1].save(rep.dir / "joint_activation_plan.json")
         joint[2].save(rep.dir / "joint_profile.json")
+        _joint_curves(rep, joint, cfg.model.name)
     quant.save(rep.dir / "quant_plan.json")
     prune.save(rep.dir / "prune_plan.json")
     prune_same.save(rep.dir / "prune_plan_same_size.json")
@@ -550,6 +552,20 @@ def _joint_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle
                                           "predicted_joint_ppl_rise": predicted_joint_rise(prof, separate)}
         out = weights, acts, prof
     return out
+
+
+def _joint_curves(rep: StageReporter, joint: tuple[CompressionPlan, ActivationPlan, JointProfile],
+                  model: str) -> None:
+    """Perplexity against WxAy per layer (stage0/joint_curves.py): the table always, the figures with matplotlib."""
+    picks = [(lp.bit_width, al.act_bits) for lp, al in zip(joint[0].layers, joint[1].layers)]
+    joint_curves.write_csv(joint[2], picks, rep.dir / "joint_curves.csv")
+    try:
+        joint_curves.draw(joint[2], picks, rep.dir / "joint_curves", model)
+    except ImportError:
+        log.info("matplotlib not installed: joint curve figures skipped (pip install -e '.[figures]')")
+    rep.sections.append(("Perplexity against WxAy per layer",
+                         "joint_curves.csv and joint_curves/: each layer's calibration perplexity with only that layer "
+                         "rounded, at every weight x activation bit pair, and the pair the joint plan chose."))
 
 
 def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: CompressionPlan,

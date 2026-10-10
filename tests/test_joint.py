@@ -94,7 +94,7 @@ def test_stage0_writes_the_joint_plan(tiny_llama, tokenizer, small_cfg):
     cand = SEARCH_SPACE.make({"calib_samples": 16})
     run_stage0(ctx, cand, model=copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
     d = ctx.run_dir / "stage_0"
-    for f in ("joint_weight_plan.json", "joint_activation_plan.json", "joint_profile.json"):
+    for f in ("joint_weight_plan.json", "joint_activation_plan.json", "joint_profile.json", "joint_curves.csv"):
         assert (d / f).exists()
     rows = {f"{r['method']}/{r['variant']}": r for r in json.loads((d / "results.json").read_text())["rows"]}
     row = rows["joint_weights_activations/framework"]
@@ -109,3 +109,20 @@ def test_stage0_writes_the_joint_plan(tiny_llama, tokenizer, small_cfg):
     # refinement starts from the better of the per-layer and separate plans and never ends worse on calibration
     ref = row["info"]["refinement"]
     assert ref["calib_ppl"] <= min(ref["start_calib_ppl"].values()) and set(ref["start_calib_ppl"]) == {"per_layer", "separate"}
+
+
+def test_joint_curves_table_and_figures(tmp_path):
+    import csv
+    from sdf.stage0 import joint_curves
+    p = _profile(layers=3)
+    p.meta["baseline_ppl"] = 10.0
+    picks = [(8, 8), (4, 8), (16, 4)]
+    rows = list(csv.DictReader(open(joint_curves.write_csv(p, picks, tmp_path / "c.csv"))))
+    assert len(rows) == 3 * 9 and [r["pair"] for r in rows[:9]] == [
+        "W4A4", "W4A8", "W8A4", "W8A8", "W4A16", "W16A4", "W8A16", "W16A8", "W16A16"]
+    assert [r["pair"] for r in rows if r["chosen"] == "True"] == ["W8A8", "W4A8", "W16A4"]
+    assert float(rows[8]["ppl"]) == 10.0 and float(rows[0]["ppl"]) == 10.0 + p.rise[0][0][0]
+    pytest.importorskip("matplotlib")
+    files = joint_curves.draw(p, picks, tmp_path / "fig")
+    assert [f.name for f in files] == ["joint_curves_all_layers.png"] + [f"joint_curve_layer{i:02d}.png" for i in range(3)]
+    assert all(f.stat().st_size > 0 for f in files)
