@@ -114,6 +114,8 @@ STAGE0_DIR = None  # a finished run's stage_0 folder, e.g. "thesis_compression/r
 STAGE1_METHODS = ["rtn", "gptq", "awq", "rtn_act"]  # quantization only, nothing removed. Weights: rtn | gptq | awq |
 #   omniquant | squeezellm | spqr | efficientqat | aqlm | quip | quipsharp | pbllm | billm | bitsandbytes (| qtip | abqllm:
 #   not ported, shown as failed rows). Activations: rtn_act | smoothquant | quarot | rptq | spinquant
+#   Both on one model, per-layer W/A bits from Stage 0: <weights>_with_<activations>, e.g. gptq_with_quarot
+#   (standard W4A8 everywhere); add <weights>_with_<activations>_w8a8 for a W8A8-everywhere standard row
 STAGE2_METHODS = ["unstructured_prune", "structured_prune", "low_rank"]  # pruning only, nothing rounded (FP16 model)
 STAGE2_AFTER = []  # Stage 1 weight methods to also run each Stage 2 method after (0 -> 1 -> 2 -> 4), e.g. ["gptq"]
 STAGE3_METHODS = ["rtn_kv"]  # KV cache: rtn_kv | quarot_kv | kvquant | h2o | snapkv | infinigen

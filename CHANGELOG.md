@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-10: weights and activations quantized together, per layer
+
+- Stage 1 joint methods `<weight method>_with_<activation method>` quantize the weights at the Stage 0 weight plan's
+  bits and the Linear inputs at the Stage 0 activation plan's bits, layer by layer, on one model (`JointPlan`), so
+  layers get W8A8, W8A4, W4A8 or W4A4. Standard row: W4A8 on every layer; `..._w8a8` adds a W8A8-everywhere
+  standard row. The activation method rewrites the model first (smoothing, rotation; nothing for `rtn_act`), then
+  the weight method quantizes the rewritten weights. Row descriptions count the layers per combination.
+- `scripts/colab_stage1_joint.py` runs the working weight techniques with `rtn_act`, plus SmoothQuant + RTN, QuaRot +
+  GPTQ and SpinQuant + GPTQ, on Colab.
+
 ## 2026-10-10: diagrams redrawn from the code
 
 - `docs/diagrams/`: 4 class and 4 sequence diagrams of the current code (Mermaid `.mmd` + `.svg` + `.png`),
