@@ -20,7 +20,7 @@ sequenceDiagram
         BM->>DS: downstream_accuracy(model, tokenizer, tasks)
         DS-->>BM: accuracy per task + mean (lm-eval)
     end
-    BM->>BM: zero_weight_share(model) (weight rows)
+    BM->>BM: zero_weight_share(model) (weight and joint rows)
     opt Stage 1 weight row and eval.llamacpp_dir set
         BM->>LC: measure(model, tokenizer, plan, val, held)
         LC->>LC: save_pretrained, convert_hf_to_gguf (F16)

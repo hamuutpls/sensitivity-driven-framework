@@ -19,6 +19,7 @@ sequenceDiagram
     RS->>C: load_fp16 (the same cache entry Stage 0 measured)
     loop each Method m
         RS->>RS: orig = original_plan(m): uniform 4-bit (Standard quantization)
+        Note over RS: activations: uniform 8-bit. Joint <w>_with_<a>: JointPlan W4A8<br/>everywhere (W8A8 for _w8a8, which has no Our method row)
         RS->>Rep: row m / original
         RS->>C: get_or_compute("stageN_original", key = method, version, plan, params, calibration, eval)
         opt cache miss
@@ -27,6 +28,7 @@ sequenceDiagram
         C-->>RS: metrics, raw
         loop each plan key in m.plans (Stage 1 weights: quant)
             RS->>RS: plan = framework_plan(m, plans, key): Stage 0 plan (Our method)
+        Note over RS: joint: JointPlan(quant plan, activation plan)
             RS->>Rep: row m / framework
             RS->>BM: build_and_measure(m, plan)
             BM-->>RS: metrics, raw, info
@@ -40,6 +42,6 @@ sequenceDiagram
     BM->>F: model_factory(): a fresh FP16 model for every row
     F-->>BM: model
     BM->>M: with m.apply(MethodCall(model, plan, candidate, cfg, batches))
-    Note over M: e.g. gptq_(): per layer, Hessian of the inputs,<br/>then rounding at that layer's planned bits
+    Note over M: e.g. gptq_(): per layer, Hessian of the inputs,<br/>then rounding at that layer's planned bits.<br/>Joint: the activation method rewrites the model,<br/>the weight method quantizes it, activations<br/>are rounded while the model is measured
     BM->>BM: Stage 4 measurements (see the evaluation diagram)
     BM->>BM: del model, free GPU memory
