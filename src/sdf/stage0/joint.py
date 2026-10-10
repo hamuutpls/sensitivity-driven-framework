@@ -14,14 +14,19 @@ so a layer stays unrounded in either dimension only when the measurement says it
 protected by a fixed rule.
 
 `interaction` reports how far the measured pairs are from the separate-measurement assumption.
+
+One layer at a time does not predict the model with every layer rounded (Colab run 20261010-081914: the plan from
+it scored worse than the separate plans). `refine_joint` therefore re-measures in context: with every other layer
+rounded at the current picks, each layer is tried at every pair, the plan is re-made from those rises, and the new
+plan is kept only if the fully rounded model's calibration perplexity drops.
 """
 
 from __future__ import annotations
 
 import math
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 import torch
 from torch import nn
@@ -61,6 +66,18 @@ class JointProfile(JsonFile):
         return self.monotone(layer)[self.w_options.index(w)][self.a_options.index(a)]
 
 
+@contextmanager
+def _rounded(layer: nn.Module, w: int, a: int, group_size: int, act_group_size: int, int_zero: bool,
+             baseline_bits: int) -> Iterator[None]:
+    """Round `layer`'s weights to w bits and its inputs to a bits while open (baseline bits: left alone)."""
+    with ExitStack() as stack:
+        if w < baseline_bits:
+            stack.enter_context(quantize_layer(layer, w, group_size, int_zero))
+        if a < baseline_bits:
+            stack.enter_context(quantize_inputs(layer, a, act_group_size))
+        yield
+
+
 @torch.no_grad()
 def profile_joint(model: nn.Module, batches: Iterable[torch.Tensor], w_options: list[int], a_options: list[int],
                   group_size: int, act_group_size: int, int_zero: bool = True, baseline_bits: int = 16,
@@ -83,11 +100,7 @@ def profile_joint(model: nn.Module, batches: Iterable[torch.Tensor], w_options: 
                     if w >= baseline_bits and a >= baseline_bits:
                         row.append(0.0)
                         continue
-                    with ExitStack() as stack:
-                        if w < baseline_bits:
-                            stack.enter_context(quantize_layer(layer, w, group_size, int_zero))
-                        if a < baseline_bits:
-                            stack.enter_context(quantize_inputs(layer, a, act_group_size))
+                    with _rounded(layer, w, a, group_size, act_group_size, int_zero, baseline_bits):
                         row.append(math.exp(_mean_loss(model, batches, device)) - base)
                 grid.append(row)
             rise.append(grid)
@@ -95,6 +108,79 @@ def profile_joint(model: nn.Module, batches: Iterable[torch.Tensor], w_options: 
                        sum(b.numel() for b in batches))
     return JointProfile(list(w_options), list(a_options), rise, numel, cost,
                         {**(meta or {}), "baseline_ppl": base})
+
+
+@torch.no_grad()
+def refine_joint(model: nn.Module, batches: Iterable[torch.Tensor], profile: JointProfile,
+                 picks: list[tuple[int, int]], avg_weight_bits: float, avg_act_bits: float, group_size: int,
+                 act_group_size: int, int_zero: bool = True, baseline_bits: int = 16, rounds: int = 2,
+                 compare: dict[str, list[tuple[int, int]]] | None = None,
+                 device: torch.device | str | None = None) -> tuple[list[tuple[int, int]], dict[str, Any]]:
+    """Refine `picks` in context, up to `rounds` times: with every other layer rounded at the current picks, each
+    layer is measured at every pair (its rise against leaving it unrounded), `plan_joint` re-plans from those rises
+    under the same budgets, and the new plan is kept only if the fully rounded model's calibration perplexity is
+    lower. Returns the best picks and a record: each round's plan and perplexity, the last in-context rises, the
+    perplexity of each plan in `compare`, and the cost."""
+    device = torch.device(device) if device is not None else next(model.parameters()).device
+    batches = list(batches)
+    layers = find_decoder_layers(model)
+    wo, ao = profile.w_options, profile.a_options
+    rnd = (group_size, act_group_size, int_zero, baseline_bits)
+    evals = 0
+
+    def ppl() -> float:
+        nonlocal evals
+        evals += 1
+        return math.exp(_mean_loss(model, batches, device))
+
+    def all_rounded(p: list[tuple[int, int]]) -> float:
+        with ExitStack() as stack:
+            for layer, (w, a) in zip(layers, p):
+                stack.enter_context(_rounded(layer, w, a, *rnd))
+            return ppl()
+
+    with profiling(model, device) as cost_so_far:
+        best = [tuple(p) for p in picks]
+        best_ppl = all_rounded(best)
+        history = [{"round": 0, "ppl": best_ppl, "picks": [list(p) for p in best], "kept": True}]
+        context: JointProfile | None = None
+        for r in range(1, rounds + 1):
+            rise = []
+            stacks = [ExitStack() for _ in layers]
+            try:
+                for st, layer, (w, a) in zip(stacks, layers, best):
+                    st.enter_context(_rounded(layer, w, a, *rnd))
+                for i, layer in enumerate(layers):
+                    stacks[i].close()  # layer i free, every other layer rounded at its pick
+                    grid = []
+                    for w in wo:
+                        row = []
+                        for a in ao:
+                            with _rounded(layer, w, a, *rnd):
+                                row.append(ppl())
+                        grid.append(row)
+                    top = grid[-1][-1]  # the layer at its highest pair
+                    rise.append([[v - top for v in row] for row in grid])
+                    stacks[i] = ExitStack()
+                    stacks[i].enter_context(_rounded(layer, *best[i], *rnd))
+            finally:
+                for st in stacks:
+                    st.close()
+            context = JointProfile(list(wo), list(ao), rise, list(profile.layer_numel))
+            new = [tuple(p) for p in plan_joint(context, avg_weight_bits, avg_act_bits)]
+            if new == best:
+                history.append({"round": r, "ppl": best_ppl, "picks": [list(p) for p in new], "kept": False})
+                break
+            new_ppl = all_rounded(new)
+            kept = new_ppl < best_ppl
+            history.append({"round": r, "ppl": new_ppl, "picks": [list(p) for p in new], "kept": kept})
+            if not kept:
+                break
+            best, best_ppl = new, new_ppl
+        compared = {name: all_rounded(p) for name, p in (compare or {}).items()}
+        cost = cost_so_far(len(batches) * evals, sum(b.numel() for b in batches))
+    return list(best), {"rounds": history, "ppl": best_ppl, "compare_ppl": compared,
+                        "context_rise": context.rise if context is not None else None, "cost": cost}
 
 
 def plan_joint(profile: JointProfile, avg_weight_bits: float, avg_act_bits: float) -> list[tuple[int, int]]:

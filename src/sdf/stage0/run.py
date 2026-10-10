@@ -35,7 +35,8 @@ from sdf.stage0.activation import (
     uniform_activation_plan,
 )
 from sdf.stage0.handoff import write_handoff
-from sdf.stage0.joint import JointProfile, combos, interaction, joint_plans, plan_joint, predicted_joint_rise, profile_joint
+from sdf.stage0.joint import (JointProfile, combos, interaction, joint_plans, plan_joint, predicted_joint_rise,
+                              profile_joint, refine_joint)
 from sdf.stage0.kv_cache import KVCost, KVPlan, KVProfile, plan_kv, predict_kv, profile_kv, uniform_kv_plan
 from sdf.stage0.sensitivity import (
     GRADIENT_SCORES,
@@ -488,7 +489,10 @@ def _joint_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle
                     plain_desc="each layer was tested with its weights and its incoming numbers rounded together, at "
                                f"every pair of bit lengths in {s0.joint_w_options} x {s0.joint_a_options}; each layer "
                                f"then gets the pair that keeps the total damage smallest, using on average "
-                               f"{avg_w:g} bits per weight and {avg_a:g} bits per incoming number.",
+                               f"{avg_w:g} bits per weight and {avg_a:g} bits per incoming number"
+                               + (". The plan was then re-tested with every other layer already rounded and re-made "
+                                  "from that, kept only where the fully rounded model did better."
+                                  if s0.joint_refine_rounds else "."),
                     description=f"joint plan, weights avg {avg_w:g} over {s0.joint_w_options}, activations avg "
                                 f"{avg_a:g} over {s0.joint_a_options}") as row:
         key = {**activation_profile_key(ctx, candidate), "bits": None, "w_options": s0.joint_w_options,
@@ -502,16 +506,41 @@ def _joint_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle
 
         d, cached = ctx.cache.get_or_compute("joint_profile", key, compute)
         prof = JointProfile.from_dict(d)
-        picks = plan_joint(prof, avg_w, avg_a)
+        per_layer = picks = plan_joint(prof, avg_w, avg_a)
+        separate = ([(lp.bit_width, al.act_bits) for lp, al in zip(quant.layers, act.layers)]
+                    if act is not None else None)
+        build_time = prof.cost.get("wall_clock_s", 0.0)
+        refined = None
+        if s0.joint_refine_rounds:
+            rkey = {**key, "picks": per_layer, "avg_w": avg_w, "avg_a": avg_a, "rounds": s0.joint_refine_rounds,
+                    "separate": separate}
+
+            def refine() -> dict[str, Any]:
+                batches = calib_batches(ctx, candidate, handle, text_loader, s0.act_calib_samples)
+                best, rec = refine_joint(handle.model(s0.profile_dtype), batches, prof, per_layer, avg_w, avg_a,
+                                         candidate["gptq_groupsize"], s0.act_group_size, int_zero(s0),
+                                         s0.baseline_bits, s0.joint_refine_rounds,
+                                         compare={"separate": separate} if separate else None,
+                                         device=handle.device)
+                return {"picks": best, **rec}
+
+            refined, refined_cached = ctx.cache.get_or_compute("joint_refined", rkey, refine)
+            picks = [tuple(p) for p in refined["picks"]]
+            build_time += refined["cost"].get("wall_clock_s", 0.0)
         weights, acts = joint_plans(picks, quant)
         row.metrics.update({"decoder_weight_bits": sum(w for w, _ in picks) / len(picks),
                             "avg_activation_bits": acts.avg_bits,
                             "predicted_joint_ppl_rise": predicted_joint_rise(prof, picks),
-                            "build_time_s": prof.cost.get("wall_clock_s", 0.0)})
+                            "build_time_s": build_time})
         row.info.update(combinations=combos(picks), profile_cached=cached, profiling_cost=prof.cost,
-                        interaction_at_lowest_bits=interaction(prof, min(prof.w_options), min(prof.a_options)))
-        if act is not None:  # the separate plans, scored by the same joint measurement
-            separate = [(lp.bit_width, al.act_bits) for lp, al in zip(quant.layers, act.layers)]
+                        interaction_at_lowest_bits=interaction(prof, min(prof.w_options), min(prof.a_options)),
+                        per_layer_plan={"picks": [list(p) for p in per_layer], "combinations": combos(per_layer),
+                                        "predicted_joint_ppl_rise": predicted_joint_rise(prof, per_layer)})
+        if refined is not None:  # calibration perplexity with every layer rounded, per plan
+            row.info["refinement"] = {"cached": refined_cached, "rounds": refined["rounds"],
+                                      "calib_ppl": refined["ppl"], "compare_calib_ppl": refined["compare_ppl"],
+                                      "cost": refined["cost"]}
+        if separate is not None:  # the separate plans, scored by the same joint measurement
             row.info["separate_plans"] = {"combinations": combos(separate),
                                           "predicted_joint_ppl_rise": predicted_joint_rise(prof, separate)}
         out = weights, acts, prof

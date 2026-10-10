@@ -7,7 +7,7 @@ import pytest
 
 from sdf.run import start_run
 from sdf.search_space import SEARCH_SPACE
-from sdf.stage0.joint import JointProfile, interaction, joint_plans, plan_joint, profile_joint
+from sdf.stage0.joint import JointProfile, interaction, joint_plans, plan_joint, profile_joint, refine_joint
 from sdf.stage0.planner import uniform_plan
 from sdf.stage0.run import run_stage0
 from conftest import fake_texts
@@ -64,6 +64,21 @@ def test_profile_joint_measures_every_pair(tiny_llama):
     assert all((v == tiny_llama.state_dict()[k]).all() for k, v in before.items())  # weights restored
 
 
+def test_refine_joint_keeps_the_budget_never_gets_worse_and_restores_weights(tiny_llama):
+    import torch
+    batches = [torch.randint(0, tiny_llama.config.vocab_size, (2, 16)) for _ in range(2)]
+    before = {k: v.clone() for k, v in tiny_llama.state_dict().items()}
+    p = profile_joint(tiny_llama, batches, [4, 8, 16], [4, 8, 16], 16, 16)
+    start = plan_joint(p, 6.0, 6.0)
+    worst = [(4, 4)] * p.num_layers
+    picks, rec = refine_joint(tiny_llama, batches, p, start, 6.0, 6.0, 16, 16, rounds=2, compare={"worst": worst})
+    assert sum(w for w, _ in picks) <= 6 * len(picks) and sum(a for _, a in picks) <= 6 * len(picks)
+    assert rec["ppl"] <= rec["rounds"][0]["ppl"] and rec["rounds"][0]["picks"] == [list(x) for x in start]
+    assert all(r["kept"] == (r["ppl"] < rec["rounds"][i]["ppl"]) for i, r in enumerate(rec["rounds"][1:]) if r["kept"])
+    assert len(rec["context_rise"]) == p.num_layers and rec["compare_ppl"]["worst"] >= rec["ppl"] - 1e-6
+    assert all((v == tiny_llama.state_dict()[k]).all() for k, v in before.items())  # weights restored
+
+
 def test_stage0_writes_the_joint_plan(tiny_llama, tokenizer, small_cfg):
     ctx = start_run(small_cfg)
     cand = SEARCH_SPACE.make({"calib_samples": 16})
@@ -78,5 +93,9 @@ def test_stage0_writes_the_joint_plan(tiny_llama, tokenizer, small_cfg):
     assert row["metrics"]["decoder_weight_bits"] <= sum(lp["bit_width"] for lp in quant) / len(quant) + 1e-9
     assert row["metrics"]["avg_activation_bits"] <= small_cfg.stage0.act_avg_bits
     assert "separate_plans" in row["info"] and "combinations" in row["info"]
-    # the joint plan never predicts more damage than the separate plans at the same budgets
-    assert row["metrics"]["predicted_joint_ppl_rise"] <= row["info"]["separate_plans"]["predicted_joint_ppl_rise"] + 1e-9
+    # the per-layer joint plan never predicts more damage than the separate plans at the same budgets
+    per_layer = row["info"]["per_layer_plan"]["predicted_joint_ppl_rise"]
+    assert per_layer <= row["info"]["separate_plans"]["predicted_joint_ppl_rise"] + 1e-9
+    # refinement keeps a plan only if the fully rounded model does better than the per-layer plan
+    ref = row["info"]["refinement"]
+    assert ref["calib_ppl"] <= ref["rounds"][0]["ppl"] and "separate" in ref["compare_calib_ppl"]
