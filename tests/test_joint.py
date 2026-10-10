@@ -117,7 +117,8 @@ def test_joint_curves_table_and_figures(tmp_path):
     p = _profile(layers=3)
     p.meta["baseline_ppl"] = 10.0
     picks = [(8, 8), (4, 8), (16, 4)]
-    rows = list(csv.DictReader(open(joint_curves.write_csv(p, picks, tmp_path / "c.csv"))))
+    with open(joint_curves.write_csv(p, picks, tmp_path / "c.csv")) as f:
+        rows = list(csv.DictReader(f))
     assert len(rows) == 3 * 9 and [r["pair"] for r in rows[:9]] == [
         "W4A4", "W4A8", "W8A4", "W8A8", "W4A16", "W16A4", "W8A16", "W16A8", "W16A16"]
     assert [r["pair"] for r in rows if r["chosen"] == "True"] == ["W8A8", "W4A8", "W16A4"]
@@ -126,3 +127,4 @@ def test_joint_curves_table_and_figures(tmp_path):
     files = joint_curves.draw(p, picks, tmp_path / "fig")
     assert [f.name for f in files] == ["joint_curves_all_layers.png"] + [f"joint_curve_layer{i:02d}.png" for i in range(3)]
     assert all(f.stat().st_size > 0 for f in files)
+    joint_curves.draw(p, [(3, 6)] + picks[1:], tmp_path / "off")  # a pick off the measured grid still draws

@@ -379,7 +379,6 @@ def run_stage0(
         joint[0].save(rep.dir / "joint_weight_plan.json")
         joint[1].save(rep.dir / "joint_activation_plan.json")
         joint[2].save(rep.dir / "joint_profile.json")
-        _joint_curves(rep, joint, cfg.model.name)
     quant.save(rep.dir / "quant_plan.json")
     prune.save(rep.dir / "prune_plan.json")
     prune_same.save(rep.dir / "prune_plan_same_size.json")
@@ -394,6 +393,8 @@ def run_stage0(
         act_prof.save(rep.dir / "activation_profile.json")
     plan.save(rep.dir / "compression_plan.json")
     profile.save(rep.dir / "sensitivity_profile.json")
+    if joint is not None:  # optional output, after every plan Stage 1 needs is saved
+        _joint_curves(rep, joint, cfg.model.name)
     fp16_row = next((r for r in rep.rows if r.variant == "fp16"), None)
     handoff = write_handoff(rep.dir / "handoff.md", cfg=cfg, candidate=candidate, original_model=rep.original_model,
                             profile=profile, plan=plan, quant=quant,
@@ -556,16 +557,22 @@ def _joint_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle
 
 def _joint_curves(rep: StageReporter, joint: tuple[CompressionPlan, ActivationPlan, JointProfile],
                   model: str) -> None:
-    """Perplexity against WxAy per layer (stage0/joint_curves.py): the table always, the figures with matplotlib."""
+    """Perplexity against WxAy per layer (stage0/joint_curves.py): the table, and the figures with matplotlib.
+    Never stops Stage 0: a failure is logged and the report says what is missing."""
     picks = [(lp.bit_width, al.act_bits) for lp, al in zip(joint[0].layers, joint[1].layers)]
-    joint_curves.write_csv(joint[2], picks, rep.dir / "joint_curves.csv")
     try:
+        joint_curves.write_csv(joint[2], picks, rep.dir / "joint_curves.csv")
         joint_curves.draw(joint[2], picks, rep.dir / "joint_curves", model)
+        made = "joint_curves.csv and the figures in joint_curves/"
     except ImportError:
-        log.info("matplotlib not installed: joint curve figures skipped (pip install -e '.[figures]')")
+        made = "joint_curves.csv (figures skipped: matplotlib not installed, pip install -e \".[figures]\")"
+    except Exception as e:  # noqa: BLE001 - optional output
+        log.warning("joint curves not written: %s", e)
+        made = f"nothing (failed: {e})"
+    log.info("joint curves: %s", made)
     rep.sections.append(("Perplexity against WxAy per layer",
-                         "joint_curves.csv and joint_curves/: each layer's calibration perplexity with only that layer "
-                         "rounded, at every weight x activation bit pair, and the pair the joint plan chose."))
+                         f"Written: {made}. Each layer's calibration perplexity with only that layer rounded, at every "
+                         "weight x activation bit pair, and the pair the joint plan chose."))
 
 
 def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: CompressionPlan,
