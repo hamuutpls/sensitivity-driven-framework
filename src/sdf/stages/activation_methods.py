@@ -98,7 +98,7 @@ def _orthogonal(n: int, gen: torch.Generator, device: torch.device | str = "cpu"
         h = torch.ones(1, 1, dtype=torch.float64)
         while h.shape[0] < n:
             h = torch.cat([torch.cat([h, h], 1), torch.cat([h, -h], 1)])
-        return (h / math.sqrt(n) * (torch.randint(0, 2, (n,), generator=gen) * 2 - 1)).float()
+        return (h / math.sqrt(n) * (torch.randint(0, 2, (n,), generator=gen) * 2 - 1)).float().to(device)
     q, r = torch.linalg.qr(torch.randn(n, n, generator=gen, dtype=torch.float64).to(device))
     return (q * r.diagonal().sign()).float()
 
