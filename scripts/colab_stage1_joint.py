@@ -5,8 +5,9 @@ with no Google Drive. Same output lines as colab_stage1.py (RESULTS-BEGIN ... RE
     !pip install -q -e "/content/sdf[dev]" bitsandbytes
     %run /content/sdf/scripts/colab_stage1_joint.py
 
-Rows per pair: standard W4A8 on every layer ("<w>_with_<a>/original"), our method (Stage 0 weight bits and
-activation bits per layer, "<w>_with_<a>/framework") and standard W8A8 on every layer ("<w>_with_<a>_w8a8/original").
+Rows per pair: standard W4A8 on every layer ("<w>_with_<a>/original"), our method with the separate Stage 0 weight
+and activation plans ("<w>_with_<a>/framework"), our method with the joint plan ("<w>_with_<a>_joint/framework") and
+standard W8A8 on every layer ("<w>_with_<a>_w8a8/original"). JOINT-BEGIN ... JOINT-END prints the joint pairs.
 Left out because they did not work in the 2026-10-09 run: aqlm, billm, qtip, abqllm (weights), rptq (activations).
 """
 

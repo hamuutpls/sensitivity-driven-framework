@@ -180,7 +180,8 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     rows = {f"{r['method']}/{r['variant']}": r for r in data["rows"]}
     assert set(rows) == {"baseline/fp16", "allocation/original", "allocation/framework",
                          "kv_cache/original", "kv_cache/framework", "kv_cache_bits_only/framework",
-                         "activations/original", "activations/framework", "activations_from_weights/framework"}
+                         "activations/original", "activations/framework", "activations_from_weights/framework",
+                         "joint_weights_activations/framework"}
     kv_fw, kv_un = rows["kv_cache/framework"]["metrics"], rows["kv_cache/original"]["metrics"]
     assert kv_fw["predicted_kv_memory_gb"] <= kv_un["predicted_kv_memory_gb"] * (1 + 1e-9)
     assert kv_fw["avg_kv_bits"] <= 4 + 1e-9

@@ -45,11 +45,17 @@ PLAN_FILES: dict[str, tuple[str, type]] = {
     "activations": ("activation_plan.json", ActivationPlan),
     "kv": ("kv_cache_plan.json", KVPlan),
     "kv_bits_only": ("kv_cache_plan_bits_only.json", KVPlan),
+    "joint_weights": ("joint_weight_plan.json", CompressionPlan),  # Stage 1 joint: weight half of the joint plan
+    "joint_acts": ("joint_activation_plan.json", ActivationPlan),  # and its activation half
 }
 
 # Framework rows after the first plan get their own method name and are compared with the method's original row.
 # Values: (method-name suffix, label, plain description) as in the Stage 0 report.
 _PLAN_ROWS = {
+    "joint_weights": (
+        "_joint", "Our method, weights and activations planned together",
+        "our method with each layer's weight bits and activation bits chosen together, from a measurement of "
+        "both rounded at once, at the same average bits as the separate plans."),
     "prune_same_size": (
         "_same_size", "Our method, same amount removed as the standard method",
         "our method removing exactly as many numbers as the standard method, but taking them from the least "
@@ -115,7 +121,8 @@ class Stage0Plans:
 
 # What a plan is about, by plan key: the standard method and the cost prediction differ by kind.
 PLAN_KIND = {"quant": "weights", "prune": "prune", "prune_same_size": "prune",
-             "activations": "activations", "kv": "kv", "kv_bits_only": "kv"}
+             "activations": "activations", "kv": "kv", "kv_bits_only": "kv",
+             "joint_weights": "joint", "joint_acts": "joint"}
 
 
 def kind_of(m: Method) -> str:
@@ -146,8 +153,8 @@ def original_plan(m: Method, plans: Stage0Plans, s0, prune_ratio: float) -> Any:
 def _plan_keys(m: Method, plan_key: str) -> list[str]:
     """The plan files a framework row needs: its plan, plus the Stage 1 plan it follows in the series path, or the
     activation plan of a joint method."""
-    if m.joint is not None:
-        return [plan_key, "activations"]
+    if m.joint is not None:  # each weight plan with the activation plan made with it
+        return [plan_key, {"quant": "activations", "joint_weights": "joint_acts"}[plan_key]]
     return [plan_key, m.quant_plans[m.plans.index(plan_key)]] if m.quant_plans else [plan_key]
 
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-10: joint weight x activation plan (Stage 0e)
+
+- Stage 0 measures every decoder layer with its weights and its Linear inputs rounded together, at every pair in
+  `joint_w_options` x `joint_a_options` (4, 8, 16 each), and picks one pair per layer with the smallest summed rise
+  under both budgets at once (exact dynamic programming; average weight bits = the Stage 1 weight plan's,
+  average activation bits = `act_avg_bits`, unless set). 16 bits is an option, so no layer is protected by a fixed
+  rule. Files: `joint_weight_plan.json`, `joint_activation_plan.json`, `joint_profile.json`; Stage 0 row
+  `joint_weights_activations` reports the pairs, the predicted rise of the joint and of the separate plans, and
+  how far rounding both differs from the sum of rounding each alone.
+- Stage 1 joint methods get a second framework row, `<name>_joint`, that follows the joint plan.
+
 ## 2026-10-10: weights and activations quantized together, per layer
 
 - Stage 1 joint methods `<weight method>_with_<activation method>` quantize the weights at the Stage 0 weight plan's

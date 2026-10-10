@@ -117,6 +117,14 @@ class Stage0Config:
     act_uniform_bits: int = 8
     act_group_size: int = 128  # input channels sharing one scale, per token
     act_calib_samples: int = 64  # passages for the measurement (one pass per layer x bit width)
+    # Joint weight x activation plan for Stage 1 (see stage0/joint.py): every decoder layer measured at every
+    # (weight bits, activation bits) pair, then one pair per layer chosen for the smallest summed rise under both
+    # budgets. 16 is an option, so a layer stays unrounded only where the measurement says it pays.
+    joint_plan: bool = True
+    joint_w_options: list[int] = field(default_factory=lambda: [4, 8, 16])  # ascending
+    joint_a_options: list[int] = field(default_factory=lambda: [4, 8, 16])  # ascending
+    joint_avg_weight_bits: float | None = None  # None = the Stage 1 weight plan's decoder-layer average
+    joint_avg_act_bits: float | None = None  # None = act_avg_bits (the separate activation plan's average)
     baseline_bits: int = 16  # bits/weight of the FP16 model and of unquantised tensors (embeddings, norms, lm_head)
     # KV cache plan (see stage0/kv_cache.py). Per layer: key bits, value bits, share of past tokens kept.
     kv_cache: bool = True

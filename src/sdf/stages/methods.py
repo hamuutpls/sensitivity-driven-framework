@@ -241,6 +241,7 @@ METHODS: dict[str, Method] = {m.name: m for m in [
 
 AFTER = "_after_"  # "<Stage 2 method>_after_<Stage 1 weight method>": the series path 0 -> 1 -> 2 -> 4
 WITH = "_with_"  # "<Stage 1 weight method>_with_<Stage 1 activation method>": both on one model (JointPlan)
+_JOINT_PLANS = ("quant", "joint_weights")  # separate weight + activation plans; the joint plan (stage0/joint.py)
 W8A8 = "_w8a8"  # suffix of a joint method whose only row is the standard with every layer at W8A8
 
 
@@ -260,7 +261,8 @@ def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
     on one model. The activation method first rewrites the model (smoothing or rotation, nothing for rtn_act), the
     weight method then quantizes the rewritten weights from unrounded calibration inputs (as QuaRot runs GPTQ),
     and the activations are rounded while the model is measured. Standard row: W4A8 on every layer (Stage 0
-    uniform_bits / act_uniform_bits), or W8A8 for the `_w8a8` method, which has no framework row."""
+    uniform_bits / act_uniform_bits), or W8A8 for the `_w8a8` method, which has no framework row. Framework rows:
+    the separate Stage 0 weight and activation plans together, and the joint plan ("<name>_joint")."""
     if weights.stage != 1 or weights.plans != _WEIGHT_PLANS:
         raise ValueError(f"{weights.name} is not a Stage 1 weight method")
     if acts == "rtn_act":
@@ -279,7 +281,7 @@ def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
 
     name = weights.name + WITH + acts + (W8A8 if standard_w8a8 else "")
     return Method(name, 1, f"{weights.label} + {label}" + (", every layer W8A8" if standard_w8a8 else ""),
-                  () if standard_w8a8 else _WEIGHT_PLANS,
+                  () if standard_w8a8 else _JOINT_PLANS,
                   apply if weights.apply else None,
                   version=weights.version,
                   params=tuple(dict.fromkeys(weights.params + (("smoothquant_alpha",) if acts == "smoothquant" else ()))),
