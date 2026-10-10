@@ -4,7 +4,8 @@ Class and sequence diagrams of the code on `main` (2026-10-10), drawn from the s
 source (`.mmd`), a vector image (`.svg`) and a picture (`.png`). The planned search layer is in [search.md](search.md).
 
 Condition names: **Standard quantization** (`original` rows in the code) puts every layer at one bit length
-(weights uniform 4-bit, group size 128; activations uniform 8-bit); **Our method** (`framework` rows) follows the Stage 0 plan, mixing bit lengths per layer.
+(weights uniform 4-bit, group size 128; activations uniform 8-bit; joint `<weights>_with_<activations>`
+methods W4A8 on every layer, or W8A8 for `_w8a8`); **Our method** (`framework` rows) follows the Stage 0 plan, mixing bit lengths per layer.
 Stage 1 is quantization only, Stage 2 pruning only, Stage 3 KV cache only; Stage 4 measures every row.
 
 ## How to read them

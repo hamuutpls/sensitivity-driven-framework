@@ -21,6 +21,14 @@ classDiagram
         +str fixed_bits
         +str unavailable
         +str note
+        +tuple joint
+    }
+    class JointPlan {
+        <<frozen dataclass>>
+        +CompressionPlan weights
+        +ActivationPlan acts
+        +to_dict() dict
+        +combos() dict
     }
     class MethodCall {
         +Module model
@@ -33,6 +41,7 @@ classDiagram
         <<module>>
         +dict METHODS
         +series(quant, prune)$ Method
+        +joint(weights, acts, standard_w8a8)$ Method
         +methods_for(stage, names)$ list~Method~
     }
     class Stage0Plans {
@@ -87,6 +96,7 @@ classDiagram
         <<in methods.py>>
         rtn: weights, plan quant
         rtn_act: activations
+        w_with_a, w_with_a_w8a8: joint weights + activations
         rtn_kv: Stage 3 KV cache
         qtip, abqllm: listed, not ported
         quarot_kv, kvquant, h2o, snapkv, infinigen: listed, not written
@@ -108,6 +118,9 @@ classDiagram
     MethodCall ..> CompressionPlan : plan (weights, pruning)
     MethodCall ..> ActivationPlan : plan (activations)
     MethodCall ..> KVPlan : plan (KV cache)
+    MethodCall ..> JointPlan : plan (weights + activations, W8A8 / W8A4 / W4A8 / W4A4 per layer)
+    JointPlan o-- CompressionPlan
+    JointPlan o-- ActivationPlan
     runner ..> methods : methods_for()
     runner ..> Stage0Plans : loads stage_0 files
     Stage0Plans o-- CompressionPlan : quant, prune, prune_same_size

@@ -13,7 +13,7 @@
 ## 2026-10-10: diagrams redrawn from the code
 
 - `docs/diagrams/`: 4 class and 4 sequence diagrams of the current code (Mermaid `.mmd` + `.svg` + `.png`),
-  indexed in its README. Replaces the stale per-stage pages (stage0-4.md); `search.md` (planned) stays.
+  indexed in its README; joint `<weights>_with_<activations>` methods (JointPlan) drawn in. Replaces the stale per-stage pages (stage0-4.md); `search.md` (planned) stays.
 
 ## 2026-10-09: every Stage 1 technique from the forks
 
