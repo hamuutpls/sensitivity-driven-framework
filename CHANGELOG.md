@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-10: perplexity against WxAy per layer
+
+- Stage 0 writes `joint_curves.csv` (each layer's calibration perplexity with only that layer rounded, at every
+  weight x activation pair; `measured` is False for the copied unrounded baseline; `chosen` marks the joint plan's
+  pair) and, with the new `figures` extra (matplotlib), `joint_curves/joint_curves_all_layers.png` (4 columns) and
+  one PNG per layer. Points only, coloured by activation bits and shaped by weight bits. A failure here is logged
+  and never stops Stage 0. `scripts/joint_curves.py` redraws them from a saved `stage_0` folder.
+
 ## 2026-10-10: joint plan refined with every layer rounded; SpinQuant on GPU
 
 - The per-layer joint plan scored worse than the separate plans on Colab A100. Stage 0 now refines it in context
