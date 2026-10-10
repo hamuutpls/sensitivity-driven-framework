@@ -18,7 +18,8 @@ protected by a fixed rule.
 One layer at a time does not predict the model with every layer rounded (Colab run 20261010-081914: the plan from
 it scored worse than the separate plans). `refine_joint` therefore re-measures in context: with every other layer
 rounded at the current picks, each layer is tried at every pair, the plan is re-made from those rises, and the new
-plan is kept only if the fully rounded model's calibration perplexity drops.
+plan is kept only if the fully rounded model's calibration perplexity drops. It starts from the better (fully rounded)
+of the per-layer joint plan and the separate plans, so it is never worse than either on calibration.
 """
 
 from __future__ import annotations
@@ -112,15 +113,15 @@ def profile_joint(model: nn.Module, batches: Iterable[torch.Tensor], w_options: 
 
 @torch.no_grad()
 def refine_joint(model: nn.Module, batches: Iterable[torch.Tensor], profile: JointProfile,
-                 picks: list[tuple[int, int]], avg_weight_bits: float, avg_act_bits: float, group_size: int,
-                 act_group_size: int, int_zero: bool = True, baseline_bits: int = 16, rounds: int = 2,
-                 compare: dict[str, list[tuple[int, int]]] | None = None,
-                 device: torch.device | str | None = None) -> tuple[list[tuple[int, int]], dict[str, Any]]:
-    """Refine `picks` in context, up to `rounds` times: with every other layer rounded at the current picks, each
-    layer is measured at every pair (its rise against leaving it unrounded), `plan_joint` re-plans from those rises
+                 starts: dict[str, list[tuple[int, int]]], avg_weight_bits: float, avg_act_bits: float,
+                 group_size: int, act_group_size: int, int_zero: bool = True, baseline_bits: int = 16,
+                 rounds: int = 2, device: torch.device | str | None = None
+                 ) -> tuple[list[tuple[int, int]], dict[str, Any]]:
+    """Start from whichever plan in `starts` (each within the budgets) scores best with every layer rounded, then
+    refine it in context up to `rounds` times: with every other layer rounded at the current picks, each layer is
+    measured at every pair (its rise against the layer at its highest pair), `plan_joint` re-plans from those rises
     under the same budgets, and the new plan is kept only if the fully rounded model's calibration perplexity is
-    lower. Returns the best picks and a record: each round's plan and perplexity, the last in-context rises, the
-    perplexity of each plan in `compare`, and the cost."""
+    lower. Returns the best picks and a record: each start's and each round's perplexity, and the cost."""
     device = torch.device(device) if device is not None else next(model.parameters()).device
     batches = list(batches)
     layers = find_decoder_layers(model)
@@ -140,10 +141,10 @@ def refine_joint(model: nn.Module, batches: Iterable[torch.Tensor], profile: Joi
             return ppl()
 
     with profiling(model, device) as cost_so_far:
-        best = [tuple(p) for p in picks]
-        best_ppl = all_rounded(best)
-        history = [{"round": 0, "ppl": best_ppl, "picks": [list(p) for p in best], "kept": True}]
-        context: JointProfile | None = None
+        start_ppl = {name: all_rounded(p) for name, p in starts.items()}
+        start = min(start_ppl, key=start_ppl.get)
+        best, best_ppl = [tuple(p) for p in starts[start]], start_ppl[start]
+        history = [{"round": 0, "start": start, "ppl": best_ppl, "picks": [list(p) for p in best], "kept": True}]
         for r in range(1, rounds + 1):
             rise = []
             stacks = [ExitStack() for _ in layers]
@@ -156,10 +157,13 @@ def refine_joint(model: nn.Module, batches: Iterable[torch.Tensor], profile: Joi
                     for w in wo:
                         row = []
                         for a in ao:
+                            if (w, a) == best[i]:  # the current plan, already measured
+                                row.append(best_ppl)
+                                continue
                             with _rounded(layer, w, a, *rnd):
                                 row.append(ppl())
                         grid.append(row)
-                    top = grid[-1][-1]  # the layer at its highest pair
+                    top = grid[wo.index(max(wo))][ao.index(max(ao))]
                     rise.append([[v - top for v in row] for row in grid])
                     stacks[i] = ExitStack()
                     stacks[i].enter_context(_rounded(layer, *best[i], *rnd))
@@ -177,10 +181,8 @@ def refine_joint(model: nn.Module, batches: Iterable[torch.Tensor], profile: Joi
             if not kept:
                 break
             best, best_ppl = new, new_ppl
-        compared = {name: all_rounded(p) for name, p in (compare or {}).items()}
         cost = cost_so_far(len(batches) * evals, sum(b.numel() for b in batches))
-    return list(best), {"rounds": history, "ppl": best_ppl, "compare_ppl": compared,
-                        "context_rise": context.rise if context is not None else None, "cost": cost}
+    return list(best), {"starts": start_ppl, "rounds": history, "ppl": best_ppl, "cost": cost}
 
 
 def plan_joint(profile: JointProfile, avg_weight_bits: float, avg_act_bits: float) -> list[tuple[int, int]]:

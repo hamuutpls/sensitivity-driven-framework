@@ -490,13 +490,15 @@ def _joint_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle
                                f"every pair of bit lengths in {s0.joint_w_options} x {s0.joint_a_options}; each layer "
                                f"then gets the pair that keeps the total damage smallest, using on average "
                                f"{avg_w:g} bits per weight and {avg_a:g} bits per incoming number"
-                               + (". The plan was then re-tested with every other layer already rounded and re-made "
-                                  "from that, kept only where the fully rounded model did better."
+                               + (". The better of that plan and the separate plans was then re-tested with every "
+                                  "other layer already rounded and re-made from that, kept only if the fully "
+                                  "rounded model did better."
                                   if s0.joint_refine_rounds else "."),
                     description=f"joint plan, weights avg {avg_w:g} over {s0.joint_w_options}, activations avg "
                                 f"{avg_a:g} over {s0.joint_a_options}") as row:
         key = {**activation_profile_key(ctx, candidate), "bits": None, "w_options": s0.joint_w_options,
-               "a_options": s0.joint_a_options, "weight_group_size": candidate["gptq_groupsize"], **zero_key(s0)}
+               "a_options": s0.joint_a_options, "weight_group_size": candidate["gptq_groupsize"],
+               "baseline_bits": s0.baseline_bits, **zero_key(s0)}
 
         def compute() -> dict[str, Any]:
             batches = calib_batches(ctx, candidate, handle, text_loader, s0.act_calib_samples)
@@ -517,11 +519,14 @@ def _joint_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle
 
             def refine() -> dict[str, Any]:
                 batches = calib_batches(ctx, candidate, handle, text_loader, s0.act_calib_samples)
-                best, rec = refine_joint(handle.model(s0.profile_dtype), batches, prof, per_layer, avg_w, avg_a,
+                n = prof.layer_numel
+                fits = separate is not None and (
+                    sum(w * k for (w, _), k in zip(separate, n)) <= avg_w * sum(n) + 1e-6
+                    and sum(a for _, a in separate) <= avg_a * len(separate) + 1e-6)
+                starts = {"per_layer": per_layer, **({"separate": separate} if fits else {})}
+                best, rec = refine_joint(handle.model(s0.profile_dtype), batches, prof, starts, avg_w, avg_a,
                                          candidate["gptq_groupsize"], s0.act_group_size, int_zero(s0),
-                                         s0.baseline_bits, s0.joint_refine_rounds,
-                                         compare={"separate": separate} if separate else None,
-                                         device=handle.device)
+                                         s0.baseline_bits, s0.joint_refine_rounds, device=handle.device)
                 return {"picks": best, **rec}
 
             refined, refined_cached = ctx.cache.get_or_compute("joint_refined", rkey, refine)
@@ -537,8 +542,8 @@ def _joint_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle
                         per_layer_plan={"picks": [list(p) for p in per_layer], "combinations": combos(per_layer),
                                         "predicted_joint_ppl_rise": predicted_joint_rise(prof, per_layer)})
         if refined is not None:  # calibration perplexity with every layer rounded, per plan
-            row.info["refinement"] = {"cached": refined_cached, "rounds": refined["rounds"],
-                                      "calib_ppl": refined["ppl"], "compare_calib_ppl": refined["compare_ppl"],
+            row.info["refinement"] = {"cached": refined_cached, "start_calib_ppl": refined["starts"],
+                                      "rounds": refined["rounds"], "calib_ppl": refined["ppl"],
                                       "cost": refined["cost"]}
         if separate is not None:  # the separate plans, scored by the same joint measurement
             row.info["separate_plans"] = {"combinations": combos(separate),
