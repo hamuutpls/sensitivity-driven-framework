@@ -1,0 +1,45 @@
+---
+title: "Stages 1-3: run_stage() for each method (here a Stage 1 method such as GPTQ)"
+---
+sequenceDiagram
+    autonumber
+    participant RS as run_stage
+    participant P as Stage0Plans
+    participant M as methods_for / Method
+    participant Rep as StageReporter
+    participant C as ArtifactCache
+    participant BM as build_and_measure
+    participant F as model_factory
+
+    RS->>M: methods_for(stage, names)
+    M-->>RS: list of Method
+    RS->>P: Stage0Plans.load(stage0_dir)
+    P-->>RS: quant, activations, prune, kv plans + profiles
+    RS->>Rep: row baseline / fp16
+    RS->>C: load_fp16 (the same cache entry Stage 0 measured)
+    loop each Method m
+        RS->>RS: orig = original_plan(m): uniform 4-bit (Standard quantization)
+        RS->>Rep: row m / original
+        RS->>C: get_or_compute("stageN_original", key = method, version, plan, params, calibration, eval)
+        opt cache miss
+            C->>BM: build_and_measure(m, orig)
+        end
+        C-->>RS: metrics, raw
+        loop each plan key in m.plans (Stage 1 weights: quant)
+            RS->>RS: plan = framework_plan(m, plans, key): Stage 0 plan (Our method)
+            RS->>Rep: row m / framework
+            RS->>BM: build_and_measure(m, plan)
+            BM-->>RS: metrics, raw, info
+        end
+        Note over Rep: a method that raises becomes a failed row<br/>with its error, and the stage goes on
+    end
+    RS->>Rep: finalize()
+    Rep-->>RS: stage_N/report.md, stage_N_comparison.xlsx, results.json
+
+    Note over BM,F: inside build_and_measure(m, plan)
+    BM->>F: model_factory(): a fresh FP16 model for every row
+    F-->>BM: model
+    BM->>M: with m.apply(MethodCall(model, plan, candidate, cfg, batches))
+    Note over M: e.g. gptq_(): per layer, Hessian of the inputs,<br/>then rounding at that layer's planned bits
+    BM->>BM: Stage 4 measurements (see the evaluation diagram)
+    BM->>BM: del model, free GPU memory

@@ -1,0 +1,52 @@
+---
+title: "Stage 4: measuring one row in build_and_measure (HF, llama.cpp, vLLM, TensorRT-LLM)"
+---
+sequenceDiagram
+    autonumber
+    participant BM as build_and_measure
+    participant HF as eval.metrics
+    participant DS as eval.downstream
+    participant LC as eval.llamacpp
+    participant EX as eval.gptq_export
+    participant VB as eval.vllm_backend
+    participant VW as vllm_worker (vLLM Python)
+    participant TB as eval.trtllm_backend
+    participant TW as trtllm_worker (TensorRT-LLM Python)
+
+    BM->>HF: measure_model(model, val, held, cfg.eval, device)
+    Note over HF: perplexity on validation and held-out halves,<br/>size, peak memory, prefill and decode latency<br/>(warmup + repeats, mean and std)
+    HF-->>BM: metrics, raw
+    opt eval.downstream_tasks set
+        BM->>DS: downstream_accuracy(model, tokenizer, tasks)
+        DS-->>BM: accuracy per task + mean (lm-eval)
+    end
+    BM->>BM: zero_weight_share(model) (weight rows)
+    opt Stage 1 weight row and eval.llamacpp_dir set
+        BM->>LC: measure(model, tokenizer, plan, val, held)
+        LC->>LC: save_pretrained, convert_hf_to_gguf (F16)
+        LC->>LC: llama-quantize --pure, per-layer --tensor-type from the plan
+        LC->>LC: llama-bench (speed), llama-perplexity (val, held-out)
+        LC-->>BM: llamacpp_size_gb, speed, llamacpp_ppl_*
+    end
+    opt Stage 1 weight row and eval.vllm_python set
+        BM->>VB: measure(...)
+        VB->>EX: export(model, plan): mixed-bit GPTQ checkpoint
+        VB->>VW: subprocess with args.json
+        VW-->>VB: last stdout line: JSON metrics
+        alt worker failed
+            VB-->>BM: raises VLLMError (row keeps vllm_error)
+        else
+            VB-->>BM: vllm_size_gb, vllm_decode_ms_per_token, vllm_ppl_*
+        end
+    end
+    opt Stage 1 weight row and eval.trtllm_python set
+        BM->>TB: measure(...)
+        TB->>EX: export + hf_quant_config.json
+        TB->>TW: subprocess: build engine, measure
+        alt worker failed
+            TB-->>BM: raises TRTLLMError (row keeps trtllm_error)
+        else
+            TB-->>BM: trtllm_engine_gb, trtllm_decode_ms_per_token, trtllm_ppl_*
+        end
+    end
+    BM->>BM: add build_time_s. Simulated methods drop model_size_gb<br/>(the plan's predicted size is the size)

@@ -163,7 +163,7 @@ Dashed boxes are planned.
 ### 3.4 Interaction view: a full run
 
 The full-run sequence (search loop, then full comparisons on the final candidates, then the master report) is
-drawn in [`docs/diagrams/README.md`](../diagrams/README.md#sequence-diagram-the-full-run-planned). In short:
+drawn in [`docs/diagrams/search.md`](../diagrams/search.md#sequence-diagram) (planned; today's run without search: [`seq-full-run`](../diagrams/seq-full-run.svg)). In short:
 
 1. Load the configuration and start the run (§4.1, §4.2).
 2. For each searcher, until its trial budget is used: ask for a candidate, run Stage 0 (cached profile, new
@@ -397,7 +397,7 @@ kind of plan decides the standard method (`original_plan`). `<pruning>_after_<qu
 
 Measure how fragile each decoder layer is and turn that into a per-layer plan of bit widths and pruning ratios,
 which Stages 1 to 3 follow. Also predict what the plan costs before anything is compressed. **Status:**
-implemented and tested. Diagrams: [`stage0.md`](../diagrams/stage0.md).
+implemented and tested. Diagrams: [`class-stage0`](../diagrams/class-stage0.svg), [`seq-stage0`](../diagrams/seq-stage0.svg).
 
 *In plain words:* Stage 0 takes each layer out of the model in turn and watches how much the model's mistakes
 grow. Layers where mistakes grow a lot are marked "protect"; the rest are marked "compress hard". It also plans
@@ -569,7 +569,7 @@ current values and ranges; caveats. Every table has column explanations.
 
 Store the model's numbers with fewer bits and remove nothing: weights (RTN, GPTQ, AWQ) and activations (RTN,
 SmoothQuant, QuaRot, RPTQ, SpinQuant), following the Stage 0 plans in the framework variant (S1-01 to S1-07).
-Path 0 > 1 > 4. Diagrams: [`stage1.md`](../diagrams/stage1.md).
+Path 0 > 1 > 4. Diagrams: [`class-stages`](../diagrams/class-stages.svg), [`seq-stage-method`](../diagrams/seq-stage-method.svg).
 
 *In plain words:* round each number to fewer digits, gently in protected layers and harder elsewhere. Nothing is
 thrown away.
@@ -604,7 +604,7 @@ combination is the series path of Stage 2.
 
 Remove numbers and round nothing (S2-01 to S2-03): Wanda, structured pruning (feed-forward channels) and
 low-rank decomposition. Path 0 > 2 > 4 prunes the uncompressed model; path 0 > 1 > 2 > 4 prunes the model a Stage 1
-weight method has quantized. Diagrams: [`stage2.md`](../diagrams/stage2.md).
+weight method has quantized. Diagrams: [`class-stages`](../diagrams/class-stages.svg), [`seq-stage-method`](../diagrams/seq-stage-method.svg).
 
 ### 7.2 Composition and interfaces
 
@@ -627,7 +627,7 @@ derives the pruning plans from the same sensitivity scores and guard as the quan
 
 Shrink the KV cache by quantising it (QuaRot-KV, KVQuant) or evicting tokens (H2O, SnapKV, InfiniGen), giving
 following the Stage 0 KV cache plan (§5.8) in the framework variant; measure KV memory and check it against `kv_budget_gb`
-(S3-01 to S3-04, MET-06). Diagrams: [`stage3.md`](../diagrams/stage3.md).
+(S3-01 to S3-04, MET-06). Diagrams: [`class-stages`](../diagrams/class-stages.svg), [`seq-stage-method`](../diagrams/seq-stage-method.svg).
 
 ### 8.2 Composition and interfaces *(proposed)*
 
@@ -653,7 +653,7 @@ variants and the HF generation loop is unchanged.
 
 Load each compressed artifact on HF Transformers, llama.cpp, vLLM and TensorRT-LLM; measure the same metrics
 under the same `EvalConfig` on each; add downstream tasks; and after a search, select the deployable model
-(S4-01 to S4-03, MET-03). Diagrams: [`stage4.md`](../diagrams/stage4.md).
+(S4-01 to S4-03, MET-03). Diagrams: [`class-eval-reporting`](../diagrams/class-eval-reporting.svg), [`seq-stage4-eval`](../diagrams/seq-stage4-eval.svg).
 
 ### 9.2 Composition and interfaces *(proposed)*
 

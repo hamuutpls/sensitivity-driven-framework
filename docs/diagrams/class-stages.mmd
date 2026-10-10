@@ -1,0 +1,116 @@
+---
+title: "Stages 1-3: one runner, one method table (sdf.stages)"
+---
+classDiagram
+    direction TB
+
+    class Method {
+        <<frozen dataclass>>
+        +str name
+        +int stage
+        +str label
+        +tuple plans
+        +apply(MethodCall) ContextManager
+        +int version
+        +tuple params
+        +bool calibrated
+        +bool simulated
+        +str library
+        +tuple quant_plans
+        +str storage
+        +str fixed_bits
+        +str unavailable
+        +str note
+    }
+    class MethodCall {
+        +Module model
+        +plan
+        +dict candidate
+        +FrameworkConfig cfg
+        +batches() list
+    }
+    class methods {
+        <<module>>
+        +dict METHODS
+        +series(quant, prune)$ Method
+        +methods_for(stage, names)$ list~Method~
+    }
+    class Stage0Plans {
+        +Path dir
+        +dict plans
+        +SensitivityProfile profile
+        +KVProfile kv_profile
+        +num_layers int
+        +load(stage0_dir)$ Stage0Plans
+    }
+    class runner {
+        <<module>>
+        +dict PLAN_FILES
+        +run_stages(ctx, candidate, stage0_dir) dict
+        +run_stage(ctx, stage, names, candidate, stage0_dir) dict
+        +original_plan(m, plans, s0, prune_ratio)
+        +framework_plan(m, plans, plan_key)
+        +plan_metrics(plan, plans, cfg, candidate) dict
+    }
+    class weights {
+        <<module: Stage 1 weights>>
+        +gptq_(model, plan, batches, ...)
+        +awq_(model, plan, batches, ...)
+    }
+    class weights_a {
+        <<module: Stage 1 weights>>
+        +WEIGHT_METHODS_A
+        omniquant, squeezellm, spqr, efficientqat
+    }
+    class weights_b {
+        <<module: Stage 1 weights>>
+        +WEIGHT_METHODS_B
+        aqlm, quip, quipsharp, pbllm, billm
+    }
+    class bnb {
+        <<module: Stage 1 weights>>
+        +WEIGHT_METHODS_BNB
+        bitsandbytes NF4 / int8
+    }
+    class activation_methods {
+        <<module: Stage 1 activations>>
+        +ACTIVATION_METHODS
+        smoothquant, quarot, spinquant, rptq
+    }
+    class pruning {
+        <<module: Stage 2>>
+        +wanda_(...)
+        +structured_prune_(...)
+        +low_rank_(...)
+    }
+    class in_methods {
+        <<in methods.py>>
+        rtn: weights, plan quant
+        rtn_act: activations
+        rtn_kv: Stage 3 KV cache
+        qtip, abqllm: listed, not ported
+        quarot_kv, kvquant, h2o, snapkv, infinigen: listed, not written
+    }
+    class StageReporter
+    class CompressionPlan
+    class ActivationPlan
+    class KVPlan
+
+    methods *-- Method : METHODS
+    methods ..> weights
+    methods ..> weights_a
+    methods ..> weights_b
+    methods ..> bnb
+    methods ..> activation_methods
+    methods ..> pruning
+    methods ..> in_methods
+    Method ..> MethodCall : apply() takes
+    MethodCall ..> CompressionPlan : plan (weights, pruning)
+    MethodCall ..> ActivationPlan : plan (activations)
+    MethodCall ..> KVPlan : plan (KV cache)
+    runner ..> methods : methods_for()
+    runner ..> Stage0Plans : loads stage_0 files
+    Stage0Plans o-- CompressionPlan : quant, prune, prune_same_size
+    Stage0Plans o-- ActivationPlan : activations
+    Stage0Plans o-- KVPlan : kv, kv_bits_only
+    runner ..> StageReporter : rows fp16 / original / framework
