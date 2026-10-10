@@ -32,15 +32,22 @@ sequenceDiagram
     R0->>Pl: plan_compression(scores, threshold, prune ratio, protected_bits, compressed_bits, guarded)
     Pl-->>R0: CompressionPlan
     R0->>Pl: predict_cost(plan) for each row
-    R0->>Act: rows activations: uniform plan, then measured plan
-    Act->>C: get_or_compute("activation_profile") -> profile_activations
-    Act-->>R0: ActivationPlan = plan_activations(profile, act_avg_bits)
+    Note over R0: _act_rows: row activations / original (uniform 8-bit)
+    R0->>C: get_or_compute("activation_profile")
+    opt cache miss
+        C->>Act: profile_activations(model, batches, act_bits_options)
+    end
+    C-->>R0: ActivationProfile
+    R0->>Act: plan_activations(profile, act_avg_bits)
+    Act-->>R0: ActivationPlan (row activations / framework)
+    R0->>Act: activation_plan_from_weights(plan, hi, lo)
+    Act-->>R0: row activations_from_weights / framework (for comparison)
     opt stage0.kv_cache
         R0->>KV: rows kv_cache: profile_kv (cached), plan_kv with and without eviction
         KV-->>R0: KVProfile, KVPlan, KVPlan bits only
     end
     R0->>Pl: quant = plan_compression(prune ratio 0), pruning_only(plan), same_size_pruning_plan
-    Note over R0: stage_0/ files: quant_plan.json (Stage 1 weights),<br/>activation_plan.json (Stage 1 activations),<br/>prune_plan.json + prune_plan_same_size.json (Stage 2),<br/>kv_cache_plan.json + kv_cache_plan_bits_only.json (Stage 3),<br/>compression_plan.json, sensitivity_profile.json
+    Note over R0: stage_0/ files: quant_plan.json (Stage 1 weights),<br/>activation_plan.json (Stage 1 activations),<br/>prune_plan.json + prune_plan_same_size.json (Stage 2),<br/>kv_cache_plan.json + kv_cache_plan_bits_only.json (Stage 3),<br/>kv_profile.json, activation_profile.json,<br/>compression_plan.json, sensitivity_profile.json
     R0->>HO: write_handoff(...)
     HO-->>R0: handoff.md
     R0->>Rep: finalize()
