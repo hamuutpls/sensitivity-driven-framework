@@ -562,7 +562,7 @@ def _joint_curves(rep: StageReporter, joint: tuple[CompressionPlan, ActivationPl
     picks = [(lp.bit_width, al.act_bits) for lp, al in zip(joint[0].layers, joint[1].layers)]
     try:
         joint_curves.write_csv(joint[2], picks, rep.dir / "joint_curves.csv")
-        joint_curves.draw(joint[2], picks, rep.dir / "joint_curves", model)
+        joint_curves.draw(joint[2], picks, rep.dir / "joint_curves", model, f"joint plan ({rep.dir.parent.name})")
         made = "joint_curves.csv and the figures in joint_curves/"
     except ImportError:
         made = "joint_curves.csv (figures skipped: matplotlib not installed, pip install -e \".[figures]\")"

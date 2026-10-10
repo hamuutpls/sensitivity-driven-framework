@@ -123,6 +123,7 @@ def test_joint_curves_table_and_figures(tmp_path):
         "W4A4", "W4A8", "W8A4", "W8A8", "W4A16", "W16A4", "W8A16", "W16A8", "W16A16"]
     assert [r["pair"] for r in rows if r["chosen"] == "True"] == ["W8A8", "W4A8", "W16A4"]
     assert float(rows[8]["ppl"]) == 10.0 and float(rows[0]["ppl"]) == 10.0 + p.rise[0][0][0]
+    assert [r["measured"] for r in rows[:9]] == ["True"] * 8 + ["False"]  # W16A16: the baseline, copied
     pytest.importorskip("matplotlib")
     files = joint_curves.draw(p, picks, tmp_path / "fig")
     assert [f.name for f in files] == ["joint_curves_all_layers.png"] + [f"joint_curve_layer{i:02d}.png" for i in range(3)]
