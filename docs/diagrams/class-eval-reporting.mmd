@@ -1,0 +1,113 @@
+---
+title: "Stage 4 evaluation and reporting (sdf.eval, sdf.reporting)"
+---
+classDiagram
+    direction LR
+
+    class metrics {
+        <<module sdf.eval.metrics>>
+        +measure_model(model, val, held, cfg, device) tuple
+        +perplexity(model, windows, device) tuple
+        +measure_latency(model, cfg, device, vocab) list
+        +model_size_gb(model) float
+    }
+    class downstream {
+        <<module>>
+        +downstream_accuracy(model, tokenizer, tasks, ...) dict
+    }
+    class llamacpp {
+        <<module: llama.cpp backend>>
+        +MAIN_METRICS
+        +measure(model, tokenizer, plan, val, held, cfg, baseline_bits) dict
+        +quantize_args(plan, baseline_bits) tuple
+    }
+    class vllm_backend {
+        <<module: vLLM backend>>
+        +MAIN_METRICS
+        +measure(model, tokenizer, plan, val, held, cfg, baseline_bits, group_size) dict
+    }
+    class trtllm_backend {
+        <<module: TensorRT-LLM backend>>
+        +MAIN_METRICS
+        +measure(model, tokenizer, plan, val, held, cfg, baseline_bits, group_size) dict
+        +quant_file(model, plan, group_size) dict
+    }
+    class gptq_export {
+        <<module>>
+        +export(model, tokenizer, plan, group_size, out_dir) float
+        +quantize_linear(weight, bits, group_size) dict
+    }
+    class vllm_worker {
+        <<script, own Python>>
+        +main(args) dict
+    }
+    class trtllm_worker {
+        <<script, own Python>>
+        +main(args) dict
+    }
+    class VLLMError
+    class TRTLLMError
+    class RuntimeError
+
+    class StageReporter {
+        +int stage
+        +list rows
+        +list raw
+        +list per_layer
+        +list sections
+        +dict original_model
+        +method(method, variant, info) ContextManager~ComparisonRow~
+        +add_raw(method, variant, records)
+        +compute_deltas()
+        +comparison_summary() list
+        +flush()
+        +finalize() dict
+    }
+    class ComparisonRow {
+        +str method
+        +str variant
+        +str status
+        +dict metrics
+        +dict info
+        +str error
+        +dict requirement
+        +dict deltas
+        +key str
+        +compare_to str
+    }
+    class MetricSpec {
+        +str label
+        +str unit
+        +str better
+        +str plain
+        +str meaning
+    }
+    class markdown {
+        <<module>>
+        +write_report(rep, path)
+    }
+    class excel {
+        <<module>>
+        +write_workbook(rep, path)
+    }
+    class master {
+        <<module>>
+        +write_master(run_dir) dict
+        +load_stages(run_dir) list
+    }
+    class DeploymentRequirement
+
+    RuntimeError <|-- VLLMError
+    RuntimeError <|-- TRTLLMError
+    vllm_backend ..> gptq_export : mixed-bit GPTQ checkpoint
+    trtllm_backend ..> gptq_export
+    vllm_backend ..> vllm_worker : subprocess, args.json
+    trtllm_backend ..> trtllm_worker : subprocess, args.json
+    vllm_backend ..> VLLMError : raises
+    trtllm_backend ..> TRTLLMError : raises
+    StageReporter *-- ComparisonRow : variants fp16 / original / framework
+    StageReporter ..> DeploymentRequirement : checks every row
+    StageReporter ..> MetricSpec : which direction is better
+    StageReporter ..> markdown : report.md
+    StageReporter ..> excel : stage_N_comparison.xlsx
+    master ..> StageReporter : reads each stage results.json

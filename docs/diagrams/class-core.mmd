@@ -1,0 +1,142 @@
+---
+title: "Core: one config, one run, one cache (sdf.config, sdf.run, sdf.requirements, sdf.search_space, sdf.utils.cache)"
+---
+classDiagram
+    direction LR
+
+    class FrameworkConfig {
+        +RunConfig run
+        +ModelConfig model
+        +DataConfig data
+        +CalibrationConfig calibration
+        +EvalConfig eval
+        +Stage0Config stage0
+        +StagesConfig stages
+        +DeploymentRequirement requirement
+        +dict hyperparams
+        +to_dict() dict
+        +from_dict(d)$ FrameworkConfig
+        +with_overrides(overrides) FrameworkConfig
+    }
+    class RunConfig {
+        +str output_root
+        +str run_id
+        +str cache_dir
+        +int seed
+        +bool deterministic
+        +str log_level
+    }
+    class ModelConfig {
+        +str name
+        +str dtype
+        +str device
+    }
+    class DataConfig {
+        +dict sources
+    }
+    class CalibrationConfig {
+        +int seq_len
+        +int batch_size
+    }
+    class EvalConfig {
+        +str dataset
+        +int seq_len
+        +int max_windows
+        +int latency_warmup
+        +int latency_repeats
+        +str llamacpp_dir
+        +str vllm_python
+        +str trtllm_python
+        +list downstream_tasks
+    }
+    class Stage0Config {
+        +str score
+        +str normalization
+        +int protected_bits
+        +int compressed_bits
+        +int uniform_bits
+        +int baseline_bits
+        +int guard_top_k
+        +str act_plan
+        +float act_avg_bits
+        +bool kv_cache
+        +list kv_bits_options
+    }
+    class StagesConfig {
+        +str stage0_dir
+        +list stage1_methods
+        +list stage2_methods
+        +list stage2_after
+        +list stage3_methods
+    }
+    class DeploymentRequirement {
+        +float target_latency_ms
+        +float target_memory_gb
+        +float target_ppl
+        +float kv_budget_gb
+        +str hardware_profile
+        +check(metrics) RequirementCheck
+    }
+    class RequirementCheck {
+        +bool met
+        +bool targets_set
+        +dict shortfall
+        +dict checked
+        +list unmeasured
+    }
+    class SearchSpace {
+        +make(overrides) dict
+        +validate(values) dict
+    }
+    class Param {
+        +str name
+        +int stage
+        +default
+        +float low
+        +float high
+        +tuple choices
+        +contains(value) bool
+    }
+    class RunContext {
+        +FrameworkConfig cfg
+        +str run_id
+        +Path run_dir
+        +ArtifactCache cache
+    }
+    class ArtifactCache {
+        +Path root
+        +path(kind, key) Path
+        +get_or_compute(kind, key, compute) tuple
+    }
+    class JsonFile {
+        <<mixin>>
+        +to_dict() dict
+        +from_dict(d)$
+        +save(path)
+        +load(path)$
+    }
+    class run {
+        <<module>>
+        +start_run(cfg) RunContext
+    }
+    class config {
+        <<module>>
+        +load_config(path, overrides) FrameworkConfig
+        +config_hash(parts) str
+    }
+
+    FrameworkConfig *-- RunConfig
+    FrameworkConfig *-- ModelConfig
+    FrameworkConfig *-- DataConfig
+    FrameworkConfig *-- CalibrationConfig
+    FrameworkConfig *-- EvalConfig
+    FrameworkConfig *-- Stage0Config
+    FrameworkConfig *-- StagesConfig
+    FrameworkConfig *-- DeploymentRequirement
+    DeploymentRequirement ..> RequirementCheck : returns
+    SearchSpace *-- Param : SEARCH_SPACE has 7
+    config ..> FrameworkConfig : builds from YAML + overrides
+    run ..> RunContext : creates
+    RunContext o-- FrameworkConfig
+    RunContext *-- ArtifactCache
+    SearchSpace ..> FrameworkConfig : validates hyperparams into a candidate

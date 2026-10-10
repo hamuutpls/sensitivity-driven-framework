@@ -1,0 +1,40 @@
+---
+title: "Full run: python main.py with MODE = \"stages\" (Stages 0, 1-3, master report)"
+---
+sequenceDiagram
+    autonumber
+    actor User
+    participant Main as main.py
+    participant Cfg as FrameworkConfig
+    participant Space as SEARCH_SPACE
+    participant Run as run.start_run
+    participant S0 as stage0.run_stage0
+    participant St as stages.run_stages
+    participant RS as stages.run_stage
+    participant MR as reporting.write_master
+
+    User->>Main: python main.py (settings at the top of the file)
+    Main->>Cfg: build_config(): FrameworkConfig().with_overrides(...)
+    Cfg-->>Main: cfg
+    Main->>Space: make(cfg.hyperparams)
+    Space-->>Main: candidate (values outside the allowed ranges are rejected)
+    Main->>Run: start_run(cfg)
+    Note over Run: results/<run_id>/, config.json, run.log,<br/>fixed seeds, ArtifactCache
+    Run-->>Main: RunContext ctx
+    alt STAGE0_DIR is None
+        Main->>S0: run_stage0(ctx, candidate)
+        S0-->>Main: Stage0Result (stage_0/ folder with plan files)
+    else a finished Stage 0 folder is given
+        Note over Main: reuse its plan files
+    end
+    Main->>St: run_stages(ctx, candidate, stage0_dir)
+    loop stage 1 (quantization), 2 (pruning), 3 (KV cache), when methods are listed
+        St->>RS: run_stage(ctx, stage, method names, candidate, stage0_dir)
+        RS-->>St: stage_N/report.md, stage_N_comparison.xlsx, results.json
+    end
+    Note over St: Stage 2 also runs "<pruning>_after_<quantization>"<br/>for each method in STAGE2_AFTER (path 0 -> 1 -> 2 -> 4)
+    St-->>Main: output paths
+    Main->>MR: write_master(ctx.run_dir)
+    MR-->>Main: master_report.md, all_stages_comparison.xlsx
+    Main-->>User: prints every output path
+    Note over Main: Other MODEs (single, sweep, compare_scores, prune_sweep,<br/>threshold_sweep) are Stage 0 studies that stop after Stage 0
