@@ -334,3 +334,48 @@ def test_wanda_scores_do_not_overflow_in_fp16(tiny_llama, monkeypatch):
     after = [x.weight for x in m.model.layers[0].modules() if isinstance(x, nn.Linear)]
     for b, a in zip(before, after):
         assert torch.equal(a != 0, magnitude_mask(b, 0.75))
+
+
+def test_joint_methods_pair_a_weight_method_with_an_activation_method():
+    m, w8 = methods_for(1, ["gptq_with_quarot", "rtn_with_rtn_act_w8a8"])
+    assert m.joint == (None, None) and m.plans == ("quant",) and m.calibrated
+    assert w8.joint == (8, 8) and w8.plans == ()
+    assert methods_for(1, ["qtip_with_rtn_act"])[0].apply is None  # unported weight method: failed row
+    for bad in ("rtn_act_with_rtn_act", "gptq_with_gptq", "gptq_with_h2o"):
+        with pytest.raises(ValueError):
+            methods_for(1, [bad])
+
+
+def test_joint_rows_quantize_weights_and_activations_per_layer(stage0_dir, tiny_llama, tokenizer, small_cfg):
+    from sdf.stages.methods import JointPlan, MethodCall
+    from sdf.stages.runner import framework_plan, original_plan
+
+    ctx = start_run(small_cfg)
+    cand = SEARCH_SPACE.make({"calib_samples": 16})
+    names = ["gptq_with_rtn_act", "gptq_with_rtn_act_w8a8", "rtn_with_quarot"]
+    out = run_stage(ctx, 1, names, cand, stage0_dir, model_factory=lambda: copy.deepcopy(tiny_llama),
+                    tokenizer=tokenizer, text_loader=fake_texts)
+    rows = {f"{r['method']}/{r['variant']}": r for r in json.loads(out["json"].read_text())["rows"]}
+    for k in ("gptq_with_rtn_act/original", "gptq_with_rtn_act/framework", "gptq_with_rtn_act_w8a8/original",
+              "rtn_with_quarot/original", "rtn_with_quarot/framework"):
+        assert rows[k]["status"] == "ok", rows[k].get("error")
+        assert rows[k]["metrics"]["avg_activation_bits"] < 16 and rows[k]["metrics"]["avg_bits_per_weight"] < 16
+    assert "gptq_with_rtn_act_w8a8/framework" not in rows
+    assert "'W4A8': 4" in rows["gptq_with_rtn_act/original"]["info"]["description"]
+    assert "'W8A8': 4" in rows["gptq_with_rtn_act_w8a8/original"]["info"]["description"]
+    assert rows["gptq_with_rtn_act/framework"]["deltas"]["ppl_val"]["vs_original_abs"] is not None
+
+    # the framework plan is the Stage 0 weight plan and activation plan, layer by layer
+    plans = Stage0Plans.load(stage0_dir)
+    m = methods_for(1, ["gptq_with_rtn_act"])[0]
+    plan = framework_plan(m, plans, "quant")
+    assert isinstance(plan, JointPlan) and plan.weights == plans.plans["quant"] and plan.acts == plans.plans["activations"]
+    assert original_plan(m, plans, small_cfg.stage0, 0.0).combos() == {"W4A8": 4}
+    # while measured, every Linear of a layer with activation bits < 16 rounds its input
+    model = copy.deepcopy(tiny_llama)
+    call = MethodCall(model, plan, cand, small_cfg, lambda: [torch.randint(0, tiny_llama.config.vocab_size, (2, 16))])
+    from sdf.stage0.sensitivity import find_decoder_layers
+    with m.apply(call):
+        hooked = [any(l._forward_pre_hooks for l in layer.modules() if isinstance(l, torch.nn.Linear))
+                  for layer in find_decoder_layers(model)]
+    assert hooked == [lp.act_bits < 16 for lp in plan.acts.layers]

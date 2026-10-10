@@ -32,7 +32,7 @@ from sdf.stage0.planner import CompressionPlan, baseline_cost, combine_plans, un
 from sdf.stage0.run import (_cost_metrics, _kv_metrics, calib_batches, fp16_key, load_fp16,
                             setup, stage_reporter, weight_cost)
 from sdf.stage0.sensitivity import SensitivityProfile, find_decoder_layers, normalize
-from sdf.stages.methods import AFTER, Method, MethodCall, methods_for
+from sdf.stages.methods import AFTER, JointPlan, Method, MethodCall, methods_for
 from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -119,8 +119,9 @@ PLAN_KIND = {"quant": "weights", "prune": "prune", "prune_same_size": "prune",
 
 
 def kind_of(m: Method) -> str:
-    """weights | activations (Stage 1), prune (Stage 2, alone or after a Stage 1 method), kv (Stage 3)."""
-    return PLAN_KIND[m.plans[0]]
+    """weights | activations | joint (both, Stage 1), prune (Stage 2, alone or after a Stage 1 method), kv
+    (Stage 3)."""
+    return "joint" if m.joint is not None else PLAN_KIND[m.plans[0]]
 
 
 def original_plan(m: Method, plans: Stage0Plans, s0, prune_ratio: float) -> Any:
@@ -135,25 +136,35 @@ def original_plan(m: Method, plans: Stage0Plans, s0, prune_ratio: float) -> Any:
         return uniform_plan(scores(), s0.uniform_bits if m.quant_plans else s0.baseline_bits, prune_ratio)
     if kind == "activations":
         return uniform_activation_plan(plans.num_layers, s0.act_uniform_bits)
+    if kind == "joint":
+        w, a = m.joint
+        return JointPlan(uniform_plan(scores(), w or s0.uniform_bits, 0.0),
+                         uniform_activation_plan(plans.num_layers, a or s0.act_uniform_bits))
     return uniform_kv_plan(plans.num_layers, s0.kv_uniform_bits)
 
 
 def _plan_keys(m: Method, plan_key: str) -> list[str]:
-    """The plan files a framework row needs: its plan, plus the Stage 1 plan it follows in the series path."""
+    """The plan files a framework row needs: its plan, plus the Stage 1 plan it follows in the series path, or the
+    activation plan of a joint method."""
+    if m.joint is not None:
+        return [plan_key, "activations"]
     return [plan_key, m.quant_plans[m.plans.index(plan_key)]] if m.quant_plans else [plan_key]
 
 
 def framework_plan(m: Method, plans: Stage0Plans, plan_key: str) -> Any:
     """The Stage 0 plan a method's framework row follows; after a Stage 1 method, its bits join the pruning plan."""
-    plan, *quant = (plans.plans[k] for k in _plan_keys(m, plan_key))
-    return combine_plans(quant[0], plan) if quant else plan
+    plan, *other = (plans.plans[k] for k in _plan_keys(m, plan_key))
+    if m.joint is not None:
+        return JointPlan(plan, other[0])
+    return combine_plans(other[0], plan) if other else plan
 
 
 # Stage 0 settings each kind of method reads that a plan does not carry; they join the cache key when not default
 # (so entries made with the defaults stay valid).
 _KIND_SETTINGS = {"weights": ("weight_zero_point", "baseline_bits"), "activations": ("act_group_size", "baseline_bits"),
                   "prune": ("weight_zero_point", "baseline_bits"),
-                  "kv": ("kv_group_size", "kv_module_names", "baseline_bits")}
+                  "kv": ("kv_group_size", "kv_module_names", "baseline_bits"),
+                  "joint": ("weight_zero_point", "act_group_size", "baseline_bits")}
 
 
 def _setting_key(kind: str, s0) -> dict[str, Any]:
@@ -170,6 +181,9 @@ def plan_metrics(plan: Any, plans: Stage0Plans, cfg, candidate: dict[str, Any],
         return _cost_metrics(weight_cost(plans.profile, candidate["gptq_groupsize"], s0, storage=storage)(plan))
     if isinstance(plan, ActivationPlan):
         return {"avg_activation_bits": plan.avg_bits}
+    if isinstance(plan, JointPlan):
+        return {**plan_metrics(plan.weights, plans, cfg, candidate, storage),
+                **plan_metrics(plan.acts, plans, cfg, candidate)}
     if isinstance(plan, KVPlan) and plans.kv_profile is not None:
         m = _kv_metrics(predict_kv(plan, plans.kv_profile, s0.kv_context_len, s0.kv_batch_size, s0.kv_group_size,
                                    s0.group_overhead_bits, s0.baseline_bits))
@@ -188,6 +202,8 @@ def _fp16_plan_metrics(stage: int, plans: Stage0Plans, cfg, candidate) -> dict[s
 
 
 def _describe(plan: Any) -> str:
+    if isinstance(plan, JointPlan):
+        return f"weights and activations, layers per combination {plan.combos()}"
     if isinstance(plan, CompressionPlan):
         bits = sorted({lp.bit_width for lp in plan.layers})
         prune = sorted({lp.pruning_ratio for lp in plan.layers})
@@ -294,7 +310,7 @@ def run_stage(
                 val, held = windows()
                 metrics, raw = measure_model(model, val, held, cfg.eval, device, seed=cfg.run.seed)
                 metrics.update(tasks(model))
-                if kind_of(method) == "weights":
+                if kind_of(method) in ("weights", "joint"):
                     metrics["zero_weight_share"] = zero_weight_share(model)
                 if lc_on(method):
                     metrics.update(llamacpp.measure(model, handle.tokenizer, plan, val, held, cfg.eval,

@@ -76,6 +76,28 @@ class Method:
     unavailable: str = ""
     # shown on the method's rows: what is a simplified port of the fork's algorithm, and how its size is counted
     note: str = ""
+    # weights and activations quantized together (JointPlan): the standard row's (weight bits, activation bits),
+    # None for the Stage 0 "original method" settings; None for a method that is not joint
+    joint: tuple[int | None, int | None] | None = None
+
+
+@dataclass(frozen=True)
+class JointPlan:
+    """A weight plan and an activation plan applied to one model: layer i gets weights at weights.layers[i]
+    bits and its Linear inputs at acts.layers[i] bits (W8A8, W8A4, W4A8 or W4A4 per layer)."""
+    weights: CompressionPlan
+    acts: ActivationPlan
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"weights": self.weights.to_dict(), "activations": self.acts.to_dict()}
+
+    def combos(self) -> dict[str, int]:
+        """How many layers get each W<bits>A<bits> combination."""
+        out: dict[str, int] = {}
+        for w, a in zip(self.weights.layers, self.acts.layers):
+            k = f"W{w.bit_width}A{a.act_bits}"
+            out[k] = out.get(k, 0) + 1
+        return dict(sorted(out.items()))
 
 
 # ----------------------------------------------------------------------------------------------- baselines
@@ -155,6 +177,12 @@ _UNAVAILABLE = {
 }
 
 
+_ACT_EXTRA: dict[str, Callable[[MethodCall], dict[str, Any]]] = {
+    "smoothquant": lambda c: {"alpha": c.candidate["smoothquant_alpha"]},
+    "quarot": lambda c: {"seed": c.cfg.run.seed}, "spinquant": lambda c: {"seed": c.cfg.run.seed},
+    "rptq": lambda c: {"seed": c.cfg.run.seed}}
+
+
 def _fork_methods() -> list[Method]:
     out = []
     for registry in (WEIGHT_METHODS_A, WEIGHT_METHODS_B, WEIGHT_METHODS_BNB):
@@ -167,11 +195,8 @@ def _fork_methods() -> list[Method]:
                 "standard row runs at its own width and the plan-following row is not possible"))
     out += [Method(name, 1, label, _WEIGHT_PLANS, library=reason, unavailable=reason)
             for name, label, reason in (("qtip", "QTIP", _UNAVAILABLE["qtip"]), ("abqllm", "ABQ-LLM", _UNAVAILABLE["abqllm"]))]
-    extra = {"smoothquant": lambda c: {"alpha": c.candidate["smoothquant_alpha"]},
-             "quarot": lambda c: {"seed": c.cfg.run.seed}, "spinquant": lambda c: {"seed": c.cfg.run.seed},
-             "rptq": lambda c: {"seed": c.cfg.run.seed}}
     for name, (fn, label, library, simplified) in ACTIVATION_METHODS.items():
-        out.append(Method(name, 1, label, ("activations",), _transformed_activations(fn, extra[name]),
+        out.append(Method(name, 1, label, ("activations",), _transformed_activations(fn, _ACT_EXTRA[name]),
                           params=("smoothquant_alpha",) if name == "smoothquant" else (), calibrated=True,
                           library=library, note=_SIMPLIFIED + simplified + "; weights stay unquantized in this stage"))
     return out
@@ -215,6 +240,52 @@ METHODS: dict[str, Method] = {m.name: m for m in [
 ] + _fork_methods()}
 
 AFTER = "_after_"  # "<Stage 2 method>_after_<Stage 1 weight method>": the series path 0 -> 1 -> 2 -> 4
+WITH = "_with_"  # "<Stage 1 weight method>_with_<Stage 1 activation method>": both on one model (JointPlan)
+W8A8 = "_w8a8"  # suffix of a joint method whose only row is the standard with every layer at W8A8
+
+
+@contextmanager
+def _round_inputs(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tensor],
+                  group_size: int) -> Iterator[None]:
+    """rtn_act as an activation_methods.py function: nothing to rewrite, round the inputs while open."""
+    with ExitStack() as stack:
+        for lp, layer in zip(plan.layers, find_decoder_layers(model)):
+            if lp.act_bits < 16:
+                stack.enter_context(quantize_inputs(layer, lp.act_bits, group_size))
+        yield
+
+
+def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
+    """`weights` (Stage 1 weight method) and the activation method `acts` (rtn_act or an activation_methods.py one)
+    on one model. The activation method first rewrites the model (smoothing or rotation, nothing for rtn_act), the
+    weight method then quantizes the rewritten weights from unrounded calibration inputs (as QuaRot runs GPTQ),
+    and the activations are rounded while the model is measured. Standard row: W4A8 on every layer (Stage 0
+    uniform_bits / act_uniform_bits), or W8A8 for the `_w8a8` method, which has no framework row."""
+    if weights.stage != 1 or weights.plans != _WEIGHT_PLANS:
+        raise ValueError(f"{weights.name} is not a Stage 1 weight method")
+    if acts == "rtn_act":
+        fn, extra, label = _round_inputs, (lambda c: {}), "round-to-nearest activations"
+    elif acts in ACTIVATION_METHODS:
+        fn, extra, label = ACTIVATION_METHODS[acts][0], _ACT_EXTRA[acts], ACTIVATION_METHODS[acts][1]
+    else:
+        raise ValueError(f"{acts!r} is not a Stage 1 activation method")
+
+    @contextmanager
+    def apply(call: MethodCall) -> Iterator[dict[str, Any]]:
+        plan: JointPlan = call.plan
+        rounding = fn(call.model, plan.acts, call.batches(), call.cfg.stage0.act_group_size, **extra(call))
+        with weights.apply(replace(call, plan=plan.weights)) as first, rounding:
+            yield first
+
+    name = weights.name + WITH + acts + (W8A8 if standard_w8a8 else "")
+    return Method(name, 1, f"{weights.label} + {label}" + (", every layer W8A8" if standard_w8a8 else ""),
+                  () if standard_w8a8 else _WEIGHT_PLANS,
+                  apply if weights.apply else None,
+                  version=weights.version,
+                  params=tuple(dict.fromkeys(weights.params + (("smoothquant_alpha",) if acts == "smoothquant" else ()))),
+                  calibrated=True, library=weights.library, note=weights.note,
+                  fixed_bits=weights.fixed_bits, unavailable=weights.unavailable,
+                  joint=(8, 8) if standard_w8a8 else (None, None))
 
 
 def series(quant: Method, prune: Method) -> Method:
@@ -239,6 +310,13 @@ def methods_for(stage: int, names: list[str]) -> list[Method]:
     """The listed methods of one stage, in the given order; unknown names or wrong stages are an error."""
     out = []
     for n in names:
+        if WITH in n and stage == 1:
+            w, a = n.split(WITH)
+            w8 = a.endswith(W8A8)
+            a = a.removesuffix(W8A8)
+            if w in METHODS and (a == "rtn_act" or a in ACTIVATION_METHODS):
+                out.append(joint(METHODS[w], a, w8))
+                continue
         if AFTER in n and stage == 2:
             prune, quant = n.split(AFTER)
             if prune in METHODS and quant in METHODS:
