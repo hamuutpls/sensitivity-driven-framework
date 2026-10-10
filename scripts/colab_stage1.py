@@ -57,5 +57,8 @@ if os.path.exists(joint_w) and os.path.exists(joint_a):
                  if r["method"] == "joint_weights_activations"), {})
     print("JOINT-BEGIN", json.dumps({"pairs": pairs, "metrics": row0.get("metrics"),
                                      "separate_plans": row0.get("info", {}).get("separate_plans"),
-                                     "interaction": row0.get("info", {}).get("interaction_at_lowest_bits")}),
+                                     "interaction": row0.get("info", {}).get("interaction_at_lowest_bits"),
+                                     "per_layer_plan": row0.get("info", {}).get("per_layer_plan"),
+                                     "refinement": {k: v for k, v in row0.get("info", {}).get("refinement", {}).items()
+                                                    if k != "cost"}}),
           "JOINT-END", flush=True)

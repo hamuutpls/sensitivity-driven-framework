@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-10: joint plan refined with every layer rounded; SpinQuant on GPU
+
+- The per-layer joint plan scored worse than the separate plans on Colab A100. Stage 0 now refines it in context
+  (`stage0.joint_refine_rounds`, default 2): starting from the better fully rounded plan of the per-layer joint
+  plan and the separate plans, each layer is re-measured at every pair with every other layer rounded, the plan is
+  re-made, and a new plan is kept only if the fully rounded model's calibration perplexity drops. The row info
+  records each start's and each round's perplexity.
+- SpinQuant's Hadamard rotation is now built on the model's device (it stayed on the CPU, so GPTQ + SpinQuant
+  failed on GPU; PR #58).
+
 ## 2026-10-10: joint weight x activation plan (Stage 0e)
 
 - Stage 0 measures every decoder layer with its weights and its Linear inputs rounded together, at every pair in

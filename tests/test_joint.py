@@ -7,7 +7,7 @@ import pytest
 
 from sdf.run import start_run
 from sdf.search_space import SEARCH_SPACE
-from sdf.stage0.joint import JointProfile, interaction, joint_plans, plan_joint, profile_joint
+from sdf.stage0.joint import JointProfile, interaction, joint_plans, plan_joint, profile_joint, refine_joint
 from sdf.stage0.planner import uniform_plan
 from sdf.stage0.run import run_stage0
 from conftest import fake_texts
@@ -64,6 +64,31 @@ def test_profile_joint_measures_every_pair(tiny_llama):
     assert all((v == tiny_llama.state_dict()[k]).all() for k, v in before.items())  # weights restored
 
 
+def test_refine_joint_starts_from_the_best_plan_and_keeps_only_improvements(tiny_llama, monkeypatch):
+    import torch
+    import sdf.stage0.joint as joint
+    batches = [torch.randint(0, tiny_llama.config.vocab_size, (2, 16)) for _ in range(2)]
+    before = {k: v.clone() for k, v in tiny_llama.state_dict().items()}
+    p = profile_joint(tiny_llama, batches, [4, 8, 16], [4, 8, 16], 16, 16)
+    plans = {"w4a4": [(4, 4)] * p.num_layers, "w8a8": [(8, 8)] * p.num_layers}  # both within an 8/8 budget
+    _, rec = refine_joint(tiny_llama, batches, p, plans, 8.0, 8.0, 16, 16, rounds=0)
+    assert rec["starts"]["w4a4"] != rec["starts"]["w8a8"]  # a random tiny model: either may score better
+    better, worse = sorted(plans.values(), key=lambda q: rec["starts"]["w4a4" if q == plans["w4a4"] else "w8a8"])
+    # round 1 proposes the better plan (kept), round 2 the worse one (rejected)
+    proposals = iter([better, worse])
+    monkeypatch.setattr(joint, "plan_joint", lambda *a: next(proposals))
+    picks, rec = refine_joint(tiny_llama, batches, p, {"a": worse, "b": worse}, 8.0, 8.0, 16, 16, rounds=3)
+    assert rec["rounds"][0]["start"] == "a" and set(rec["starts"]) == {"a", "b"}
+    assert [r["kept"] for r in rec["rounds"]] == [True, True, False]  # stops at the first rejected plan
+    assert picks == better and rec["ppl"] == rec["rounds"][1]["ppl"] < rec["rounds"][0]["ppl"]
+    assert all((v == tiny_llama.state_dict()[k]).all() for k, v in before.items())  # weights restored
+    # the better start is chosen; real re-planning stays within the budget
+    monkeypatch.undo()
+    picks, rec = refine_joint(tiny_llama, batches, p, {"worse": worse, "better": better}, 8.0, 8.0, 16, 16, rounds=1)
+    assert rec["rounds"][0]["start"] == "better" and rec["ppl"] <= min(rec["starts"].values())
+    assert sum(w for w, _ in picks) <= 8 * len(picks) and sum(a for _, a in picks) <= 8 * len(picks)
+
+
 def test_stage0_writes_the_joint_plan(tiny_llama, tokenizer, small_cfg):
     ctx = start_run(small_cfg)
     cand = SEARCH_SPACE.make({"calib_samples": 16})
@@ -78,5 +103,9 @@ def test_stage0_writes_the_joint_plan(tiny_llama, tokenizer, small_cfg):
     assert row["metrics"]["decoder_weight_bits"] <= sum(lp["bit_width"] for lp in quant) / len(quant) + 1e-9
     assert row["metrics"]["avg_activation_bits"] <= small_cfg.stage0.act_avg_bits
     assert "separate_plans" in row["info"] and "combinations" in row["info"]
-    # the joint plan never predicts more damage than the separate plans at the same budgets
-    assert row["metrics"]["predicted_joint_ppl_rise"] <= row["info"]["separate_plans"]["predicted_joint_ppl_rise"] + 1e-9
+    # the per-layer joint plan never predicts more damage than the separate plans at the same budgets
+    per_layer = row["info"]["per_layer_plan"]["predicted_joint_ppl_rise"]
+    assert per_layer <= row["info"]["separate_plans"]["predicted_joint_ppl_rise"] + 1e-9
+    # refinement starts from the better of the per-layer and separate plans and never ends worse on calibration
+    ref = row["info"]["refinement"]
+    assert ref["calib_ppl"] <= min(ref["start_calib_ppl"].values()) and set(ref["start_calib_ppl"]) == {"per_layer", "separate"}

@@ -125,6 +125,7 @@ class Stage0Config:
     joint_a_options: list[int] = field(default_factory=lambda: [4, 8, 16])  # ascending
     joint_avg_weight_bits: float | None = None  # None = the Stage 1 weight plan's decoder-layer average
     joint_avg_act_bits: float | None = None  # None = act_avg_bits (the separate activation plan's average)
+    joint_refine_rounds: int = 2  # re-plan from rises measured with every other layer rounded (0 = off)
     baseline_bits: int = 16  # bits/weight of the FP16 model and of unquantised tensors (embeddings, norms, lm_head)
     # KV cache plan (see stage0/kv_cache.py). Per layer: key bits, value bits, share of past tokens kept.
     kv_cache: bool = True
