@@ -35,6 +35,7 @@ from sdf.stage0.activation import (
     uniform_activation_plan,
 )
 from sdf.stage0.handoff import write_handoff
+from sdf.stage0.joint import JointProfile, combos, interaction, joint_plans, plan_joint, predicted_joint_rise, profile_joint
 from sdf.stage0.kv_cache import KVCost, KVPlan, KVProfile, plan_kv, predict_kv, profile_kv, uniform_kv_plan
 from sdf.stage0.sensitivity import (
     GRADIENT_SCORES,
@@ -58,11 +59,13 @@ METHOD_KV = "kv_cache"
 METHOD_KV_BITS = "kv_cache_bits_only"
 METHOD_ACT = "activations"
 METHOD_ACT_FROM_WEIGHTS = "activations_from_weights"
+METHOD_JOINT = "joint_weights_activations"
 MAIN_METRICS = ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "peak_memory_gb", "prefill_ms_mean",
                 "decode_ms_per_token_mean",
                 "avg_bits_per_weight", "sparsity", "sensitivity_exposure",
                 "predicted_kv_memory_gb", "avg_kv_bits", "kv_kept_share", "predicted_kv_ppl_rise",
-                "kv_attention_kept", "avg_activation_bits", "predicted_act_ppl_rise", "build_time_s"]
+                "kv_attention_kept", "avg_activation_bits", "predicted_act_ppl_rise", "decoder_weight_bits",
+                "predicted_joint_ppl_rise", "build_time_s"]
 
 
 # What the per-layer "Raw score" column holds, per sensitivity score.
@@ -369,6 +372,11 @@ def run_stage0(
     prune_uniform = uniform_plan(scores, s0.baseline_bits, candidate["prune_ratio_aggressive"])
     prune_same = same_size_pruning_plan(scores, s0.baseline_bits, candidate["prune_ratio_aggressive"],
                                         profile.layer_numel, guarded)
+    joint = _joint_rows(ctx, candidate, handle, text_loader, rep, quant, act) if s0.joint_plan else None
+    if joint is not None:
+        joint[0].save(rep.dir / "joint_weight_plan.json")
+        joint[1].save(rep.dir / "joint_activation_plan.json")
+        joint[2].save(rep.dir / "joint_profile.json")
     quant.save(rep.dir / "quant_plan.json")
     prune.save(rep.dir / "prune_plan.json")
     prune_same.save(rep.dir / "prune_plan_same_size.json")
@@ -465,6 +473,49 @@ def _act_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
             if s0.act_plan == "from_weights":
                 act = derived
     return prof, act
+
+
+def _joint_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
+                text_loader: Callable[[str, str], list[str]], rep: StageReporter, quant: CompressionPlan,
+                act: ActivationPlan | None) -> tuple[CompressionPlan, ActivationPlan, JointProfile] | None:
+    """Joint weight x activation plan (stage0/joint.py), at the same average weight bits as the Stage 1 weight plan
+    and the same average activation bits as the activation plan unless set otherwise, so the two can be compared."""
+    s0 = ctx.cfg.stage0
+    avg_w = s0.joint_avg_weight_bits or sum(lp.bit_width for lp in quant.layers) / len(quant.layers)
+    avg_a = s0.joint_avg_act_bits or s0.act_avg_bits
+    out = None
+    with rep.method(METHOD_JOINT, "framework", label="Our method: weights and activations planned together",
+                    plain_desc="each layer was tested with its weights and its incoming numbers rounded together, at "
+                               f"every pair of bit lengths in {s0.joint_w_options} x {s0.joint_a_options}; each layer "
+                               f"then gets the pair that keeps the total damage smallest, using on average "
+                               f"{avg_w:g} bits per weight and {avg_a:g} bits per incoming number.",
+                    description=f"joint plan, weights avg {avg_w:g} over {s0.joint_w_options}, activations avg "
+                                f"{avg_a:g} over {s0.joint_a_options}") as row:
+        key = {**activation_profile_key(ctx, candidate), "bits": None, "w_options": s0.joint_w_options,
+               "a_options": s0.joint_a_options, "weight_group_size": candidate["gptq_groupsize"], **zero_key(s0)}
+
+        def compute() -> dict[str, Any]:
+            batches = calib_batches(ctx, candidate, handle, text_loader, s0.act_calib_samples)
+            return profile_joint(handle.model(s0.profile_dtype), batches, s0.joint_w_options, s0.joint_a_options,
+                                 candidate["gptq_groupsize"], s0.act_group_size, int_zero(s0), s0.baseline_bits,
+                                 device=handle.device, meta=key).to_dict()
+
+        d, cached = ctx.cache.get_or_compute("joint_profile", key, compute)
+        prof = JointProfile.from_dict(d)
+        picks = plan_joint(prof, avg_w, avg_a)
+        weights, acts = joint_plans(picks, quant)
+        row.metrics.update({"decoder_weight_bits": sum(w for w, _ in picks) / len(picks),
+                            "avg_activation_bits": acts.avg_bits,
+                            "predicted_joint_ppl_rise": predicted_joint_rise(prof, picks),
+                            "build_time_s": prof.cost.get("wall_clock_s", 0.0)})
+        row.info.update(combinations=combos(picks), profile_cached=cached, profiling_cost=prof.cost,
+                        interaction_at_lowest_bits=interaction(prof, min(prof.w_options), min(prof.a_options)))
+        if act is not None:  # the separate plans, scored by the same joint measurement
+            separate = [(lp.bit_width, al.act_bits) for lp, al in zip(quant.layers, act.layers)]
+            row.info["separate_plans"] = {"combinations": combos(separate),
+                                          "predicted_joint_ppl_rise": predicted_joint_rise(prof, separate)}
+        out = weights, acts, prof
+    return out
 
 
 def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: CompressionPlan,

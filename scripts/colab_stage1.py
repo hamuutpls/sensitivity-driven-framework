@@ -49,3 +49,13 @@ for r in data["rows"]:
 print("RESULTS-END", flush=True)
 stage0 = json.load(open(os.path.join(run_dir, "stage_0", "compression_plan.json")))
 print("PLAN-BEGIN", json.dumps([[lp["layer"], lp["bit_width"]] for lp in stage0["layers"]]), "PLAN-END", flush=True)
+joint_w, joint_a = (os.path.join(run_dir, "stage_0", f) for f in ("joint_weight_plan.json", "joint_activation_plan.json"))
+if os.path.exists(joint_w) and os.path.exists(joint_a):
+    pairs = [[w["bit_width"], a["act_bits"]] for w, a in zip(json.load(open(joint_w))["layers"],
+                                                            json.load(open(joint_a))["layers"])]
+    row0 = next((r for r in json.load(open(os.path.join(run_dir, "stage_0", "results.json")))["rows"]
+                 if r["method"] == "joint_weights_activations"), {})
+    print("JOINT-BEGIN", json.dumps({"pairs": pairs, "metrics": row0.get("metrics"),
+                                     "separate_plans": row0.get("info", {}).get("separate_plans"),
+                                     "interaction": row0.get("info", {}).get("interaction_at_lowest_bits")}),
+          "JOINT-END", flush=True)

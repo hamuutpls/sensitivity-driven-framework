@@ -45,7 +45,8 @@ def test_series_methods_pair_a_pruning_method_with_a_stage1_weight_method():
 
 def test_stage0_plans_load(stage0_dir):
     plans = Stage0Plans.load(stage0_dir)
-    assert {"quant", "prune", "prune_same_size", "activations", "kv", "kv_bits_only"} <= set(plans.plans)
+    assert {"quant", "prune", "prune_same_size", "activations", "kv", "kv_bits_only", "joint_weights",
+            "joint_acts"} <= set(plans.plans)
     assert all(lp.pruning_ratio == 0 for lp in plans.plans["quant"].layers)
     assert all(lp.bit_width == 16 for k in ("prune", "prune_same_size") for lp in plans.plans[k].layers)
     assert plans.num_layers == 4 and plans.kv_profile is not None
@@ -338,7 +339,7 @@ def test_wanda_scores_do_not_overflow_in_fp16(tiny_llama, monkeypatch):
 
 def test_joint_methods_pair_a_weight_method_with_an_activation_method():
     m, w8 = methods_for(1, ["gptq_with_quarot", "rtn_with_rtn_act_w8a8"])
-    assert m.joint == (None, None) and m.plans == ("quant",) and m.calibrated
+    assert m.joint == (None, None) and m.plans == ("quant", "joint_weights") and m.calibrated
     assert w8.joint == (8, 8) and w8.plans == ()
     assert methods_for(1, ["qtip_with_rtn_act"])[0].apply is None  # unported weight method: failed row
     for bad in ("rtn_act_with_rtn_act", "gptq_with_gptq", "gptq_with_h2o"):
@@ -356,8 +357,9 @@ def test_joint_rows_quantize_weights_and_activations_per_layer(stage0_dir, tiny_
     out = run_stage(ctx, 1, names, cand, stage0_dir, model_factory=lambda: copy.deepcopy(tiny_llama),
                     tokenizer=tokenizer, text_loader=fake_texts)
     rows = {f"{r['method']}/{r['variant']}": r for r in json.loads(out["json"].read_text())["rows"]}
-    for k in ("gptq_with_rtn_act/original", "gptq_with_rtn_act/framework", "gptq_with_rtn_act_w8a8/original",
-              "rtn_with_quarot/original", "rtn_with_quarot/framework"):
+    for k in ("gptq_with_rtn_act/original", "gptq_with_rtn_act/framework", "gptq_with_rtn_act_joint/framework",
+              "gptq_with_rtn_act_w8a8/original", "rtn_with_quarot/original", "rtn_with_quarot/framework",
+              "rtn_with_quarot_joint/framework"):
         assert rows[k]["status"] == "ok", rows[k].get("error")
         assert rows[k]["metrics"]["avg_activation_bits"] < 16 and rows[k]["metrics"]["avg_bits_per_weight"] < 16
     assert "gptq_with_rtn_act_w8a8/framework" not in rows
@@ -371,6 +373,9 @@ def test_joint_rows_quantize_weights_and_activations_per_layer(stage0_dir, tiny_
     plan = framework_plan(m, plans, "quant")
     assert isinstance(plan, JointPlan) and plan.weights == plans.plans["quant"] and plan.acts == plans.plans["activations"]
     assert original_plan(m, plans, small_cfg.stage0, 0.0).combos() == {"W4A8": 4}
+    jp = framework_plan(m, plans, "joint_weights")
+    assert jp.weights == plans.plans["joint_weights"] and jp.acts == plans.plans["joint_acts"]
+    assert rows["gptq_with_rtn_act_joint/framework"]["info"]["compare_to"] == "gptq_with_rtn_act"
     # while measured, every Linear of a layer with activation bits < 16 rounds its input
     model = copy.deepcopy(tiny_llama)
     call = MethodCall(model, plan, cand, small_cfg, lambda: [torch.randint(0, tiny_llama.config.vocab_size, (2, 16))])

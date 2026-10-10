@@ -74,6 +74,16 @@ METRICS: dict[str, MetricSpec] = {
         "expected accuracy loss from rounding the numbers passed between layers",
         "Stage 0 rounded each layer's incoming numbers on its own and measured how much the prediction error "
         "(perplexity) rose. This adds those rises up for the plan's bits. Smaller is better."),
+    "decoder_weight_bits": MetricSpec(
+        "Average weight bits in the decoder layers", "bits", "lower", "storage per weight in the repeated layers",
+        "How many bits each weight of the model's repeated layers is stored with, on average (16 uncompressed); "
+        "the input and output word tables are not included."),
+    "predicted_joint_ppl_rise": MetricSpec(
+        "Predicted perplexity rise from weight and activation rounding together", "", "lower",
+        "expected accuracy loss from rounding a layer's weights and incoming numbers at the same time",
+        "Stage 0 rounded each layer's weights and its incoming numbers together, at every pair of bit lengths, "
+        "and measured how much the prediction error (perplexity) rose. This adds those rises up for the plan's "
+        "pairs. Smaller is better."),
     "kv_kept_share": MetricSpec(
         "Share of past tokens kept", "", None, "share of earlier words the notes keep",
         "The plan can let some layers forget earlier words that get almost no attention. 1 means nothing is "
