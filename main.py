@@ -74,7 +74,7 @@ KV_BATCH_SIZE = 1  # texts held at once for the predicted cache memory
 KV_MODULE_NAMES = ["k_proj", "v_proj"]  # names of the layers producing keys and values (Llama, Mistral, Qwen)
 
 # =====================================================================================================
-# 4b. Activation plan (the numbers passed between layers while the model runs). Stage 2 carries it out.
+# 4b. Activation plan (the numbers passed between layers while the model runs). Stage 1 carries it out.
 # =====================================================================================================
 ACT_PLAN = "measured"  # "measured": test each layer's sensitivity to rounding its inputs (about 44 passes)
 #                        "from_weights": no test; layers the weight plan protects or never prunes keep more bits

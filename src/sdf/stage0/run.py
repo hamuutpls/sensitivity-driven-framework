@@ -81,7 +81,7 @@ class Stage0Result:
     """Everything later stages take from Stage 0. Each plan is also saved as JSON next to the report and can be
     read back with its class's `load` (CompressionPlan, KVPlan, ActivationPlan)."""
 
-    plan: CompressionPlan  # Stages 1 and 2: bits and pruning per layer (threshold plan); each stage loads its half (quant_plan, prune_plan)
+    plan: CompressionPlan  # bits and pruning per layer (threshold plan); Stage 1 loads its bits (quant_plan), Stage 2 its pruning (prune_plan)
     profile: SensitivityProfile
     outputs: dict[str, Path]
     activation_plan: ActivationPlan | None = None  # Stage 1: activation bits per layer
@@ -407,7 +407,7 @@ def activation_profile_key(ctx: RunContext, cand: dict[str, Any]) -> dict[str, A
 def _act_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
               text_loader: Callable[[str, str], list[str]], rep: StageReporter, plan: CompressionPlan | None,
               num_layers: int) -> tuple[ActivationProfile | None, ActivationPlan | None]:
-    """Activation rows: uniform (original), the plan Stage 2 gets (framework) and, when that plan is measured,
+    """Activation rows: uniform (original), the plan Stage 1 gets (framework) and, when that plan is measured,
     the weight-derived plan at its own average for comparison."""
     s0 = ctx.cfg.stage0
     if s0.act_plan not in ("measured", "from_weights"):
