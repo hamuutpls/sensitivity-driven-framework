@@ -86,3 +86,11 @@ def test_spinquant_learning_lowers_the_proxy_loss(outlier_model, batches):
         with ctx:
             losses.append((logits(m, batches[0]) - logits(outlier_model, batches[0])).pow(2).mean().item())
     assert losses[1] <= losses[0]
+
+
+def test_orthogonal_is_built_on_the_requested_device_both_ways():
+    # the power-of-two (Hadamard) path once stayed on the CPU, so SpinQuant's x @ r failed on a GPU
+    import torch
+    from sdf.stages.activation_methods import _orthogonal
+    for n in (8, 6):
+        assert _orthogonal(n, torch.Generator().manual_seed(0), "meta").device.type == "meta"
