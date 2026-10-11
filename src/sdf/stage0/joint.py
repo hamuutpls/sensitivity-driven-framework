@@ -194,6 +194,7 @@ def plan_joint(profile: JointProfile, avg_weight_bits: float, avg_act_bits: floa
     step = math.gcd(*wo, *ao)
     unit = math.gcd(*profile.layer_numel)
     size = [n // unit for n in profile.layer_numel]  # exact relative weight count (all 1 when layers are equal)
+    # shortcut: very uneven layer sizes make many states (32 uneven layers ~10 s); round sizes if that gets slow
     w_cap = math.floor(avg_weight_bits / step * sum(size) + 1e-9)
     a_cap = math.floor(avg_act_bits / step * profile.num_layers + 1e-9)
     if min(wo) / step * sum(size) > w_cap or min(ao) / step * profile.num_layers > a_cap:

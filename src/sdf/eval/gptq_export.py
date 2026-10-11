@@ -78,6 +78,8 @@ def export(model: nn.Module, tokenizer: Any, plan: CompressionPlan, group_size: 
     from safetensors.torch import save_file
 
     require_bits_only(plan, "the GPTQ-format export")
+    if all(lp.bit_width >= 16 for lp in plan.layers):
+        raise ValueError("no layer below 16 bits; nothing to export in GPTQ format")
     layers = find_decoder_layers(model)
     bits_of = {lp.layer: lp.bit_width for lp in plan.layers}
     index = {id(m): i for i, layer in enumerate(layers) for m in layer.modules()}

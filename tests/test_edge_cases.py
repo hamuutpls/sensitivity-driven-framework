@@ -117,13 +117,16 @@ def test_second_run_log_does_not_go_into_the_first(tmp_path):
 def test_cache_keys_change_with_the_data_source_only_when_it_differs(small_cfg):
     from types import SimpleNamespace
 
-    from sdf.stage0.run import profile_key, source_key
+    import torch
+
+    from sdf.stage0.run import activation_profile_key, fp16_key, kv_profile_key, profile_key, source_key
 
     cand = {"calib_dataset": "wikitext2", "calib_samples": 8}
     assert source_key(small_cfg, "wikitext2") == {}  # default source: old cache entries keep their keys
     other = small_cfg.with_overrides({"data.sources": {**small_cfg.data.sources,
                                                        "wikitext2": {"path": "x", "splits": {"train": "train"}}}})
-    assert profile_key(SimpleNamespace(cfg=small_cfg), cand) != profile_key(SimpleNamespace(cfg=other), cand)
+    for key in (profile_key, kv_profile_key, activation_profile_key, lambda c, _: fp16_key(c, torch.device("cpu"))):
+        assert key(SimpleNamespace(cfg=small_cfg), cand) != key(SimpleNamespace(cfg=other), cand)
 
 
 # --- Stage 0 -------------------------------------------------------------------------------------------------------
@@ -254,3 +257,16 @@ def test_integer_zero_grid_reaches_the_max_of_an_all_positive_group():
     w = torch.tensor([[1.0, 2.0, 3.0, 4.0] * 4])
     q = round_to_nearest(w, 4, 16, True)
     assert q.max() == pytest.approx(4.0) and (q - w).abs().max() <= 4.0 / 15 / 2 + 1e-6
+
+
+def test_review_follow_ups(tmp_path):
+    from sdf.eval.gptq_export import export
+
+    assert FrameworkConfig().with_overrides({"run.seed": "12345678901234567891"}).run.seed == 12345678901234567891
+    with pytest.raises(ValueError, match="ascending"):
+        FrameworkConfig().with_overrides({"stage0.kv_bits_options": 4})
+    with pytest.raises(ValueError, match="nothing to export"):
+        export(_Model(), _Tok(), _plan_with({0: 16, 1: 16, 2: 16}), 128, tmp_path)
+    rep = _reporter(tmp_path)
+    _pair(rep, {"ppl_val": math.nan}, {"ppl_val": 12.0})
+    assert "no measure could be compared" in rep.comparison_summary()[0]

@@ -206,6 +206,9 @@ class StageReporter:
             if self.find_original(fw) is None:
                 lines.append(f"**{fw.method}**: no original-method row to compare against.")
                 continue
+            if not any("vs_original_abs" in d for d in fw.deltas.values()):
+                lines.append(f"**{fw.method}**: no measure could be compared with the original method.")
+                continue
             verdict = ("beats" if wins and not losses else "trades off against" if wins and losses
                        else "loses to" if losses else "ties with")
             text = f"**{fw.method}**: the framework {verdict} the original method."

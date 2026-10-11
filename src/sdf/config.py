@@ -154,8 +154,8 @@ class Stage0Config:
     def __post_init__(self) -> None:
         # the planners treat the first option as the cheapest and the last as the most precise
         for name in ("act_bits_options", "joint_w_options", "joint_a_options", "kv_bits_options"):
-            opts = list(getattr(self, name))
-            if not opts or opts != sorted(set(opts)):
+            opts = getattr(self, name)
+            if not isinstance(opts, (list, tuple)) or not opts or list(opts) != sorted(set(opts)):
                 raise ValueError(f"stage0.{name} must be ascending with no repeats, got {opts}")
 
 
@@ -239,16 +239,22 @@ def _build(cls, d: Mapping[str, Any]):
 
 def _coerce(ftype, value):
     """Cast a YAML-parsed scalar to its str/int/float field type (`--set run.run_id=20261005` parses as int)."""
+    import types
     import typing
 
-    if value is None or isinstance(value, bool):
+    options = typing.get_args(ftype) if typing.get_origin(ftype) in (typing.Union, types.UnionType) else (ftype,)
+    scalar = [t for t in options if t in (str, int, float)]
+    if value is None or isinstance(value, bool) or len(scalar) != 1:
         return value
-    scalar = [t for t in typing.get_args(ftype) or (ftype,) if t in (str, int, float)]
-    if len(scalar) != 1 or isinstance(value, scalar[0]) or not isinstance(value, (str, int, float)):
-        return str(value) if scalar == [str] and not isinstance(value, (Mapping, list, tuple)) else value
     t = scalar[0]
+    if isinstance(value, t):
+        return value
     if t is str:
         return str(value)
+    if not isinstance(value, (str, int, float)):
+        return value
+    if t is int and isinstance(value, str) and value.strip().lstrip("+-").isdigit():
+        return int(value)  # exact; float() would round long digit strings
     try:
         number = float(value)
     except ValueError:

@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-10-11: test sweep, 28 edge-case bugs fixed
+
+Most are covered by `tests/test_edge_cases.py` (each of those tests failed before its fix); the serving workers'
+one-decode-token case, the export group-size cache key, the threshold-name check and `baseline_bits` in the joint
+profile are small untested changes. Cache keys of the default settings
+are unchanged, so existing cached measurements stay valid.
+
+- Reports: a framework row equal to the original now reads "ties with" (it said there was no original row); the %
+  change keeps its sign when the reference is negative (Excel coloured such losses green); NaN no longer counts
+  as a loss in the plain verdicts; NaN/inf cells show as text in Excel instead of blank; a NaN/inf measurement
+  fails its target instead of reading "not measured".
+- Config: `--set` values are cast to the field's type (`run.run_id=20261005` crashed `start_run`;
+  `eval.max_windows=1e3` stayed a string). `act_bits_options`, `kv_bits_options`, `joint_w_options` and
+  `joint_a_options` must be ascending without repeats (the planners treat the first as cheapest).
+- Logging: a second run in the same process no longer also writes into the first run's `run.log`.
+- Cache keys include `data.sources` for a dataset whose source differs from the default (changing it reused old
+  profiles and FP16 numbers).
+- Stage 0: the joint plan keeps the exact weight budget when layers differ in size; a bit budget below the
+  cheapest option is refused (it was silently exceeded); rank agreement with a flat profile is NaN, not 1; a huge
+  loss gives infinite perplexity instead of OverflowError; `predict_cost` refuses mismatched layer counts (layers
+  were dropped from the size); prune and threshold levels that would share a row name are refused; the joint
+  profile records `baseline_bits` for the curves.
+- Rounding: the integer-zero grid now spans min(0, group min)..max(0, group max), as GPTQ does. Groups whose
+  weights all have one sign were clipped at their largest value. Mixed-sign groups (nearly all real 128-weight
+  groups) are unchanged; cached results were made with the old grid
+  (start a fresh cache to be exact).
+- Serving: `gptq_groupsize=-1` (one scale per row) exports instead of crashing; a 16-bit layer is marked
+  unquantized for vLLM (`-:` dynamic rule) and left out of TensorRT-LLM's quantized layers; export errors (e.g. a
+  6-bit plan) become VLLMError/TRTLLMError so the runner keeps the row; one decode token gives NaN decode time,
+  not ZeroDivisionError; the cache key of weight methods without a
+  group-size parameter (e.g. bitsandbytes) includes the export group size when vLLM/TensorRT-LLM is on; a diverged perplexity raises
+  FloatingPointError instead of OverflowError.
+- From review: long integer strings in `--set` stay exact; a scalar given for a bit-option list gets the clear
+  error; a plan with no layer below 16 bits is refused by the GPTQ export; a framework row with nothing comparable
+  says so instead of "ties with"; the sweep names a flat profile in its summary and shows NaN in its workbook.
+
 ## 2026-10-10: perplexity against WxAy per layer
 
 - Stage 0 writes `joint_curves.csv` (each layer's calibration perplexity with only that layer rounded, at every
