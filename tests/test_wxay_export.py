@@ -42,6 +42,14 @@ def unpack_rows(words: torch.Tensor, bits: int) -> torch.Tensor:
 
 
 @pytest.mark.parametrize("bits", c.BITS)
+def test_pack_rows_matches_compressed_tensors(bits):
+    helpers = pytest.importorskip("compressed_tensors.compressors.pack_quantized.helpers")
+    q = torch.randint(0, 2 ** bits, (6, 64), generator=torch.Generator().manual_seed(bits))
+    ref = helpers.pack_to_int32((q - 2 ** (bits - 1)).to(torch.int8), bits)  # it packs signed values
+    assert torch.equal(c.pack_rows(q, bits), ref)
+
+
+@pytest.mark.parametrize("bits", c.BITS)
 def test_pack_rows_round_trip(bits):
     q = torch.randint(0, 2 ** bits, (5, 64), generator=torch.Generator().manual_seed(bits))
     packed = c.pack_rows(q, bits)
@@ -80,6 +88,14 @@ def test_quant_config_gives_each_layer_its_own_pair():
     assert a["dynamic"] and a["symmetric"] and a["strategy"] == "group" and a["group_size"] == 64
     assert g["layer_0"]["weights"]["group_size"] == 128 and g["layer_0"]["weights"]["symmetric"]
     assert qc["ignore"] == ["lm_head", r"re:.*layers\.3\..*"]
+
+
+def test_per_channel_weights_and_unsupported_activation_bits():
+    qc = c.quant_config(wplan([4, 4]), aplan([8, 4]), -1, 128)
+    assert qc["config_groups"]["layer_0"]["weights"] == {"num_bits": 4, "type": "int", "symmetric": True,
+                                                         "dynamic": False, "strategy": "channel"}
+    with pytest.raises(ValueError, match="only to \\(4, 8\\) bits, not 6"):
+        c.quant_config(wplan([4, 4]), aplan([6, 8]), 128, 128)
 
 
 def test_layer_regex_does_not_match_a_longer_layer_number():
@@ -162,14 +178,19 @@ def test_vllm_runs_a_wxay_plan_on_humming_kernels(monkeypatch):
     assert out["vllm_ppl_val"] == 1.0 and out["vllm_size_gb"] > 0
 
 
-def test_vllm_keeps_gptq_for_weight_plans_and_16_bit_activations(monkeypatch):
+def test_vllm_keeps_gptq_for_weight_plans_and_humming_for_any_wxay_plan(monkeypatch):
     seen = _capture_worker(monkeypatch)
     cfg = EvalConfig(vllm_python="/opt/vllm/bin/python")
     w = torch.zeros(2, 4, dtype=torch.long)
-    for acts in (None, aplan([16, 16, 16])):
-        vllm_backend.measure(M(), Tok(), wplan([4, 8, 4]), w, w, cfg, 16, 128, acts=acts)
-        assert seen["args"]["linear_backend"] is None
-        assert seen["config"]["quantization_config"]["quant_method"] == "gptq"
+    vllm_backend.measure(M(), Tok(), wplan([4, 8, 4]), w, w, cfg, 16, 128)
+    assert seen["args"]["linear_backend"] is None and seen["args"]["act_layers"] == []
+    assert seen["config"]["quantization_config"]["quant_method"] == "gptq"
+    # 16-bit activations everywhere still take the WxAy format, so A16 and A8/A4 rows differ only in their bits
+    vllm_backend.measure(M(), Tok(), wplan([4, 8, 4]), w, w, cfg, 16, 128, acts=aplan([16, 16, 16]))
+    assert seen["args"]["linear_backend"] == "humming" and seen["args"]["act_layers"] == []
+    assert seen["config"]["quantization_config"]["quant_method"] == "compressed-tensors"
+    vllm_backend.measure(M(), Tok(), wplan([4, 16, 4]), w, w, cfg, 16, 128, acts=aplan([8, 16, 16]))
+    assert seen["args"]["act_layers"] == [0]  # the layers the worker must find rounding activations
 
 
 def test_vllm_reports_a_pair_it_cannot_run_as_its_own_error(monkeypatch):
@@ -203,7 +224,8 @@ def test_runner_sends_wxay_models_to_every_backend(stage0_dir, tiny_llama, token
     monkeypatch.setattr(vllm_backend, "measure", fake("vllm", vllm_backend.MAIN_METRICS))
     monkeypatch.setattr(trtllm_backend, "measure", fake("trtllm", trtllm_backend.MAIN_METRICS))
     cfg = small_cfg.with_overrides({"eval.llamacpp_dir": "lc", "eval.llamacpp_convert": "conv.py",
-                                    "eval.vllm_python": "vp", "eval.trtllm_python": "tp"})
+                                    "eval.vllm_python": "vp", "eval.trtllm_python": "tp",
+                                    "stage0.act_group_size": 8})  # not the weight group size, so a mix-up shows
     ctx = start_run(cfg)
     cand = SEARCH_SPACE.make({"calib_samples": 16})
     out = run_stage(ctx, 1, ["rtn", "rtn_with_rtn_act", "rtn_with_quarot"], cand, stage0_dir,
@@ -215,13 +237,14 @@ def test_runner_sends_wxay_models_to_every_backend(stage0_dir, tiny_llama, token
     weight_calls = [x for x in calls if isinstance(x[1], CompressionPlan) and not x[2]]
     assert {n for n, *_ in weight_calls} == {"llamacpp", "vllm", "trtllm"}
     joint_vllm = [kw for n, _, kw in calls if n == "vllm" and kw]
-    assert joint_vllm and all(isinstance(kw["acts"], ActivationPlan) and kw["act_group_size"] == 128
+    assert joint_vllm and all(isinstance(kw["acts"], ActivationPlan) and kw["act_group_size"] == 8
                               for kw in joint_vllm)
     assert not any(kw for n, _, kw in calls if n != "vllm")  # the others get the weight plan only
     assert all(isinstance(p, CompressionPlan) for _, p, _ in calls if p is not None)
 
     joint = rows["rtn_with_rtn_act/original"]
-    assert joint["info"]["vllm_activations"] == "the plan's bits"
+    assert joint["info"]["vllm_activations"].startswith("the plan's bits")
+    assert "group of 8 inputs" in joint["info"]["vllm_activations"]
     assert joint["info"]["llamacpp_activations"].startswith("16-bit")
     assert joint["info"]["trtllm_activations"].startswith("16-bit")
     assert joint["metrics"]["vllm_ppl_val"] == 1.0 and joint["metrics"]["llamacpp_ppl_val"] == 1.0

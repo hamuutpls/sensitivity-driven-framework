@@ -1,9 +1,11 @@
 """GPU check that vLLM really rounds a WxAy model's activations (the compressed-tensors export, `ct_export`).
 
 TinyLlama is saved at one (weight bits, activation bits) pair on every layer, then at the Stage 0 joint plan's
-pairs, and measured in vLLM. If vLLM rounded nothing, every A8/A4 row would equal its A16 row; if it does, the
-perplexity rises from A16 to A8 (a little) to A4 (clearly). The worker also refuses a model whose activation
-rounding is not on a Humming kernel. Usage (Linux, the framework's Python):
+pairs, and measured in vLLM. Every row, A16 included, uses the same format and kernels, so rows of one weight
+width differ only in activation bits: if vLLM rounded nothing, A8 and A4 would equal A16; if it does, perplexity
+rises from A16 to A8 (a little) to A4 (clearly). The script prints PASS or FAIL for that. The worker also refuses
+a model whose activation rounding is not on a Humming kernel, or not on the layers the plan says.
+Usage (Linux, the framework's Python):
 
     python scripts/check_vllm_wxay.py /path/to/vllm-venv/bin/python [max_windows]
 """
@@ -42,14 +44,20 @@ def main(vllm_python: str, max_windows: int) -> None:
     rows = [(f"W{w}A{a} every layer", [(w, a)] * n) for w in (8, 4) for a in (16, 8, 4)]
     rows.append(("Stage 0 joint plan", JOINT))
     print("WXAY-BEGIN")
+    ppl = {}
     for label, pairs in rows:
         w, a = plans(pairs)
         try:
             out = vllm_backend.measure(model, tok, w, val, held, cfg, 16, 128, acts=a, act_group_size=128)
+            ppl[label] = out["vllm_ppl_val"]
             print(f"{label}: ppl_val {out['vllm_ppl_val']:.3f}, held-out {out['vllm_ppl_heldout']:.3f}, "
                   f"{out['vllm_size_gb']:.3f} GB, decode {out['vllm_decode_ms_per_token']:.2f} ms/token")
         except vllm_backend.VLLMError as e:
             print(f"{label}: FAILED {e}")
+    for w in (8, 4):
+        a16, a8, a4 = (ppl.get(f"W{w}A{a} every layer") for a in (16, 8, 4))
+        ok = None not in (a16, a8, a4) and a8 >= a16 * 0.999 and a4 > a16 * 1.01
+        print(f"W{w}: {'PASS' if ok else 'FAIL'} (A16 {a16}, A8 {a8}, A4 {a4}: A4 must be clearly above A16)")
     print("WXAY-END")
 
 

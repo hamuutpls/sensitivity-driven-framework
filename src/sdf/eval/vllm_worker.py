@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 import time
 
@@ -24,12 +25,16 @@ def main(args: dict) -> dict:
               kv_cache_memory_bytes=kv_bytes, **extra)
     out: dict = {}
     if extra:  # a layer whose activations should be rounded must run on a kernel that does it, or the row is wrong
-        wrong = sum(llm.apply_model(lambda m: sorted(
-            f"{n}: {type(getattr(mod.scheme, 'kernel', None)).__name__}" for n, mod in m.named_modules()
-            if hasattr(mod, "_humming_input_quant_config")
-            and "Humming" not in type(getattr(mod.scheme, "kernel", None)).__name__)), [])
+        def rounding(m):
+            return sorted((n, type(getattr(mod.scheme, "kernel", None)).__name__) for n, mod in m.named_modules()
+                          if hasattr(mod, "_humming_input_quant_config"))
+        found = sum(llm.apply_model(rounding), [])
+        wrong = [f"{n}: {k}" for n, k in found if "Humming" not in k]
         if wrong:
             raise RuntimeError(f"activation rounding not on a Humming kernel: {', '.join(wrong[:5])}")
+        layers = sorted({int(re.search(r"layers\.(\d+)\.", n).group(1)) for n, _ in found})
+        if layers != sorted(args["act_layers"]):  # vLLM read the config as weight-only somewhere
+            raise RuntimeError(f"vLLM rounds the activations of layers {layers}, the plan of {args['act_layers']}")
     try:
         out["vllm_weight_memory_gb"] = sum(llm.apply_model(
             lambda m: sum(t.numel() * t.element_size() for t in list(m.parameters()) + list(m.buffers())))) / 1e9

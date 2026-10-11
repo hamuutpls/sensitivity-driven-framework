@@ -329,11 +329,17 @@ def run_stage(
                 if lc_on(method):
                     if rotated:
                         info["llamacpp_error"] = _ROTATED
-                    else:
+                    elif not joint:
                         metrics.update(llamacpp.measure(model, handle.tokenizer, weights, val, held, cfg.eval,
                                                         s0.baseline_bits))
-                        if joint:
+                    else:  # a WxAy row keeps its HF numbers if llama.cpp fails
+                        try:
+                            metrics.update(llamacpp.measure(model, handle.tokenizer, weights, val, held, cfg.eval,
+                                                            s0.baseline_bits))
                             info["llamacpp_activations"] = _WEIGHTS_ONLY
+                        except RuntimeError as e:
+                            log.warning("llama.cpp could not measure %s: %s", method.name, e)
+                            info["llamacpp_error"] = str(e)
                 for name, (mod, err, _) in serving.items() if be_on(method) else ():
                     if rotated:
                         info[f"{name}_error"] = _ROTATED
@@ -348,7 +354,8 @@ def run_stage(
                         info[f"{name}_error"] = str(e)
                         continue
                     if joint:
-                        info[f"{name}_activations"] = "the plan's bits" if extra_args else _WEIGHTS_ONLY
+                        info[f"{name}_activations"] = (_rounded_by_backend(name, method, cfg.stage0.act_group_size)
+                                                       if extra_args else _WEIGHTS_ONLY)
         finally:
             del model
             _free_memory()
@@ -457,6 +464,14 @@ _ROTATED = ("not measured: the model rotates inputs while it runs (QuaRot/SpinQu
             "cannot hold that rotation")
 _WEIGHTS_ONLY = ("16-bit: no kernel for the plan's activation bits here, so the weights run at the plan's bits and "
                  "the activations are not rounded")
+
+
+def _rounded_by_backend(name: str, m: Method, group: int) -> str:
+    out = (f"the plan's bits, rounded the backend's way ({name}: on the fly, symmetric, one scale per token and "
+           f"group of {group} inputs)")
+    if "rptq" in m.name:
+        out += "; RPTQ's own static scales are not in the saved model, so this is plain rounding"
+    return out
 
 
 def _require(m: Method) -> None:

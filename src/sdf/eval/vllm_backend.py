@@ -72,7 +72,8 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
     with tempfile.TemporaryDirectory(prefix="sdf-vllm-") as tmp:
         d = Path(tmp)
         backend = None
-        if plan is not None and acts is not None and any(lp.act_bits < baseline_bits for lp in acts.layers):
+        if plan is not None and acts is not None:  # a WxAy row, even one with 16-bit activations everywhere, so
+            # every WxAy row runs on the same format and kernels and differs from another only in its bits
             try:
                 size = ct_export.export(model, tokenizer, plan, acts, group_size, act_group_size, d / "model",
                                         baseline_bits)
@@ -90,7 +91,9 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
             size = sum(f.stat().st_size for f in (d / "model").glob("*.safetensors")) / 1e9
         args = {"model_dir": str(d / "model"), "seq_len": cfg.seq_len, "val": val.tolist(), "heldout": held.tolist(),
                 "warmup": cfg.latency_warmup, "repeats": cfg.latency_repeats, "prompt_len": cfg.latency_prompt_len,
-                "decode_tokens": cfg.latency_decode_tokens, "linear_backend": backend}
+                "decode_tokens": cfg.latency_decode_tokens, "linear_backend": backend,
+                "act_layers": [] if acts is None else [lp.layer for lp, w in zip(acts.layers, plan.layers)
+                                                       if lp.act_bits < baseline_bits and w.bit_width < baseline_bits]}
         (d / "args.json").write_text(json.dumps(args))
         cmd = [cfg.vllm_python, str(Path(__file__).with_name("vllm_worker.py")), str(d / "args.json")]
         log.info("vLLM: %s", " ".join(cmd))

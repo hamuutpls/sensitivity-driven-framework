@@ -28,6 +28,7 @@ from sdf.stage0.planner import CompressionPlan, require_bits_only
 from sdf.stage0.sensitivity import find_decoder_layers
 
 BITS = (2, 4, 8)  # pack-quantized widths that fill an int32 exactly
+ACT_BITS = (4, 8)  # activation widths vLLM has kernels for (Humming W*A8 and W*A4)
 
 
 def pack_rows(q: torch.Tensor, bits: int) -> torch.Tensor:
@@ -69,9 +70,13 @@ def quant_config(weights: CompressionPlan, acts: ActivationPlan, group_size: int
         group: dict[str, Any] = {
             "targets": [_layer_regex(w.layer)],
             "weights": {"num_bits": w.bit_width, "type": "int", "symmetric": True, "dynamic": False,
-                        "strategy": "group", "group_size": group_size},
+                        **({"strategy": "group", "group_size": group_size} if group_size > 0
+                           else {"strategy": "channel"})},  # -1: one group per row (vLLM: per channel)
             "input_activations": None}
         if a.act_bits < baseline_bits:
+            if a.act_bits not in ACT_BITS:
+                raise ValueError(f"layer {w.layer}: vLLM rounds activations only to {ACT_BITS} bits, not "
+                                 f"{a.act_bits}")
             group["input_activations"] = {"num_bits": a.act_bits, "type": "int", "symmetric": True, "dynamic": True,
                                           "strategy": "group", "group_size": act_group_size}
         groups[f"layer_{w.layer}"] = group
