@@ -79,7 +79,8 @@ def quant_file(model: nn.Module, plan: CompressionPlan, group_size: int) -> dict
     index = {id(m): i for i, layer in enumerate(layers) for m in layer.modules()}
     per = {name: {"quant_algo": _ALGO.get(bits[index[id(m)]], f"W{bits[index[id(m)]]}A16_GPTQ"),
                   "group_size": group_size, "has_zero_point": True}
-           for name, m in model.named_modules() if isinstance(m, nn.Linear) and id(m) in index}
+           for name, m in model.named_modules()
+           if isinstance(m, nn.Linear) and id(m) in index and bits[index[id(m)]] < 16}  # 16-bit layers stay FP16
     return {"quantization": {"quant_algo": "MIXED_PRECISION", "quantized_layers": per}}
 
 
@@ -89,7 +90,10 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
     with tempfile.TemporaryDirectory(prefix="sdf-trtllm-") as tmp:
         d = Path(tmp)
         if plan is not None and any(lp.bit_width < baseline_bits for lp in plan.layers):
-            gptq_export.export(model, tokenizer, plan, group_size, d / "model")
+            try:
+                gptq_export.export(model, tokenizer, plan, group_size, d / "model")
+            except ValueError as e:  # a bit width or shape the GPTQ format cannot hold
+                raise TRTLLMError(f"GPTQ export failed: {e}") from e
             (d / "model" / "hf_quant_config.json").write_text(json.dumps(quant_file(model, plan, group_size)))
         else:
             model.save_pretrained(d / "model", safe_serialization=True)

@@ -73,7 +73,8 @@ def main(args: dict) -> dict:
     prefill = timed(1)
     full = timed(args["decode_tokens"])
     out["trtllm_prefill_ms"] = prefill * 1e3
-    out["trtllm_decode_ms_per_token"] = (full - prefill) * 1e3 / (args["decode_tokens"] - 1)
+    out["trtllm_decode_ms_per_token"] = ((full - prefill) * 1e3 / (args["decode_tokens"] - 1)
+                                         if args["decode_tokens"] > 1 else float("nan"))
     out["trtllm_gpu_memory_after_run_gb"] = _used_gb() - base
     return out
 

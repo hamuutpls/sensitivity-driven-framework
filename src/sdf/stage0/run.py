@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 import torch
 
+from sdf.config import _default_sources
 from sdf.data import calibration_batches, eval_windows, load_texts
 from sdf.eval.metrics import measure_model
 from sdf.reporting.reporter import StageReporter
@@ -172,12 +173,19 @@ def original_model_info(ctx: RunContext, handle: _ModelHandle,
         return {"name": name}
 
 
+def source_key(cfg, dataset: str) -> dict[str, Any]:
+    """Where `dataset` is loaded from, only when it differs from the default (so existing cache entries stay valid)."""
+    spec = cfg.data.sources.get(dataset)
+    return {} if spec == _default_sources().get(dataset) else {f"source_{dataset}": spec}
+
+
 def profile_key(ctx: RunContext, cand: dict[str, Any], score: str | None = None) -> dict[str, Any]:
     cfg = ctx.cfg
     score = score or cfg.stage0.score
     key = {"model": cfg.model.name, "profile_dtype": cfg.stage0.profile_dtype, "score": score,
            "calib_dataset": cand["calib_dataset"], "calib_samples": cand["calib_samples"],
-           "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size, "seed": cfg.run.seed}
+           "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size, "seed": cfg.run.seed,
+           **source_key(cfg, cand["calib_dataset"])}
     if score == "layer_quant":  # the per-layer compression depends on these too
         key.update(bits=cfg.stage0.compressed_bits, group_size=cand["gptq_groupsize"])
         key.update(zero_key(cfg.stage0))
@@ -195,7 +203,7 @@ def fp16_key(ctx: RunContext, device: torch.device) -> dict[str, Any]:
     ev = {k: v for k, v in asdict(cfg.eval).items() if not k.startswith(("downstream", "llamacpp"))}
     return {"model": cfg.model.name, "dtype": cfg.model.dtype, "eval": ev, "hardware": hw,
             "backend": "hf-transformers", "seed": cfg.run.seed,
-            "latency": 2}  # 2: timed with deterministic algorithms off (2026-10-06)
+            "latency": 2, **source_key(cfg, cfg.eval.dataset)}  # latency 2: timed with deterministic algorithms off (2026-10-06)
 
 
 def load_fp16(ctx: RunContext, handle: _ModelHandle,
@@ -224,7 +232,8 @@ def kv_profile_key(ctx: RunContext, cand: dict[str, Any]) -> dict[str, Any]:
     return {"model": cfg.model.name, "profile_dtype": s0.profile_dtype, "calib_dataset": cand["calib_dataset"],
             "calib_samples": s0.kv_calib_samples, "seq_len": cfg.calibration.seq_len,
             "batch_size": cfg.calibration.batch_size, "seed": cfg.run.seed, "bits": s0.kv_bits_options,
-            "group_size": s0.kv_group_size, "keep_ratios": s0.kv_keep_ratios, "modules": s0.kv_module_names}
+            "group_size": s0.kv_group_size, "keep_ratios": s0.kv_keep_ratios, "modules": s0.kv_module_names,
+            **source_key(cfg, cand["calib_dataset"])}
 
 
 def load_kv_profile(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
@@ -413,7 +422,7 @@ def activation_profile_key(ctx: RunContext, cand: dict[str, Any]) -> dict[str, A
     return {"model": cfg.model.name, "profile_dtype": s0.profile_dtype, "calib_dataset": cand["calib_dataset"],
             "calib_samples": s0.act_calib_samples, "seq_len": cfg.calibration.seq_len,
             "batch_size": cfg.calibration.batch_size, "seed": cfg.run.seed, "bits": s0.act_bits_options,
-            "group_size": s0.act_group_size}
+            "group_size": s0.act_group_size, **source_key(cfg, cand["calib_dataset"])}
 
 
 def _act_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,

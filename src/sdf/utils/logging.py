@@ -21,8 +21,11 @@ def setup_logging(level: str = "INFO", log_file: str | Path | None = None) -> No
     if log_file is not None:
         log_file = Path(log_file)
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        if not any(isinstance(h, logging.FileHandler) and Path(h.baseFilename) == log_file.resolve()
-                   for h in root.handlers):
+        for h in [h for h in root.handlers if isinstance(h, logging.FileHandler)]:
+            if Path(h.baseFilename) != log_file.resolve():  # an earlier run's log in this process
+                root.removeHandler(h)
+                h.close()
+        if not any(isinstance(h, logging.FileHandler) for h in root.handlers):
             fh = logging.FileHandler(log_file, encoding="utf-8")
             fh.setFormatter(formatter)
             root.addHandler(fh)

@@ -53,6 +53,8 @@ def quantize_linear(weight: torch.Tensor, bits: int, group_size: int) -> dict[st
     """GPTQ-format tensors of one Linear weight (out, in): qweight (in*bits/32, out), qzeros (groups, out*bits/32),
     scales (groups, out) FP16, g_idx (in)."""
     out_f, in_f = weight.shape
+    if group_size <= 0:  # PER_CHANNEL (-1): one group spanning the whole row, as GPTQ's -1 means
+        group_size = in_f
     if in_f % group_size or in_f % 32 or out_f % 32:
         raise ValueError(f"shape {tuple(weight.shape)} does not fit group size {group_size} and 32-wide packing")
     top = 2 ** bits - 1
@@ -76,6 +78,8 @@ def export(model: nn.Module, tokenizer: Any, plan: CompressionPlan, group_size: 
     from safetensors.torch import save_file
 
     require_bits_only(plan, "the GPTQ-format export")
+    if all(lp.bit_width >= 16 for lp in plan.layers):
+        raise ValueError("no layer below 16 bits; nothing to export in GPTQ format")
     layers = find_decoder_layers(model)
     bits_of = {lp.layer: lp.bit_width for lp in plan.layers}
     index = {id(m): i for i, layer in enumerate(layers) for m in layer.modules()}
@@ -93,8 +97,9 @@ def export(model: nn.Module, tokenizer: Any, plan: CompressionPlan, group_size: 
             tensors[name] = p.detach().half().cpu().contiguous() if p.is_floating_point() else p.cpu()
     out_dir.mkdir(parents=True, exist_ok=True)
     save_file(tensors, out_dir / "model.safetensors", metadata={"format": "pt"})
-    common = Counter(bits_of.values()).most_common(1)[0][0]
+    common = Counter(b for b in bits_of.values() if b < 16).most_common(1)[0][0]
     dynamic = {rf"+:.*layers\.{i}\..*": {"bits": b} for i, b in bits_of.items() if b != common and b < 16}
+    dynamic.update({rf"-:.*layers\.{i}\..*": {} for i, b in bits_of.items() if b >= 16})  # "-:" = left unquantized
     cfg = model.config.to_dict()
     cfg["quantization_config"] = {"quant_method": "gptq", "bits": common, "group_size": group_size, "desc_act": False,
                                   "sym": True, "true_sequential": True, "dynamic": dynamic}

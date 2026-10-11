@@ -27,7 +27,7 @@ from typing import Any, Iterable, Iterator
 import torch
 from torch import nn
 
-from sdf.stage0.sensitivity import _mean_loss, find_decoder_layers, profiling, round_to_nearest
+from sdf.stage0.sensitivity import _mean_loss, _ppl, find_decoder_layers, profiling, round_to_nearest
 from sdf.utils.cache import JsonFile
 
 KINDS = ("key", "value")
@@ -128,14 +128,14 @@ def profile_kv(model: nn.Module, batches: Iterable[torch.Tensor], bits_options: 
         raise ValueError("no calibration batches given")
     projs = [kv_projections(layer, module_names) for layer in find_decoder_layers(model)]
     with profiling(model, device) as cost_so_far:
-        base = math.exp(_mean_loss(model, batches, device))
+        base = _ppl(_mean_loss(model, batches, device))
         rise: dict[str, list[list[float]]] = {k: [] for k in KINDS}
         for i, kind in enumerate(KINDS):
             for pair in projs:
                 row = []
                 for bits in bits_options:
                     with quantize_output(pair[i], bits, group_size, per_channel=kind == "key"):
-                        row.append(math.exp(_mean_loss(model, batches, device)) - base)
+                        row.append(_ppl(_mean_loss(model, batches, device)) - base)
                 rise[kind].append(row)
         coverage = attention_coverage(model, batches, keep_ratios, device)
     cost = cost_so_far(len(batches), sum(b.numel() for b in batches))
@@ -188,6 +188,8 @@ def allocate_bits(items: dict[Any, tuple[int, list[float]]], opts: list[int], av
     measured rise per extra bit, while it fits. Assumes per-item damages add up.
     ponytail: greedy, not an exact knapsack; exact only matters with very uneven item sizes.
     """
+    if avg_bits < opts[0] - 1e-9:
+        raise ValueError(f"budget {avg_bits} bits is below the smallest option {opts[0]}")
     items = {k: (d, _monotone(r)) for k, (d, r) in items.items()}
     level = {k: 0 for k in items}
     total = sum(d for d, _ in items.values())

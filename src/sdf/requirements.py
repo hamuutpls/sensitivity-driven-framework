@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
@@ -46,6 +47,13 @@ class DeploymentRequirement:
             if target is None:
                 continue
             metric = next((m for m in metric_names if is_number(metrics.get(m))), None)
+            broken = next((m for m in metric_names
+                           if isinstance(metrics.get(m), float) and (math.isnan(metrics[m]) or metrics[m] == math.inf)),
+                          None)
+            if metric is None and broken is not None:  # a diverged run (NaN/inf ppl) fails, it is not "unmeasured"
+                result.checked[target_name] = broken
+                result.shortfall[target_name] = math.inf
+                continue
             if metric is None:
                 result.unmeasured.append(target_name)
                 continue

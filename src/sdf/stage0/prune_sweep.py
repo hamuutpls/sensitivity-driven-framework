@@ -87,6 +87,8 @@ def _validated(ratios: list[float]) -> list[float]:
     out = sorted({float(r) for r in ratios})
     if not out or not all(0.0 <= r <= 1.0 for r in out):
         raise ValueError(f"stage0.prune_sweep_ratios must be shares in [0, 1], got {ratios}")
+    if len({round(r * 100) for r in out}) < len(out):  # rows are named by whole percent
+        raise ValueError(f"stage0.prune_sweep_ratios must differ by at least 1%, got {ratios}")
     return out
 
 

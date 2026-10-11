@@ -198,6 +198,10 @@ def predict_cost(
     sens = reference_scores if reference_scores is not None else [lp.sensitivity for lp in plan.layers]
     if not profile.layer_numel:
         raise ValueError("profile has no layer sizes; re-run profiling with this version")
+    if not len(plan.layers) == len(profile.layer_numel) == len(profile.layer_rows) == len(sens):
+        # zip below would silently drop the extra layers from the size
+        raise ValueError(f"layer counts differ: plan {len(plan.layers)}, sizes {len(profile.layer_numel)}, "
+                         f"rows {len(profile.layer_rows)}, scores {len(sens)}")
     per_layer_bits = []
     exposure_num = 0.0
     total_pruned = 0.0

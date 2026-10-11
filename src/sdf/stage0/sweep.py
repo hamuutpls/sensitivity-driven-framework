@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import itertools
 import json
+import math
 from typing import Any, Callable
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
-from sdf.reporting.excel import save_workbook
+from sdf.reporting.excel import _cell, save_workbook
 from sdf.reporting.markdown import original_model_lines
 from sdf.run import RunContext
 from sdf.search_space import PER_CHANNEL, SEARCH_SPACE
@@ -78,7 +79,7 @@ def _spearman(a: list[float], b: list[float]) -> float:
     ma, mb = sum(ra) / len(ra), sum(rb) / len(rb)
     cov = sum((x - ma) * (y - mb) for x, y in zip(ra, rb))
     den = (sum((x - ma) ** 2 for x in ra) * sum((y - mb) ** 2 for y in rb)) ** 0.5
-    return cov / den if den else 1.0
+    return cov / den if den else math.nan  # a flat profile ranks nothing
 
 
 def protected_at(scores: list[float], threshold: float) -> set[int]:
@@ -162,7 +163,7 @@ def _write_xlsx(result: dict[str, Any], path) -> None:
         for c in ws[1]:
             c.font = Font(bold=True)
         for r in rows:
-            ws.append([json.dumps(v) if isinstance(v, list) else v for v in r.values()])
+            ws.append([_cell(v) for v in r.values()])
         ws.freeze_panes = "A2"
     save_workbook(wb, path)
 
@@ -188,7 +189,7 @@ def _report(res: dict[str, Any], s0) -> str:
     by_t = _pick(base, prune_ratio_aggressive=d["prune_ratio_aggressive"])
     wins = [r for r in _pick(rows, **ref) if r["fw_beats_uniform"]]
     calib = res["calibration"]
-    worst = min(calib, key=lambda c: c["rank_agreement"])
+    worst = min(calib, key=lambda c: -math.inf if math.isnan(c["rank_agreement"]) else c["rank_agreement"])
     L += ["## Summary", "",
           f"We tried {len(rows)} combinations of settings and compared each resulting compression plan with the "
           f"standard method (every layer at {s0.uniform_bits} bits, {uni['uniform_gb']:.3f} GB, fragile-parts "
@@ -201,6 +202,8 @@ def _report(res: dict[str, Any], s0) -> str:
              "No combination with the reference calibration is both smaller than the standard method and safer. ")
           + ("Only one calibration setting was profiled, so the effect of the calibration text is not "
              "measured yet. " if len(calib) == 1 else
+             f"With {worst['calib_dataset']} x {worst['calib_samples']} every layer scored the same, so that "
+             "setting ranks nothing. " if math.isnan(worst["rank_agreement"]) else
              f"Changing the calibration text barely changes which layers count as sensitive (lowest agreement "
              f"{worst['rank_agreement']:.2f} out of 1). " if worst["rank_agreement"] >= 0.8 else
              f"The calibration text matters: with {worst['calib_dataset']} x {worst['calib_samples']} the "

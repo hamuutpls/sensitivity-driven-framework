@@ -65,7 +65,10 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
     with tempfile.TemporaryDirectory(prefix="sdf-vllm-") as tmp:
         d = Path(tmp)
         if plan is not None and any(lp.bit_width < baseline_bits for lp in plan.layers):
-            size = gptq_export.export(model, tokenizer, plan, group_size, d / "model")
+            try:
+                size = gptq_export.export(model, tokenizer, plan, group_size, d / "model")
+            except ValueError as e:  # a bit width or shape the GPTQ format cannot hold
+                raise VLLMError(f"GPTQ export failed: {e}") from e
         else:
             model.save_pretrained(d / "model", safe_serialization=True)
             tokenizer.save_pretrained(d / "model")

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sdf.reporting.metrics import METRICS, ONE_OFF_COSTS, MetricSpec, is_better, label
+from sdf.reporting.metrics import METRICS, ONE_OFF_COSTS, MetricSpec, is_better, is_number, label
 from sdf.utils.cache import atomic_write_text
 
 if TYPE_CHECKING:
@@ -57,7 +57,7 @@ def _plain_verdicts(rep: "StageReporter") -> list[str]:
         for m in rep.main_metrics:
             spec = METRICS.get(m)
             a, b = fw.metrics.get(m), orig.metrics.get(m)
-            if spec is None or not all(isinstance(x, (int, float)) for x in (a, b)):
+            if spec is None or not (is_number(a) and is_number(b)):
                 continue
             better = is_better(m, a - b)
             if better is None:

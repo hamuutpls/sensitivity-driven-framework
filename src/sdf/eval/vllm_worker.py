@@ -58,7 +58,8 @@ def main(args: dict) -> dict:
     prefill = timed(args["prompt_len"], 1)
     full = timed(args["prompt_len"], args["decode_tokens"])
     out["vllm_prefill_ms"] = prefill * 1e3
-    out["vllm_decode_ms_per_token"] = (full - prefill) * 1e3 / (args["decode_tokens"] - 1)
+    out["vllm_decode_ms_per_token"] = ((full - prefill) * 1e3 / (args["decode_tokens"] - 1)
+                                       if args["decode_tokens"] > 1 else float("nan"))
     out["vllm_peak_memory_gb"] = torch.cuda.max_memory_allocated() / 1e9
     out["vllm_kv_cache_reserved_gb"] = kv_bytes / 1e9
     return out

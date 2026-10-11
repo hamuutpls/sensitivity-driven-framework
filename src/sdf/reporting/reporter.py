@@ -203,8 +203,11 @@ class StageReporter:
                 pct = d.get("vs_original_pct")
                 desc = f"{label(name)} ({abs_d:+.4g}{'' if pct is None else f', {pct:+.1f}%'})"
                 (one_off if name in ONE_OFF_COSTS else wins if better else losses).append(desc)
-            if not wins and not losses and not one_off:
+            if self.find_original(fw) is None:
                 lines.append(f"**{fw.method}**: no original-method row to compare against.")
+                continue
+            if not any("vs_original_abs" in d for d in fw.deltas.values()):
+                lines.append(f"**{fw.method}**: no measure could be compared with the original method.")
                 continue
             verdict = ("beats" if wins and not losses else "trades off against" if wins and losses
                        else "loses to" if losses else "ties with")
@@ -282,7 +285,7 @@ class StageReporter:
 def _delta(value: float, ref: Any, prefix: str) -> dict[str, float | None]:
     if not is_number(ref):
         return {}
-    return {f"{prefix}_abs": value - ref, f"{prefix}_pct": (value - ref) / ref * 100 if ref != 0 else None}
+    return {f"{prefix}_abs": value - ref, f"{prefix}_pct": (value - ref) / abs(ref) * 100 if ref != 0 else None}
 
 
 def _json_default(o: Any) -> Any:
