@@ -29,7 +29,8 @@ def perplexity(model: nn.Module, windows: torch.Tensor, device: torch.device) ->
     for w in windows:
         ids = w.unsqueeze(0).to(device)
         nlls.append(model(input_ids=ids, labels=ids).loss.float().item())
-    ppl = math.exp(statistics.fmean(nlls))
+    mean = statistics.fmean(nlls)
+    ppl = math.inf if mean > 709 else math.exp(mean)  # math.exp raises OverflowError above ~709
     if not math.isfinite(ppl):
         raise FloatingPointError(f"perplexity is not finite ({ppl}); the model output is broken")
     return ppl, nlls

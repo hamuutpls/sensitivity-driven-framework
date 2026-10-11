@@ -151,6 +151,13 @@ class Stage0Config:
     threshold_sweep: list[float] = field(default_factory=lambda: [round(0.1 * i, 1) for i in range(1, 10)])
     guard_sweep: list[int] = field(default_factory=lambda: [0, 3, 5, 8])
 
+    def __post_init__(self) -> None:
+        # the planners treat the first option as the cheapest and the last as the most precise
+        for name in ("act_bits_options", "joint_w_options", "joint_a_options", "kv_bits_options"):
+            opts = list(getattr(self, name))
+            if not opts or opts != sorted(set(opts)):
+                raise ValueError(f"stage0.{name} must be ascending with no repeats, got {opts}")
+
 
 @dataclass
 class StagesConfig:
@@ -225,8 +232,32 @@ def _build(cls, d: Mapping[str, Any]):
     kwargs = {}
     for name, value in d.items():
         ftype = _field_type(cls, name)
-        kwargs[name] = _build(ftype, value) if is_dataclass(ftype) and isinstance(value, Mapping) else value
+        kwargs[name] = (_build(ftype, value) if is_dataclass(ftype) and isinstance(value, Mapping)
+                        else _coerce(ftype, value))
     return cls(**kwargs)
+
+
+def _coerce(ftype, value):
+    """Cast a YAML-parsed scalar to its str/int/float field type (`--set run.run_id=20261005` parses as int)."""
+    import typing
+
+    if value is None or isinstance(value, bool):
+        return value
+    scalar = [t for t in typing.get_args(ftype) or (ftype,) if t in (str, int, float)]
+    if len(scalar) != 1 or isinstance(value, scalar[0]) or not isinstance(value, (str, int, float)):
+        return str(value) if scalar == [str] and not isinstance(value, (Mapping, list, tuple)) else value
+    t = scalar[0]
+    if t is str:
+        return str(value)
+    try:
+        number = float(value)
+    except ValueError:
+        raise ValueError(f"expected {t.__name__}, got {value!r}") from None
+    if t is float:
+        return number
+    if not number.is_integer():
+        raise ValueError(f"expected int, got {value!r}")
+    return int(number)
 
 
 def _field_type(cls, name: str):

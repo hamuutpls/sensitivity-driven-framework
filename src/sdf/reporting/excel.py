@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import TYPE_CHECKING, Any
 
 from openpyxl import Workbook
@@ -12,7 +13,7 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from sdf.reporting.markdown import requirement_cell
-from sdf.reporting.metrics import METRICS, label as metric_label
+from sdf.reporting.metrics import METRICS, is_number, label as metric_label
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -52,6 +53,8 @@ def save_workbook(wb: Workbook, path: "Path") -> None:
 def _cell(v: Any) -> Any:
     if isinstance(v, (dict, list, tuple)):
         return json.dumps(v, default=str)
+    if isinstance(v, float) and not math.isfinite(v):
+        return str(v)  # openpyxl writes NaN/inf as an empty cell, which reads as "not measured"
     return v
 
 
@@ -141,7 +144,7 @@ def _charts(ws, rep: "StageReporter") -> None:
     ok = [r for r in rep.rows if r.status == "ok"]
     row0 = 1
     for m in rep.main_metrics:
-        points = [(r.key, r.metrics[m]) for r in ok if isinstance(r.metrics.get(m), (int, float))]
+        points = [(r.key, r.metrics[m]) for r in ok if is_number(r.metrics.get(m))]
         if not points:
             continue
         ws.cell(row=row0, column=1, value="Row").font = BOLD

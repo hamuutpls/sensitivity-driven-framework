@@ -25,7 +25,7 @@ from torch import nn
 
 from sdf.stage0.kv_cache import _monotone, allocate_bits
 from sdf.stage0.planner import CompressionPlan
-from sdf.stage0.sensitivity import _mean_loss, find_decoder_layers, profiling, round_to_nearest
+from sdf.stage0.sensitivity import _mean_loss, _ppl, find_decoder_layers, profiling, round_to_nearest
 from sdf.utils.cache import JsonFile
 
 
@@ -89,13 +89,13 @@ def profile_activations(model: nn.Module, batches: Iterable[torch.Tensor], bits_
     if not batches:
         raise ValueError("no calibration batches given")
     with profiling(model, device) as cost_so_far:
-        base = math.exp(_mean_loss(model, batches, device))
+        base = _ppl(_mean_loss(model, batches, device))
         rise = []
         for layer in find_decoder_layers(model):
             row = []
             for bits in bits_options:
                 with quantize_inputs(layer, bits, group_size):
-                    row.append(math.exp(_mean_loss(model, batches, device)) - base)
+                    row.append(_ppl(_mean_loss(model, batches, device)) - base)
             rise.append(row)
     cost = cost_so_far(len(batches), sum(b.numel() for b in batches))
     return ActivationProfile(list(bits_options), rise, cost, {**(meta or {}), "baseline_ppl": base})

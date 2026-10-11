@@ -30,6 +30,8 @@ def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, 
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
     device, handle, text_loader = setup(ctx, model, tokenizer, text_loader)
     thresholds, guards = sorted(set(s0.threshold_sweep)), sorted(set(s0.guard_sweep))
+    if len({round(t * 100) for t in thresholds}) < len(thresholds):  # rows are named t<percent>
+        raise ValueError(f"stage0.threshold_sweep values must differ by at least 0.01, got {s0.threshold_sweep}")
     gs, pr = candidate["gptq_groupsize"], candidate["prune_ratio_aggressive"]
 
     profile, _ = load_profile(ctx, candidate, handle, text_loader)

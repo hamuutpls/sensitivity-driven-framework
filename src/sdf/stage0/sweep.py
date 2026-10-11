@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import math
 from typing import Any, Callable
 
 from openpyxl import Workbook
@@ -78,7 +79,7 @@ def _spearman(a: list[float], b: list[float]) -> float:
     ma, mb = sum(ra) / len(ra), sum(rb) / len(rb)
     cov = sum((x - ma) * (y - mb) for x, y in zip(ra, rb))
     den = (sum((x - ma) ** 2 for x in ra) * sum((y - mb) ** 2 for y in rb)) ** 0.5
-    return cov / den if den else 1.0
+    return cov / den if den else math.nan  # a flat profile ranks nothing
 
 
 def protected_at(scores: list[float], threshold: float) -> set[int]:
@@ -188,7 +189,7 @@ def _report(res: dict[str, Any], s0) -> str:
     by_t = _pick(base, prune_ratio_aggressive=d["prune_ratio_aggressive"])
     wins = [r for r in _pick(rows, **ref) if r["fw_beats_uniform"]]
     calib = res["calibration"]
-    worst = min(calib, key=lambda c: c["rank_agreement"])
+    worst = min(calib, key=lambda c: -math.inf if math.isnan(c["rank_agreement"]) else c["rank_agreement"])
     L += ["## Summary", "",
           f"We tried {len(rows)} combinations of settings and compared each resulting compression plan with the "
           f"standard method (every layer at {s0.uniform_bits} bits, {uni['uniform_gb']:.3f} GB, fragile-parts "

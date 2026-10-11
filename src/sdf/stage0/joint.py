@@ -34,7 +34,7 @@ from torch import nn
 
 from sdf.stage0.activation import ActivationLayerPlan, ActivationPlan, quantize_inputs
 from sdf.stage0.planner import CompressionPlan
-from sdf.stage0.sensitivity import _mean_loss, find_decoder_layers, profiling, quantize_layer
+from sdf.stage0.sensitivity import _mean_loss, _ppl, find_decoder_layers, profiling, quantize_layer
 from sdf.utils.cache import JsonFile
 
 
@@ -91,7 +91,7 @@ def profile_joint(model: nn.Module, batches: Iterable[torch.Tensor], w_options: 
     layers = find_decoder_layers(model)
     numel = [sum(m.weight.numel() for m in l.modules() if isinstance(m, nn.Linear)) for l in layers]
     with profiling(model, device) as cost_so_far:
-        base = math.exp(_mean_loss(model, batches, device))
+        base = _ppl(_mean_loss(model, batches, device))
         rise = []
         for layer in layers:
             grid = []
@@ -102,13 +102,13 @@ def profile_joint(model: nn.Module, batches: Iterable[torch.Tensor], w_options: 
                         row.append(0.0)
                         continue
                     with _rounded(layer, w, a, group_size, act_group_size, int_zero, baseline_bits):
-                        row.append(math.exp(_mean_loss(model, batches, device)) - base)
+                        row.append(_ppl(_mean_loss(model, batches, device)) - base)
                 grid.append(row)
             rise.append(grid)
     cost = cost_so_far(len(batches) * len(layers) * (len(w_options) * len(a_options) - 1),
                        sum(b.numel() for b in batches))
     return JointProfile(list(w_options), list(a_options), rise, numel, cost,
-                        {**(meta or {}), "baseline_ppl": base})
+                        {**(meta or {}), "baseline_ppl": base, "baseline_bits": baseline_bits})
 
 
 @torch.no_grad()
@@ -132,7 +132,7 @@ def refine_joint(model: nn.Module, batches: Iterable[torch.Tensor], profile: Joi
     def ppl() -> float:
         nonlocal evals
         evals += 1
-        return math.exp(_mean_loss(model, batches, device))
+        return _ppl(_mean_loss(model, batches, device))
 
     def all_rounded(p: list[tuple[int, int]]) -> float:
         with ExitStack() as stack:
@@ -192,8 +192,8 @@ def plan_joint(profile: JointProfile, avg_weight_bits: float, avg_act_bits: floa
     rises add up: dynamic programming over (weight-bit units used, activation-bit units used)."""
     wo, ao = profile.w_options, profile.a_options
     step = math.gcd(*wo, *ao)
-    small = min(profile.layer_numel)
-    size = [max(1, round(n / small)) for n in profile.layer_numel]  # relative weight count, in units
+    unit = math.gcd(*profile.layer_numel)
+    size = [n // unit for n in profile.layer_numel]  # exact relative weight count (all 1 when layers are equal)
     w_cap = math.floor(avg_weight_bits / step * sum(size) + 1e-9)
     a_cap = math.floor(avg_act_bits / step * profile.num_layers + 1e-9)
     if min(wo) / step * sum(size) > w_cap or min(ao) / step * profile.num_layers > a_cap:

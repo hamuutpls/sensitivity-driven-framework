@@ -29,7 +29,7 @@ from sdf.run import RunContext
 from sdf.stage0.activation import ActivationPlan, uniform_activation_plan
 from sdf.stage0.kv_cache import KVPlan, KVProfile, predict_kv, uniform_kv_plan
 from sdf.stage0.planner import CompressionPlan, baseline_cost, combine_plans, uniform_plan
-from sdf.stage0.run import (_cost_metrics, _kv_metrics, calib_batches, fp16_key, load_fp16,
+from sdf.stage0.run import (_cost_metrics, _kv_metrics, calib_batches, fp16_key, load_fp16, source_key,
                             setup, stage_reporter, weight_cost)
 from sdf.stage0.sensitivity import SensitivityProfile, find_decoder_layers, normalize
 from sdf.stages.methods import AFTER, JointPlan, Method, MethodCall, methods_for
@@ -384,11 +384,14 @@ def run_stage(
                    "llamacpp": lc_key if lc_on(m) else None}
             if be_on(m):  # absent when off, so cached rows from before stay valid
                 key.update({name: be_key for name, (_, _, be_key) in serving.items()})
+                if "gptq_groupsize" not in m.params:  # the serving export still uses it (e.g. bitsandbytes)
+                    key["export_group_size"] = candidate["gptq_groupsize"]
             if settings := _setting_key(kind_of(m), s0):
                 key["settings"] = settings
             if m.calibrated:
                 key["calibration"] = {"dataset": candidate["calib_dataset"], "samples": candidate["calib_samples"],
-                                      "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size}
+                                      "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size,
+                                      **source_key(cfg, candidate["calib_dataset"])}
             result, cached = ctx.cache.get_or_compute(f"stage{stage}_original", key,
                                                       lambda: build_and_measure(m, orig))
             row.metrics.update(plan_metrics(orig, plans, cfg, candidate, m.storage))

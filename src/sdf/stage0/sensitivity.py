@@ -326,6 +326,8 @@ def round_to_nearest(x: torch.Tensor, bits: int, group_size: int, int_zero: bool
 def minmax_grid(w: torch.Tensor, bits: int, int_zero: bool) -> tuple[torch.Tensor, torch.Tensor]:
     """(scale, zero) of the `bits` grid spanning min..max of `w` along its last dimension (kept as size 1)."""
     lo, hi = w.amin(dim=-1, keepdim=True), w.amax(dim=-1, keepdim=True)
+    if int_zero:  # the grid must contain 0; widen it to 0 so all-positive (or all-negative) groups are not clipped
+        lo, hi = lo.clamp(max=0), hi.clamp(min=0)
     top = 2 ** bits - 1
     scale = ((hi - lo) / top).clamp(min=1e-12)
     zero = -lo / scale
@@ -373,6 +375,11 @@ def _mean_loss(model: nn.Module, batches: list[torch.Tensor], device: torch.devi
     return sum(losses) / len(losses)
 
 
+def _ppl(loss: float) -> float:
+    """Perplexity from mean loss; inf instead of OverflowError when a removed layer blows the loss up."""
+    return math.inf if loss > 709 else math.exp(loss)
+
+
 @contextmanager
 def profiling(model: nn.Module, device: torch.device) -> Iterator[Callable[[int, int], dict[str, Any]]]:
     """Eval mode, a fresh peak-memory count and a timer; yields `cost(batches, tokens)` -> the profile's cost."""
@@ -414,12 +421,12 @@ def profile_by_ablation(
         raise ValueError("no calibration batches given")
     layers = find_decoder_layers(model)
     with profiling(model, device) as cost_so_far:
-        base = math.exp(_mean_loss(model, batches, device))
+        base = _ppl(_mean_loss(model, batches, device))
         layer_ppl = []
         for layer in layers:
             change = skip_layer(layer) if method == "layer_removal" else quantize_layer(layer, bits, group_size, int_zero)
             with change:
-                layer_ppl.append(math.exp(_mean_loss(model, batches, device)))
+                layer_ppl.append(_ppl(_mean_loss(model, batches, device)))
     if not all(math.isfinite(p) for p in layer_ppl):
         # removing a layer can blow perplexity up; cap it so the ranking still works
         layer_ppl = [p if math.isfinite(p) else float(torch.finfo(torch.float64).max) for p in layer_ppl]
