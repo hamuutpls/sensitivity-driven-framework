@@ -24,6 +24,7 @@ from torch import nn
 
 from sdf.data import eval_windows
 from sdf.eval import downstream, llamacpp, trtllm_backend, vllm_backend
+from sdf.eval.ct_export import has_online_rotation
 from sdf.eval.metrics import measure_model
 from sdf.run import RunContext
 from sdf.stage0.activation import ActivationPlan, uniform_activation_plan
@@ -261,10 +262,10 @@ def run_stage(
             return AutoModelForCausalLM.from_pretrained(cfg.model.name, torch_dtype=dtype).to(device)
     handle.factory = model_factory  # an FP16 cache miss builds the model like every row
 
-    use_llamacpp = stage == 1 and cfg.eval.llamacpp_dir is not None  # weight rows only (see lc_on)
+    use_llamacpp = stage == 1 and cfg.eval.llamacpp_dir is not None  # weight and WxAy rows (see lc_on)
     lc_key = [cfg.eval.llamacpp_dir, cfg.eval.llamacpp_convert, llamacpp.VERSION] if use_llamacpp else None
-    # Serving backends run in a Python of their own (Linux only) on the model saved at the plan's bits; weight rows
-    # of Stage 1 only (see be_on). name -> (module, its error for a plan it cannot load, cache key part)
+    # Serving backends run in a Python of their own (Linux only) on the model saved at the plan's bits; weight and
+    # WxAy rows of Stage 1 (see be_on). name -> (module, its error for a plan it cannot load, cache key part)
     serving = {name: (mod, err, [py, mod.VERSION]) for name, mod, err, py in (
         ("vllm", vllm_backend, vllm_backend.VLLMError, cfg.eval.vllm_python),
         ("trtllm", trtllm_backend, trtllm_backend.TRTLLMError, cfg.eval.trtllm_python)) if stage == 1 and py}
@@ -301,11 +302,14 @@ def run_stage(
         return downstream.downstream_accuracy(model, handle.tokenizer, ev.downstream_tasks, ev.downstream_limit,
                                               ev.downstream_batch_size, cfg.run.seed)
 
+    # A WxAy row's Stage 1 model goes to every backend: vLLM runs its activation bits too (ACTIVATIONS); llama.cpp
+    # and TensorRT-LLM have no kernels for them on this hardware, so they run its weights at the plan's bits with
+    # 16-bit activations, and the row says so (Mohammad's choice, 2026-10-11).
     def lc_on(method: Method) -> bool:
-        return use_llamacpp and kind_of(method) == "weights"
+        return use_llamacpp and kind_of(method) in ("weights", "joint")
 
     def be_on(method: Method) -> bool:
-        return bool(serving) and kind_of(method) == "weights"
+        return bool(serving) and kind_of(method) in ("weights", "joint")
 
     def build_and_measure(method: Method, plan: Any) -> dict[str, Any]:
         model = model_factory()
@@ -319,16 +323,39 @@ def run_stage(
                 metrics.update(tasks(model))
                 if kind_of(method) in ("weights", "joint"):
                     metrics["zero_weight_share"] = zero_weight_share(model)
+                joint = isinstance(plan, JointPlan)
+                weights, acts = (plan.weights, plan.acts) if joint else (plan, None)
+                rotated = has_online_rotation(model)  # QuaRot/SpinQuant: no saved file can hold the rotation
                 if lc_on(method):
-                    metrics.update(llamacpp.measure(model, handle.tokenizer, plan, val, held, cfg.eval,
-                                                    s0.baseline_bits))
+                    if rotated:
+                        info["llamacpp_error"] = _ROTATED
+                    elif not joint:
+                        metrics.update(llamacpp.measure(model, handle.tokenizer, weights, val, held, cfg.eval,
+                                                        s0.baseline_bits))
+                    else:  # a WxAy row keeps its HF numbers if llama.cpp fails
+                        try:
+                            metrics.update(llamacpp.measure(model, handle.tokenizer, weights, val, held, cfg.eval,
+                                                            s0.baseline_bits))
+                            info["llamacpp_activations"] = _WEIGHTS_ONLY
+                        except RuntimeError as e:
+                            log.warning("llama.cpp could not measure %s: %s", method.name, e)
+                            info["llamacpp_error"] = str(e)
                 for name, (mod, err, _) in serving.items() if be_on(method) else ():
+                    if rotated:
+                        info[f"{name}_error"] = _ROTATED
+                        continue
+                    extra_args = ({"acts": acts, "act_group_size": cfg.stage0.act_group_size}
+                                  if joint and getattr(mod, "ACTIVATIONS", False) else {})
                     try:
-                        metrics.update(mod.measure(model, handle.tokenizer, plan, val, held, cfg.eval,
-                                                   s0.baseline_bits, candidate["gptq_groupsize"]))
+                        metrics.update(mod.measure(model, handle.tokenizer, weights, val, held, cfg.eval,
+                                                   s0.baseline_bits, candidate["gptq_groupsize"], **extra_args))
                     except err as e:  # a plan the backend cannot load (e.g. 3-bit GPTQ in vLLM): keep the row,
                         log.warning("%s could not measure %s: %s", name, method.name, e)  # record why
                         info[f"{name}_error"] = str(e)
+                        continue
+                    if joint:
+                        info[f"{name}_activations"] = (_rounded_by_backend(name, method, cfg.stage0.act_group_size)
+                                                       if extra_args else _WEIGHTS_ONLY)
         finally:
             del model
             _free_memory()
@@ -431,6 +458,20 @@ def run_stage(
             "but kept in the uncompressed format. Their accuracy is real; their memory is the plan's prediction, "
             "and their speed is not the speed a real compressed model would have.")
     return rep.finalize()
+
+
+_ROTATED = ("not measured: the model rotates inputs while it runs (QuaRot/SpinQuant), and a saved model file "
+            "cannot hold that rotation")
+_WEIGHTS_ONLY = ("16-bit: no kernel for the plan's activation bits here, so the weights run at the plan's bits and "
+                 "the activations are not rounded")
+
+
+def _rounded_by_backend(name: str, m: Method, group: int) -> str:
+    out = (f"the plan's bits, rounded the backend's way ({name}: on the fly, symmetric, one scale per token and "
+           f"group of {group} inputs)")
+    if "rptq" in m.name:
+        out += "; RPTQ's own static scales are not in the saved model, so this is plain rounding"
+    return out
 
 
 def _require(m: Method) -> None:

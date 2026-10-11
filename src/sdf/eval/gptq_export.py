@@ -49,9 +49,9 @@ def pack(q: np.ndarray, bits: int) -> np.ndarray:
     return (words & np.uint64(0xFFFFFFFF)).astype(np.uint32).view(np.int32)
 
 
-def quantize_linear(weight: torch.Tensor, bits: int, group_size: int) -> dict[str, torch.Tensor]:
-    """GPTQ-format tensors of one Linear weight (out, in): qweight (in*bits/32, out), qzeros (groups, out*bits/32),
-    scales (groups, out) FP16, g_idx (in)."""
+def symmetric_grid(weight: torch.Tensor, bits: int, group_size: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """(q, scale) of one Linear weight (out, in) on symmetric grids per group of `group_size` inputs: q (out, in)
+    whole numbers 0..2^bits-1 with zero point 2^(bits-1), scale (out, groups); weight ~ (q - 2^(bits-1)) * scale."""
     out_f, in_f = weight.shape
     if group_size <= 0:  # PER_CHANNEL (-1): one group spanning the whole row, as GPTQ's -1 means
         group_size = in_f
@@ -63,14 +63,20 @@ def quantize_linear(weight: torch.Tensor, bits: int, group_size: int) -> dict[st
     # dequantized weights by more than half a step), nudged up by one FP16 step so max|w| still fits on the grid
     scale = (2 * w.abs().amax(-1, keepdim=True) / top).clamp(min=1e-6)
     scale = (scale * (1 + 2 ** -10)).half().float()
-    zero = torch.full_like(scale, 2 ** (bits - 1))
-    q = (w / scale + zero).round().clamp(0, top)
-    qw = q.reshape(out_f, in_f).T.cpu().numpy()  # (in, out)
-    qz = zero[..., 0].T.cpu().numpy()  # (groups, out)
-    return {"qweight": torch.from_numpy(pack(qw, bits)),
-            "qzeros": torch.from_numpy(pack((qz - 1).T, bits).T.copy()),  # zero - 1, packed along out
-            "scales": scale[..., 0].T.half().cpu().contiguous(),
-            "g_idx": (torch.arange(in_f) // group_size).int()}
+    q = (w / scale + 2 ** (bits - 1)).round().clamp(0, top)
+    return q.reshape(out_f, in_f), scale[..., 0]
+
+
+def quantize_linear(weight: torch.Tensor, bits: int, group_size: int) -> dict[str, torch.Tensor]:
+    """GPTQ-format tensors of one Linear weight (out, in): qweight (in*bits/32, out), qzeros (groups, out*bits/32),
+    scales (groups, out) FP16, g_idx (in)."""
+    q, scale = symmetric_grid(weight, bits, group_size)
+    in_f = weight.shape[1]
+    zero = torch.full_like(scale, 2 ** (bits - 1))  # (out, groups)
+    return {"qweight": torch.from_numpy(pack(q.T.cpu().numpy(), bits)),
+            "qzeros": torch.from_numpy(pack((zero - 1).cpu().numpy(), bits).T.copy()),  # zero - 1, packed along out
+            "scales": scale.T.half().cpu().contiguous(),
+            "g_idx": (torch.arange(in_f) // (in_f // scale.shape[1])).int()}
 
 
 def export(model: nn.Module, tokenizer: Any, plan: CompressionPlan, group_size: int, out_dir: Path) -> float:

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 import time
 
@@ -19,9 +20,24 @@ def main(args: dict) -> dict:
     # A fixed KV-cache size instead of a share of the card: vLLM reserves the whole KV cache up front, so with
     # gpu_memory_utilization the peak memory measured the card (33 GB on an A100 at 0.4), not the model.
     kv_bytes = args.get("kv_cache_memory_bytes", 1 << 30)
+    # WxAy rows: Humming kernels, and no torch.compile / CUDA graphs (enforce_eager): compiling a model with
+    # 4-bit activation rounding fails inside Humming (RecursionError in humming/device.py, vLLM 0.31). So these
+    # rows' speed is not comparable with the compiled weight-only rows; their perplexity is.
+    extra = {"linear_backend": args["linear_backend"], "enforce_eager": True} if args.get("linear_backend") else {}
     llm = LLM(model=args["model_dir"], dtype="float16", max_model_len=args["seq_len"] + 8, seed=0,
-              kv_cache_memory_bytes=kv_bytes)
+              kv_cache_memory_bytes=kv_bytes, **extra)
     out: dict = {}
+    if extra:  # a layer whose activations should be rounded must run on a kernel that does it, or the row is wrong
+        def rounding(m):
+            return sorted((n, type(getattr(mod.scheme, "kernel", None)).__name__) for n, mod in m.named_modules()
+                          if hasattr(mod, "_humming_input_quant_config"))
+        found = sum(llm.apply_model(rounding), [])
+        wrong = [f"{n}: {k}" for n, k in found if "Humming" not in k]
+        if wrong:
+            raise RuntimeError(f"activation rounding not on a Humming kernel: {', '.join(wrong[:5])}")
+        layers = sorted({int(re.search(r"layers\.(\d+)\.", n).group(1)) for n, _ in found})
+        if layers != sorted(args["act_layers"]):  # vLLM read the config as weight-only somewhere
+            raise RuntimeError(f"vLLM rounds the activations of layers {layers}, the plan of {args['act_layers']}")
     try:
         out["vllm_weight_memory_gb"] = sum(llm.apply_model(
             lambda m: sum(t.numel() * t.element_size() for t in list(m.parameters()) + list(m.buffers())))) / 1e9
