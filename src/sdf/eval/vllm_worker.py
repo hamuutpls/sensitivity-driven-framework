@@ -20,7 +20,10 @@ def main(args: dict) -> dict:
     # A fixed KV-cache size instead of a share of the card: vLLM reserves the whole KV cache up front, so with
     # gpu_memory_utilization the peak memory measured the card (33 GB on an A100 at 0.4), not the model.
     kv_bytes = args.get("kv_cache_memory_bytes", 1 << 30)
-    extra = {"linear_backend": args["linear_backend"]} if args.get("linear_backend") else {}
+    # WxAy rows: Humming kernels, and no torch.compile / CUDA graphs (enforce_eager): compiling a model with
+    # 4-bit activation rounding fails inside Humming (RecursionError in humming/device.py, vLLM 0.31). So these
+    # rows' speed is not comparable with the compiled weight-only rows; their perplexity is.
+    extra = {"linear_backend": args["linear_backend"], "enforce_eager": True} if args.get("linear_backend") else {}
     llm = LLM(model=args["model_dir"], dtype="float16", max_model_len=args["seq_len"] + 8, seed=0,
               kv_cache_memory_bytes=kv_bytes, **extra)
     out: dict = {}

@@ -2,7 +2,9 @@
 
 A weight plan's model is saved as a GPTQ-format checkpoint at the plan's per-layer bits (`gptq_export`); a WxAy
 plan's (weights and activations per layer) as a compressed-tensors checkpoint that also tells vLLM each layer's
-activation bits (`ct_export`), run on vLLM's Humming kernels, which round the activations for real. Both are
+activation bits (`ct_export`), run on vLLM's Humming kernels, which round the activations for real, without
+compiling the model (vLLM 0.31 fails to compile 4-bit activation rounding), so WxAy speeds are comparable only
+with each other. Both are
 measured by
 `vllm_worker` in the Python that has vLLM (`eval.vllm_python`; vLLM runs on Linux only, so run the whole pipeline
 inside WSL2 or Colab). vLLM re-rounds nothing further, but the export re-rounds the weights onto grids of their own,
