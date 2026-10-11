@@ -19,9 +19,17 @@ def main(args: dict) -> dict:
     # A fixed KV-cache size instead of a share of the card: vLLM reserves the whole KV cache up front, so with
     # gpu_memory_utilization the peak memory measured the card (33 GB on an A100 at 0.4), not the model.
     kv_bytes = args.get("kv_cache_memory_bytes", 1 << 30)
+    extra = {"linear_backend": args["linear_backend"]} if args.get("linear_backend") else {}
     llm = LLM(model=args["model_dir"], dtype="float16", max_model_len=args["seq_len"] + 8, seed=0,
-              kv_cache_memory_bytes=kv_bytes)
+              kv_cache_memory_bytes=kv_bytes, **extra)
     out: dict = {}
+    if extra:  # a layer whose activations should be rounded must run on a kernel that does it, or the row is wrong
+        wrong = sum(llm.apply_model(lambda m: sorted(
+            f"{n}: {type(getattr(mod.scheme, 'kernel', None)).__name__}" for n, mod in m.named_modules()
+            if hasattr(mod, "_humming_input_quant_config")
+            and "Humming" not in type(getattr(mod.scheme, "kernel", None)).__name__)), [])
+        if wrong:
+            raise RuntimeError(f"activation rounding not on a Humming kernel: {', '.join(wrong[:5])}")
     try:
         out["vllm_weight_memory_gb"] = sum(llm.apply_model(
             lambda m: sum(t.numel() * t.element_size() for t in list(m.parameters()) + list(m.buffers())))) / 1e9
