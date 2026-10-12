@@ -43,7 +43,8 @@ def test_memory_share_leaves_room_for_what_is_already_on_the_card():
     # the 40 GB A100 check that failed at 0.92: 36.27 of 39.49 GiB free
     share = memory_share(36.27, 39.49)
     assert share * 39.49 < 36.27 and abs(share - (36.27 / 39.49 - 0.02)) < 1e-12
-    assert memory_share(0.1, 40.0) == 0.0  # never negative
+    with pytest.raises(RuntimeError, match="only 0.10 of 40.00 GB"):  # a full card: a clear reason, not a bad share
+        memory_share(0.1e9, 40e9)
 
 
 class _Stop(Exception):
@@ -72,7 +73,6 @@ def _worker_share(monkeypatch, args):
 
 def test_worker_takes_the_free_share_unless_one_is_set(monkeypatch):
     assert abs(_worker_share(monkeypatch, {}) - (36.27 / 39.49 - 0.02)) < 1e-12
-    assert _worker_share(monkeypatch, {"gpu_memory_utilization": None}) < 0.92
     assert _worker_share(monkeypatch, {"gpu_memory_utilization": 0.5}) == 0.5
 
 

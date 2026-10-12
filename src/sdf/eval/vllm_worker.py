@@ -18,7 +18,10 @@ def memory_share(free: float, total: float, cap: float = 0.92, margin: float = 0
     0.92. vLLM refuses to start when less than that share is free, and the framework process, other backends or
     Stage 0 may still hold some of the card (on a 40 GB A100 0.92 left 3 GB for everything else). The KV cache has
     a fixed size (kv_cache_memory_bytes), so the share changes no measured number."""
-    return max(0.0, min(cap, free / total - margin))
+    share = min(cap, free / total - margin)
+    if share <= 0:
+        raise RuntimeError(f"only {free / 1e9:.2f} of {total / 1e9:.2f} GB of GPU memory free; vLLM cannot start")
+    return share
 
 
 def main(args: dict) -> dict:
@@ -32,7 +35,8 @@ def main(args: dict) -> dict:
     # 4-bit activation rounding fails inside Humming (RecursionError in humming/device.py, vLLM 0.31). So these
     # rows' speed is not comparable with the compiled weight-only rows; their perplexity is.
     extra = {"linear_backend": args["linear_backend"], "enforce_eager": True} if args.get("linear_backend") else {}
-    share = args.get("gpu_memory_utilization") or memory_share(*torch.cuda.mem_get_info())
+    share = args.get("gpu_memory_utilization")
+    share = memory_share(*torch.cuda.mem_get_info()) if share is None else share
     llm = LLM(model=args["model_dir"], dtype="float16", max_model_len=args["seq_len"] + 8, seed=0,
               kv_cache_memory_bytes=kv_bytes, gpu_memory_utilization=share, **extra)
     out: dict = {}

@@ -33,7 +33,8 @@ from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-# Bump when a change alters the measured numbers, so cached vLLM results are not reused.
+# Bump when a change alters the measured numbers, or turns cached error rows into measurable ones, so cached vLLM
+# results are not reused.
 VERSION = 3  # 3: start-up memory share follows the free memory (rows failed vLLM's 0.92 check in 2)
 
 _NOTE = " Measured in vLLM, a program for running models on servers, after saving the model at the plan's bits."
