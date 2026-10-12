@@ -3,8 +3,12 @@
 The same GPTQ-format checkpoint as the vLLM backend (`gptq_export`, symmetric, per-layer bits) is built into a
 TensorRT engine by `trtllm_worker` in the Python that has TensorRT-LLM (`eval.trtllm_python`; Linux only).
 TensorRT-LLM 1.2 does not read the HF `quantization_config` of a GPTQ checkpoint ("Unsupported
-quantization_config"), only its own `hf_quant_config.json`, so that file is written next to the checkpoint:
-W4A16_GPTQ / W8A16_GPTQ for a plan with one bit width, MIXED_PRECISION with one entry per Linear otherwise.
+quantization_config"), only its own `hf_quant_config.json`, so for a plan with one bit width that file is written
+next to the checkpoint (W4A16_GPTQ / W8A16_GPTQ). Its LLM API cannot load MIXED_PRECISION from that file (it keeps a
+plain QuantConfig, and building fails with "'QuantMode' object is not callable"), so a plan with several bit widths
+writes `MIXED_FILE` instead: one W*A16_GPTQ entry per decoder layer, under TensorRT-LLM's own module names
+(`transformer.layers.<i>.attention.*` / `.mlp.*`). The worker turns it into a TensorRT-LLM checkpoint with a
+per-layer quantization config (`quant_cfg.json`), the format TensorRT-LLM's mixed-precision build reads.
 A plan TensorRT-LLM cannot build raises TRTLLMError with its own reason; the runner keeps the row. The uncompressed
 row (plan None) is built from plain FP16.
 """
@@ -62,6 +66,7 @@ METRICS.update({
 MAIN_METRICS = ["trtllm_engine_gb", "trtllm_decode_ms_per_token", "trtllm_ppl_val"]
 
 _ALGO = {4: "W4A16_GPTQ", 8: "W8A16_GPTQ"}
+MIXED_FILE = "trtllm_mixed_precision.json"  # read by trtllm_worker; not hf_quant_config.json (see the docstring)
 
 
 class TRTLLMError(RuntimeError):
@@ -69,18 +74,18 @@ class TRTLLMError(RuntimeError):
 
 
 def quant_file(model: nn.Module, plan: CompressionPlan, group_size: int) -> dict[str, Any]:
-    """TensorRT-LLM's hf_quant_config.json for `plan`: one algorithm, or MIXED_PRECISION per Linear."""
+    """TensorRT-LLM's quantization config for `plan`: one algorithm, or MIXED_PRECISION with one entry per decoder
+    layer below 16 bits, keyed by TensorRT-LLM's module names (16-bit layers and the output head stay FP16)."""
     bits = {lp.layer: lp.bit_width for lp in plan.layers}
     if len(set(bits.values())) == 1:
         b = next(iter(bits.values()))
         return {"quantization": {"quant_algo": _ALGO.get(b, f"W{b}A16_GPTQ"), "group_size": group_size,
                                  "has_zero_point": True}}
-    layers = find_decoder_layers(model)
-    index = {id(m): i for i, layer in enumerate(layers) for m in layer.modules()}
-    per = {name: {"quant_algo": _ALGO.get(bits[index[id(m)]], f"W{bits[index[id(m)]]}A16_GPTQ"),
-                  "group_size": group_size, "has_zero_point": True}
-           for name, m in model.named_modules()
-           if isinstance(m, nn.Linear) and id(m) in index and bits[index[id(m)]] < 16}  # 16-bit layers stay FP16
+    if len(bits) != len(find_decoder_layers(model)):
+        raise ValueError(f"the plan has {len(bits)} layers, the model {len(find_decoder_layers(model))}")
+    per = {f"transformer.layers.{i}.{part}.*": {"quant_algo": _ALGO.get(b, f"W{b}A16_GPTQ"), "group_size": group_size,
+                                                "has_zero_point": True}
+           for i, b in sorted(bits.items()) if b < 16 for part in ("attention", "mlp")}
     return {"quantization": {"quant_algo": "MIXED_PRECISION", "quantized_layers": per}}
 
 
@@ -94,7 +99,9 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
                 gptq_export.export(model, tokenizer, plan, group_size, d / "model")
             except ValueError as e:  # a bit width or shape the GPTQ format cannot hold
                 raise TRTLLMError(f"GPTQ export failed: {e}") from e
-            (d / "model" / "hf_quant_config.json").write_text(json.dumps(quant_file(model, plan, group_size)))
+            q = quant_file(model, plan, group_size)
+            mixed = q["quantization"]["quant_algo"] == "MIXED_PRECISION"
+            (d / "model" / (MIXED_FILE if mixed else "hf_quant_config.json")).write_text(json.dumps(q))
         else:
             model.save_pretrained(d / "model", safe_serialization=True)
             tokenizer.save_pretrained(d / "model")
