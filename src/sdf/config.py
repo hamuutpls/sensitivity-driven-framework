@@ -71,6 +71,9 @@ class EvalConfig:
     llamacpp_convert: str | None = None
     # vLLM backend (Stage 1 rows; sdf/eval/vllm_backend.py): the Python that has vLLM installed (Linux only). None = not measured.
     vllm_python: str | None = None
+    # Share of the GPU vLLM may claim at start-up (vLLM refuses to start when less is free). None = what is free
+    # when it starts, minus 2%, at most 0.92 (vllm_worker.memory_share). Changes no measured number.
+    vllm_gpu_memory_utilization: float | None = None
     # TensorRT-LLM backend (Stage 1 rows; sdf/eval/trtllm_backend.py): the Python that has TensorRT-LLM (Linux only).
     trtllm_python: str | None = None
     # Downstream multiple-choice tasks (lm-evaluation-harness task names); empty = not measured.

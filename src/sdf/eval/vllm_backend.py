@@ -34,7 +34,7 @@ from sdf.utils.logging import get_logger
 log = get_logger(__name__)
 
 # Bump when a change alters the measured numbers, so cached vLLM results are not reused.
-VERSION = 2
+VERSION = 3  # 3: start-up memory share follows the free memory (rows failed vLLM's 0.92 check in 2)
 
 _NOTE = " Measured in vLLM, a program for running models on servers, after saving the model at the plan's bits."
 METRICS.update({
@@ -94,6 +94,7 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
         args = {"model_dir": str(d / "model"), "seq_len": cfg.seq_len, "val": val.tolist(), "heldout": held.tolist(),
                 "warmup": cfg.latency_warmup, "repeats": cfg.latency_repeats, "prompt_len": cfg.latency_prompt_len,
                 "decode_tokens": cfg.latency_decode_tokens, "linear_backend": backend,
+                "gpu_memory_utilization": cfg.vllm_gpu_memory_utilization,
                 "act_layers": [] if acts is None else [lp.layer for lp, w in zip(acts.layers, plan.layers)
                                                        if lp.act_bits < baseline_bits and w.bit_width < baseline_bits]}
         (d / "args.json").write_text(json.dumps(args))
