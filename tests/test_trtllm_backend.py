@@ -1,4 +1,5 @@
 import json
+import math
 from dataclasses import replace
 from pathlib import Path
 
@@ -178,3 +179,49 @@ def test_worker_turns_the_mixed_file_into_a_tensorrt_llm_checkpoint(tmp_path, mo
         "quant_algo": "MIXED_PRECISION", "kv_cache_quant_algo": None,
         "quantized_layers": q["quantization"]["quantized_layers"]}
     assert (out / "rank0.safetensors").exists()
+
+
+def test_worker_gives_tensorrt_llm_the_hf_tokenizer_for_a_mixed_checkpoint(tmp_path, monkeypatch):
+    """A converted mixed-bit checkpoint has no tokenizer, and TensorRT-LLM will not generate without one, so main
+    builds the engine from the converted folder but takes the tokenizer from the exported HF folder."""
+    import sys
+    import types
+
+    import torch
+
+    from sdf.eval import trtllm_worker
+
+    built = {}
+
+    class LLM:
+        def __init__(self, **kw):
+            built.update(kw)
+
+        def save(self, d):
+            Path(d).mkdir(parents=True, exist_ok=True)
+
+        def generate(self, windows, sp, use_tqdm):
+            return [types.SimpleNamespace(context_logits=torch.zeros(len(w), 8)) for w in windows]
+
+    fakes = {"tensorrt_llm": types.ModuleType("tensorrt_llm"),
+             "tensorrt_llm._tensorrt_engine": types.SimpleNamespace(LLM=LLM),
+             "tensorrt_llm.llmapi": types.SimpleNamespace(BuildConfig=lambda **k: k, KvCacheConfig=lambda **k: k,
+                                                          SamplingParams=lambda **k: k)}
+    for k, v in fakes.items():
+        monkeypatch.setitem(sys.modules, k, v)
+    monkeypatch.setattr(trtllm_worker, "_used_gb", lambda: 0.0)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    converted = tmp_path / "trtllm-checkpoint"
+    monkeypatch.setattr(trtllm_worker, "mixed_checkpoint", lambda src, out: converted)
+
+    hf = tmp_path / "hf"
+    hf.mkdir()
+    args = {"model_dir": str(hf), "engine_dir": str(tmp_path / "engine"), "seq_len": 4, "val": [[1, 2, 3, 4]],
+            "heldout": [[1, 2, 3, 4]], "prompt_len": 2, "warmup": 0, "repeats": 1, "decode_tokens": 2}
+    trtllm_worker.main(args)
+    assert built["model"] == str(hf) and built["tokenizer"] == str(hf)  # uniform: one folder for both
+
+    (hf / t.MIXED_FILE).write_text("{}")
+    out = trtllm_worker.main(args)
+    assert built["model"] == str(converted) and built["tokenizer"] == str(hf)
+    assert math.isclose(out["trtllm_ppl_val"], 8.0, rel_tol=1e-6), out  # uniform logits over 8 tokens

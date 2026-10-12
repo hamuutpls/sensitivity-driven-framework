@@ -64,11 +64,13 @@ def main(args: dict) -> dict:
     bc = BuildConfig(max_seq_len=n, max_input_len=n, max_batch_size=8, max_num_tokens=8 * n,
                      gather_context_logits=True)
     t0 = time.perf_counter()
-    model_dir = Path(args["model_dir"])
+    hf_dir = model_dir = Path(args["model_dir"])
     if (model_dir / MIXED_FILE).exists():
         model_dir = mixed_checkpoint(model_dir, Path(args["engine_dir"]).with_name("trtllm-checkpoint"))
-    # ~1 GB of KV cache for TinyLlama (22 layers x 2 x 4 heads x 64 x 2 bytes = 22.5 KB per token), as in vLLM
-    llm = LLM(model=str(model_dir), dtype="float16", build_config=bc,
+    # ~1 GB of KV cache for TinyLlama (22 layers x 2 x 4 heads x 64 x 2 bytes = 22.5 KB per token), as in vLLM.
+    # The tokenizer comes from the exported HF folder: a converted mixed-bit checkpoint has none, and without one
+    # TensorRT-LLM refuses to generate ("tokenizer is required to reset end_id").
+    llm = LLM(model=str(model_dir), tokenizer=str(hf_dir), dtype="float16", build_config=bc,
               kv_cache_config=KvCacheConfig(max_tokens=args.get("kv_tokens", 46000)))
     out: dict = {"trtllm_build_s": time.perf_counter() - t0}
     eng = Path(args["engine_dir"])
