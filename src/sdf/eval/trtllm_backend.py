@@ -35,7 +35,7 @@ from sdf.utils.logging import get_logger
 log = get_logger(__name__)
 
 # Bump when a change alters the measured numbers, so cached TensorRT-LLM results are not reused.
-VERSION = 1
+VERSION = 2  # 2: mixed-bit plans build through a per-layer checkpoint (were errors in 1)
 
 _NOTE = " Measured in TensorRT-LLM, NVIDIA's program for running models fast, after building the model at the plan's bits."
 METRICS.update({
