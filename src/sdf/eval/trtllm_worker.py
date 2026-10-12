@@ -33,7 +33,7 @@ MIXED_FILE = "trtllm_mixed_precision.json"  # = trtllm_backend.MIXED_FILE (this 
 def mixed_checkpoint(model_dir: Path, out_dir: Path) -> Path:
     """Convert the GPTQ checkpoint in model_dir, whose layers have different bit widths (MIXED_FILE), into a
     TensorRT-LLM checkpoint in out_dir; returns out_dir."""
-    from tensorrt_llm.models import AutoModelForCausalLM
+    from tensorrt_llm.models.automodel import AutoModelForCausalLM
     from tensorrt_llm.models.modeling_utils import LayerQuantConfig, QuantConfig
     from tensorrt_llm.quantization import QuantAlgo
 

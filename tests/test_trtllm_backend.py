@@ -153,7 +153,8 @@ def test_worker_turns_the_mixed_file_into_a_tensorrt_llm_checkpoint(tmp_path, mo
 
     auto = types.SimpleNamespace(get_trtllm_model_class=lambda d: Model)
     fakes = {"tensorrt_llm": types.ModuleType("tensorrt_llm"),
-             "tensorrt_llm.models": types.SimpleNamespace(AutoModelForCausalLM=auto),
+             "tensorrt_llm.models": types.ModuleType("tensorrt_llm.models"),
+             "tensorrt_llm.models.automodel": types.SimpleNamespace(AutoModelForCausalLM=auto),
              "tensorrt_llm.models.modeling_utils": types.SimpleNamespace(LayerQuantConfig=LayerQuantConfig,
                                                                          QuantConfig=QuantConfig),
              "tensorrt_llm.quantization": types.SimpleNamespace(QuantAlgo=QuantAlgo)}
