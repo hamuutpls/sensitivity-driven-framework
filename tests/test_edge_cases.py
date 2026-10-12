@@ -225,7 +225,7 @@ def test_a_16_bit_layer_is_marked_unquantized_in_both_serving_configs(tmp_path):
     q = json.loads((tmp_path / "config.json").read_text())["quantization_config"]
     assert q["bits"] == 4 and q["dynamic"] == {r"-:.*layers\.1\..*": {}}
     layers = quant_file(_Model(), plan, 128)["quantization"]["quantized_layers"]
-    assert "model.layers.1.proj" not in layers and "W16A16_GPTQ" not in json.dumps(layers)
+    assert not any(k.startswith("transformer.layers.1.") for k in layers) and "W16A16_GPTQ" not in json.dumps(layers)
 
 
 def test_a_plan_the_export_cannot_hold_is_a_backend_error(monkeypatch):
