@@ -10,7 +10,8 @@ from transformers import LlamaConfig, LlamaForCausalLM
 
 from sdf.run import start_run
 from sdf.search_space import SEARCH_SPACE
-from sdf.stage0.pruning_levels import (CSV_NAME, SUBDIR, capped_plan, feed_forward_share, layer_set, level_plan, restored,
+from sdf.stage0.pruning_levels import (CSV_NAME, SUBDIR, capped_plan, feed_forward_share, layer_caps, layer_set,
+                                       level_plan, restored,
                                        share_removed)
 from sdf.stage0.run import run_stage0
 from sdf.stage0.sensitivity import find_decoder_layers
@@ -40,6 +41,16 @@ def test_feed_forward_share_of_tinyllama_is_78_6_percent():
     with torch.device("meta"):
         model = LlamaForCausalLM(cfg)
     assert feed_forward_share(model, find_decoder_layers(model)[0]) == pytest.approx(0.786, abs=5e-4)
+    assert layer_caps(model, 0.75) == [0.75]  # TinyLlama: the 75% cap, below its feed-forward share
+
+
+def test_structured_levels_are_capped_at_75_percent_on_tinyllama():
+    cfg = LlamaConfig(vocab_size=32000, hidden_size=2048, intermediate_size=5632, num_hidden_layers=2,
+                      num_attention_heads=32, num_key_value_heads=4)
+    with torch.device("meta"):
+        model = LlamaForCausalLM(cfg)
+    capped = capped_plan(model, level_plan(2, [0, 1], 0.9, 16))
+    assert [lp.pruning_ratio for lp in capped.layers] == [0.75, 0.75]
 
 
 def test_structured_levels_above_the_feed_forward_share_are_capped_and_remove_every_channel(tiny_llama):

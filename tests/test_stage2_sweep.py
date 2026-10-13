@@ -40,8 +40,10 @@ def test_cap_pruning_lowers_only_the_layers_above_the_cap():
     plan = replace(uniform_plan([0.1, 0.2, 0.3], 16, 0.9),
                    layers=tuple(replace(lp, pruning_ratio=r) for lp, r in
                                 zip(uniform_plan([0.1, 0.2, 0.3], 16, 0.9).layers, (0.9, 0.5, 0.75))))
-    capped = cap_pruning(plan, 0.75)
-    assert [lp.pruning_ratio for lp in capped.layers] == [0.75, 0.5, 0.75]
+    capped = cap_pruning(plan, [0.75, 0.75, 0.6])
+    assert [lp.pruning_ratio for lp in capped.layers] == [0.75, 0.5, 0.6]
+    with pytest.raises(ValueError):
+        cap_pruning(plan, [0.75])
     assert [lp.bit_width for lp in capped.layers] == [16, 16, 16]
 
 
@@ -129,7 +131,7 @@ def test_stage2_runs_every_level_on_every_backend(stage0_dir, tiny_llama, tokeni
     std = rows["unstructured_prune_090/original"]
     assert "level 90%, 90.0% of the layer weights removed" in std["info"]["label"]
     capped = rows["structured_prune_090/original"]
-    assert "capped at 60% of each layer (the plan asked for up to 90%)" in capped["info"]["note"]
+    assert "capped at 60.0% of each layer (the plan asked for up to 90%" in capped["info"]["note"]
     assert "level 90%, 60.0% of the layer weights removed" in capped["info"]["label"]
     assert capped["metrics"]["sparsity"] < std["metrics"]["sparsity"]
     assert "capped" not in rows["structured_prune_030/original"]["info"].get("note", "")
@@ -163,7 +165,7 @@ def test_series_rows_sweep_too_with_the_stage1_bits_and_the_cap(stage0_dir, tiny
     for k, r in rows.items():
         assert r["status"] == "ok", (k, r.get("error"))
     ours = rows["structured_prune_after_rtn_090/framework"]
-    assert "capped at 60%" in ours["info"]["note"] and "level 90%" in ours["info"]["label"]
+    assert "capped at 60.0%" in ours["info"]["note"] and "level 90%" in ours["info"]["label"]
     plans = [p for p in calls if p is not None]
     assert len(plans) == 6 and all(min(lp.bit_width for lp in p.layers) < 16 for p in plans)  # the Stage 1 bits
     assert all(max(lp.pruning_ratio for lp in p.layers) <= 0.6 for p in plans if p.layers[0].pruning_ratio)
@@ -192,3 +194,33 @@ def test_a_level_missing_its_same_size_plan_fails_only_that_row(stage0_dir, tiny
     bad = rows["unstructured_prune_090_same_size/framework"]
     assert bad["status"] == "failed" and "prune_plan_same_size_090.json" in bad["error"]
     assert all(r["status"] == "ok" for k, r in rows.items() if k != "unstructured_prune_090_same_size/framework")
+
+
+def test_structured_cap_drops_to_the_feed_forward_share_when_that_is_lower(stage0_dir, tiny_llama, tokenizer,
+                                                                           small_cfg):
+    """The toy model's feed-forward share (67%) is below 75%, as on models without grouped-query attention: the
+    rows run at that share instead of failing (Mohammad, 2026-10-13)."""
+    out = run_stage(start_run(small_cfg), 2, ["structured_prune"], SEARCH_SPACE.make({"calib_samples": 16}),
+                    stage0_dir, model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer,
+                    text_loader=fake_texts)
+    rows = {f"{r['method']}/{r['variant']}": r for r in json.loads(out["json"].read_text())["rows"]}
+    for k, r in rows.items():
+        assert r["status"] == "ok", (k, r.get("error"))
+    capped = rows["structured_prune_090/original"]
+    assert "capped at 66.7% of each layer" in capped["info"]["note"]
+    assert "level 90%, 66.7% of the layer weights removed" in capped["info"]["label"]
+
+
+def test_a_llamacpp_failure_keeps_the_row_and_records_why(stage0_dir, tiny_llama, tokenizer, small_cfg, monkeypatch):
+    def broken(*a, **kw):
+        raise RuntimeError("llama-quantize exited with 1")
+
+    monkeypatch.setattr(llamacpp, "measure", broken)
+    cfg = small_cfg.with_overrides({"eval.llamacpp_dir": "lc", "eval.llamacpp_convert": "conv.py"})
+    out = run_stage(start_run(cfg), 2, ["unstructured_prune"], SEARCH_SPACE.make({"calib_samples": 16}),
+                    stage0_dir, model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer,
+                    text_loader=fake_texts, measure_fp16=False)
+    rows = {f"{r['method']}/{r['variant']}": r for r in json.loads(out["json"].read_text())["rows"]}
+    row = rows["unstructured_prune_030/framework"]
+    assert row["status"] == "ok" and row["metrics"]["ppl_val"] > 0
+    assert row["info"]["llamacpp_error"] == "llama-quantize exited with 1"

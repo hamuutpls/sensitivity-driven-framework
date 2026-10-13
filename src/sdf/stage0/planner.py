@@ -131,10 +131,12 @@ def level_tag(ratio: float) -> str:
     return f"{round(ratio * 100):03d}"
 
 
-def cap_pruning(plan: CompressionPlan, max_ratio: float) -> CompressionPlan:
-    """`plan` with no layer pruned above `max_ratio` (structured pruning at 75%, Mohammad 2026-10-13)."""
-    return replace(plan, layers=tuple(replace(lp, pruning_ratio=min(lp.pruning_ratio, max_ratio))
-                                      for lp in plan.layers))
+def cap_pruning(plan: CompressionPlan, caps: list[float]) -> CompressionPlan:
+    """`plan` with layer i pruned at most `caps[i]` (structured pruning, Mohammad 2026-10-13)."""
+    if len(caps) != len(plan.layers):
+        raise ValueError(f"{len(caps)} caps for {len(plan.layers)} layers")
+    return replace(plan, layers=tuple(replace(lp, pruning_ratio=min(lp.pruning_ratio, cap))
+                                      for lp, cap in zip(plan.layers, caps)))
 
 
 def same_size_pruning_plan(

@@ -9,9 +9,9 @@ perplexity of each pruned model is measured:
 - guarded layers only: only the guarded layers.
 
 Nothing is rounded (pruning only). Mohammad picks the pruning share for Stage 2 after seeing the results.
-Structured pruning removes only feed-forward channels, so it cannot remove more of a layer than the layer's
-feed-forward share (78.6% in TinyLlama); a higher level is capped at that share, and the row records the share
-really removed.
+Structured pruning is capped as in Stage 2: at most 75% of a layer, or the layer's feed-forward share when that is
+lower (it removes only feed-forward channels; 78.6% in TinyLlama). A higher level is capped, and the row records
+the share really removed.
 
 Outputs, in their own folder <run_dir>/stage_0_pruning_levels/ (so the 63 rows stay out of Stage 0's own tables
 and charts): report.md, stage_0_comparison.xlsx and results.json with one row per (technique, layer set, level),
@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import csv
 from contextlib import contextmanager
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -33,7 +32,7 @@ from sdf.data import eval_windows
 from sdf.eval.metrics import perplexity
 from sdf.reporting.markdown import _table
 from sdf.reporting.reporter import StageReporter
-from sdf.stage0.planner import CompressionPlan, LayerPlan
+from sdf.stage0.planner import CompressionPlan, LayerPlan, cap_pruning
 from sdf.stage0.sensitivity import find_decoder_layers
 from sdf.stages.methods import METHODS
 from sdf.stages.pruning import low_rank_, mlp_linears, structured_prune_, wanda_
@@ -84,11 +83,15 @@ def feed_forward_share(model: nn.Module, layer: nn.Module) -> float:
     return (sum(m.weight.numel() for m in ups) + down.weight.numel()) / total
 
 
+def layer_caps(model: nn.Module, max_ratio: float) -> list[float]:
+    """The most structured pruning removes from each decoder layer: `max_ratio` (75%, Mohammad 2026-10-13), or the
+    layer's feed-forward share when that is lower (it can remove nothing else; Mohammad 2026-10-13)."""
+    return [min(max_ratio, feed_forward_share(model, layer)) for layer in find_decoder_layers(model)]
+
+
 def capped_plan(model: nn.Module, plan: CompressionPlan) -> CompressionPlan:
-    """`plan` with each layer's ratio capped at the share structured pruning can remove from it."""
-    caps = [feed_forward_share(model, layer) for layer in find_decoder_layers(model)]
-    return replace(plan, layers=tuple(replace(lp, pruning_ratio=min(lp.pruning_ratio, cap))
-                                      for lp, cap in zip(plan.layers, caps)))
+    """`plan` with each layer's ratio capped as Stage 2 caps structured pruning (layer_caps)."""
+    return cap_pruning(plan, layer_caps(model, METHODS["structured_prune"].max_ratio))
 
 
 def share_removed(model: nn.Module, plan: CompressionPlan) -> float:
@@ -218,11 +221,12 @@ def _add_section(rep: StageReporter, records: list[dict[str, Any]], levels: list
         "- **Cells**: perplexity on the validation half of the test text; lower is better"
         + (f" (uncompressed model: {base:.4g})." if base else "."),
         f"- **Guarded layers**: {sorted(guarded) or 'none'} (never pruned by Our method).",
-        "- **Capped**: structured pruning removes only feed-forward channels, so it stops at the layer's "
-        "feed-forward share; the cell shows the share really removed.",
+        f"- **Capped**: structured pruning removes at most {METHODS['structured_prune'].max_ratio:.0%} of a layer, "
+        "or the layer's feed-forward share when that is lower (it removes only feed-forward channels), as in "
+        "Stage 2; the cell shows the share really removed.",
         "- **Low-rank**: the share removed is the share of numbers the two smaller factors save; the factors are "
         "multiplied back into a full-size matrix here, so the weights are not zeros.",
-        f"- Every value, with the held-out half and the share of the model removed, is in {CSV_NAME}.",
+        f"- Every value, with the held-out half and the share of the decoder layers' weights removed, is in {CSV_NAME}.",
     ] + ([f"- **Skipped layer sets**: {', '.join(skipped)} (no layers, or the same layers as all layers)."]
          if skipped else [])
     rep.sections.append(("Perplexity by technique, layer set and level",

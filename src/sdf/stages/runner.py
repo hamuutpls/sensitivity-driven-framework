@@ -31,6 +31,7 @@ from sdf.run import RunContext
 from sdf.stage0.activation import ActivationPlan, uniform_activation_plan
 from sdf.stage0.kv_cache import KVPlan, KVProfile, predict_kv, uniform_kv_plan
 from sdf.stage0.planner import CompressionPlan, baseline_cost, cap_pruning, combine_plans, level_tag, uniform_plan
+from sdf.stage0.pruning_levels import layer_caps
 from sdf.stage0.run import (_cost_metrics, _kv_metrics, calib_batches, fp16_key, load_fp16, source_key,
                             setup, stage_reporter, weight_cost)
 from sdf.stage0.sensitivity import SensitivityProfile, find_decoder_layers, normalize
@@ -359,14 +360,12 @@ def run_stage(
                 if lc_on(method):
                     if rotated:
                         info["llamacpp_error"] = _ROTATED
-                    elif not joint:
-                        metrics.update(llamacpp.measure(model, handle.tokenizer, weights, val, held, cfg.eval,
-                                                        s0.baseline_bits))
-                    else:  # a WxAy row keeps its HF numbers if llama.cpp fails
+                    else:  # a row keeps its HF numbers if llama.cpp fails, as with vLLM (Mohammad, 2026-10-13)
                         try:
                             metrics.update(llamacpp.measure(model, handle.tokenizer, weights, val, held, cfg.eval,
                                                             s0.baseline_bits))
-                            info["llamacpp_activations"] = _WEIGHTS_ONLY
+                            if joint:
+                                info["llamacpp_activations"] = _WEIGHTS_ONLY
                         except RuntimeError as e:
                             log.warning("llama.cpp could not measure %s: %s", method.name, e)
                             info["llamacpp_error"] = str(e)
@@ -424,6 +423,15 @@ def run_stage(
                                                 s0.baseline_bits, candidate["gptq_groupsize"]))
                 row.metrics.update(be)
 
+    @functools.cache
+    def caps(max_ratio: float) -> tuple[float, ...]:  # per layer: the model is built once, only when needed
+        model = model_factory()
+        try:
+            return tuple(layer_caps(model, max_ratio))
+        finally:
+            del model
+            _free_memory()
+
     simulated_any = False
     if stage == 2 and not all_plans.levels:
         log.warning("Stage 2: no pruning level plans in %s (stage0.pruning_levels was empty, or an older Stage 0 "
@@ -432,7 +440,7 @@ def run_stage(
     for m, plans, level in (row for method in methods for row in sweep(method, all_plans)):
         simulated_any |= m.simulated
         orig, cap_note = _capped(m, original_plan(m, plans, s0, candidate["prune_ratio_aggressive"]
-                                                  if level is None else level))
+                                                  if level is None else level), caps)
         with rep.method(m.name, "original", description=f"{m.label}, standard settings: {_describe(orig)}",
                         simulated=m.simulated) as row:
             _label_level(row, level, orig, plans.profile.layer_numel)
@@ -468,7 +476,7 @@ def run_stage(
                 info["label"], info["plain_desc"] = plain
             with rep.method(m.name + suffix, "framework", **info) as row:
                 if level is not None and all(k in plans.plans for k in _plan_keys(m, plan_key)):
-                    _label_level(row, level, _capped(m, framework_plan(m, plans, plan_key))[0],
+                    _label_level(row, level, _capped(m, framework_plan(m, plans, plan_key), caps)[0],
                                  plans.profile.layer_numel)
                 _require(m)
                 if m.note:
@@ -478,7 +486,7 @@ def run_stage(
                 if gone := [plans.files[k] for k in _plan_keys(m, plan_key) if k not in plans.plans]:
                     raise FileNotFoundError(f"{', '.join(gone)} not in {plans.dir}; re-run Stage 0 with this plan "
                                             "enabled")
-                plan, cap_note = _capped(m, framework_plan(m, plans, plan_key))
+                plan, cap_note = _capped(m, framework_plan(m, plans, plan_key), caps)
                 if cap_note:
                     row.info["note"] = "; ".join(n for n in (row.info.get("note"), cap_note) if n)
                 row.info["description"] = f"{m.label}, Stage 0 {_describe(plan)}"
@@ -500,15 +508,18 @@ def run_stage(
     return rep.finalize()
 
 
-def _capped(m: Method, plan: Any) -> tuple[Any, str]:
-    """`plan` capped at the method's most per layer (Method.max_ratio), and the row's note when it was ("" if not)."""
+def _capped(m: Method, plan: Any, caps: Callable[[float], tuple[float, ...]]) -> tuple[Any, str]:
+    """`plan` capped at the method's most per layer (`caps(Method.max_ratio)`: 75%, or the layer's feed-forward
+    share when lower), and the row's note when it was ("" if not)."""
     if m.max_ratio is None or not isinstance(plan, CompressionPlan):
         return plan, ""
-    over = max((lp.pruning_ratio for lp in plan.layers if lp.pruning_ratio > m.max_ratio), default=None)
-    if over is None:
+    layer_cap = caps(m.max_ratio)
+    if all(lp.pruning_ratio <= c for lp, c in zip(plan.layers, layer_cap)):
         return plan, ""
-    return (cap_pruning(plan, m.max_ratio),
-            f"capped at {m.max_ratio:.0%} of each layer (the plan asked for up to {over:.0%})")
+    asked = max(lp.pruning_ratio for lp in plan.layers)
+    return (cap_pruning(plan, list(layer_cap)),
+            f"capped at {min(layer_cap):.1%} of each layer (the plan asked for up to {asked:.0%}; at most "
+            f"{m.max_ratio:.0%}, or the layer's feed-forward share when lower)")
 
 
 def _label_level(row, level: float | None, plan: CompressionPlan, layer_numel: list[int]) -> None:
