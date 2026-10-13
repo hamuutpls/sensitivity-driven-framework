@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-13: audit follow-ups
+
+Two audit fixes were only partly done in the entry below (found by a review after it merged); tests in
+`tests/test_audit_fixes_20261013.py` fail on 697b3f1.
+
+- SmoothQuant, QuaRot, SpinQuant and RPTQ, alone and in joint methods, now also leave layers at `baseline_bits` or
+  above unrounded, as `rtn_act` and Stage 0 do (they used 16) (15). Their rows change only for a non-default
+  `baseline_bits`, which is already part of their cache key.
+- vLLM and TensorRT-LLM report `<backend>_prefill_ms_std` and `<backend>_decode_ms_per_token_std` (spread across the
+  timed repeats), so a timing difference within it is a tie in the verdicts, as for Hugging Face Transformers (4).
+  Backend versions bumped (vLLM 5, TensorRT-LLM 4).
+
 ## 2026-10-13: ponytail audit fixes
 
 From the ponytail audit of main 9a7ef8f (`/mnt/project-files/audits/ponytail-audit-20261013.md`); numbers are the

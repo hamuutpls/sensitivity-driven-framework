@@ -153,11 +153,12 @@ _PRUNE_PLANS = ("prune", "prune_same_size")
 
 
 def _transformed_activations(fn: Callable, extra: Callable[[MethodCall], dict[str, Any]] = lambda call: {}):
-    """apply() for an activation_methods.py fn(model, plan, batches, group_size, **extra): it rewrites the model into an
+    """apply() for an activation_methods.py fn(model, plan, batches, group_size, below, **extra): it rewrites the model into an
     equivalent one, then returns the context manager that rounds the activations at the plan's bits."""
     @contextmanager
     def apply(call: MethodCall) -> Iterator[dict[str, Any]]:
-        with fn(call.model, call.plan, call.batches(), call.cfg.stage0.act_group_size, **extra(call)):
+        with fn(call.model, call.plan, call.batches(), call.cfg.stage0.act_group_size,
+                below=call.cfg.stage0.baseline_bits, **extra(call)):
             yield {}
     return apply
 
@@ -250,7 +251,7 @@ def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
         raise ValueError(f"{weights.name} is not a Stage 1 weight method")
     if acts == "rtn_act":
         fn, extra, label = (lambda model, plan, batches, gs, below: _round_inputs(model, plan, gs, below),
-                            (lambda c: {"below": c.cfg.stage0.baseline_bits}), "round-to-nearest activations")
+                            (lambda c: {}), "round-to-nearest activations")
     elif acts in ACTIVATION_METHODS:
         fn, extra, label = ACTIVATION_METHODS[acts][0], _ACT_EXTRA[acts], ACTIVATION_METHODS[acts][1]
     else:
@@ -259,7 +260,8 @@ def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
     @contextmanager
     def apply(call: MethodCall) -> Iterator[dict[str, Any]]:
         plan: JointPlan = call.plan
-        rounding = fn(call.model, plan.acts, call.batches(), call.cfg.stage0.act_group_size, **extra(call))
+        rounding = fn(call.model, plan.acts, call.batches(), call.cfg.stage0.act_group_size,
+                      below=call.cfg.stage0.baseline_bits, **extra(call))
         with weights.apply(replace(call, plan=plan.weights)) as first, rounding:
             yield first
 

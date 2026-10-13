@@ -33,7 +33,7 @@ log = get_logger(__name__)
 
 # Bump when a change alters the measured numbers, or turns cached error rows into measurable ones, so cached vLLM
 # results are not reused.
-VERSION = 4  # 4: prefix caching off, so prefill is a real prefill; 3: start-up memory share follows the free memory (rows failed vLLM's 0.92 check in 2)
+VERSION = 5  # 5: timings report their std across repeats; 4: prefix caching off, so prefill is a real prefill; 3: start-up memory share follows the free memory (rows failed vLLM's 0.92 check in 2)
 
 _NOTE = " Measured in vLLM, a program for running models on servers, after saving the model at the plan's bits."
 METRICS.update({
@@ -49,8 +49,14 @@ METRICS.update({
                                             "for every row, and included in the peak." + _NOTE),
     "vllm_prefill_ms": MetricSpec("vLLM prefill time", "ms", "lower", "time to read the prompt (vLLM)",
                                   "Time to read a prompt and write one word-piece." + _NOTE),
+    "vllm_prefill_ms_std": MetricSpec("vLLM prefill time (std)", "ms", None,
+                                      "spread of prompt-reading times (vLLM)",
+                                      "How much the prefill time varied between repeated runs."),
     "vllm_decode_ms_per_token": MetricSpec("vLLM decode time per token", "ms", "lower", "time per written word-piece (vLLM)",
                                            "Time to write one word-piece." + _NOTE),
+    "vllm_decode_ms_per_token_std": MetricSpec("vLLM decode time per token (std)", "ms", None,
+                                               "spread of times per written word-piece (vLLM)",
+                                               "How much the decode time per token varied between repeated runs."),
     "vllm_ppl_val": MetricSpec("vLLM perplexity (validation half)", "", "lower", "prediction error in vLLM (validation half)",
                                "Prediction error of the saved model on the validation half of the test text (lower is "
                                "better). The weights are re-rounded when saved, so compare between rows only."),
