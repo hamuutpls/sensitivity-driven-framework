@@ -418,6 +418,18 @@ def run_stage0(
     profile.save(rep.dir / "sensitivity_profile.json")
     if joint is not None:  # optional output, after every plan Stage 1 needs is saved
         _joint_curves(rep, joint, cfg.model.name)
+    if s0.pruning_levels:  # after every plan is saved: measured pruning levels for Stage 2 (Mohammad, 2026-10-13)
+        from sdf.stage0.pruning_levels import run_pruning_levels
+
+        fp16_metrics = next((r.metrics for r in rep.rows if r.variant == "fp16" and r.status == "ok"), None)
+        try:
+            levels_dir = run_pruning_levels(ctx, candidate, handle, text_loader, profile, guarded, fp16_metrics)
+            rep.sections.append(("Pruning levels test (for Stage 2)",
+                                 f"Wanda, structured and low-rank pruning at {len(s0.pruning_levels)} levels on all, "
+                                 f"non-guarded and guarded-only layers: see ../{levels_dir.name}/report.md."))
+        except Exception as exc:  # noqa: BLE001 - the plans are saved; keep Stage 0's own report and hand-off
+            log.exception("pruning levels test failed")
+            rep.anomalies.append(f"pruning levels test failed: {type(exc).__name__}: {exc}")
     fp16_row = next((r for r in rep.rows if r.variant == "fp16"), None)
     handoff = write_handoff(rep.dir / "handoff.md", cfg=cfg, candidate=candidate, original_model=rep.original_model,
                             profile=profile, plan=plan, quant=quant,

@@ -150,6 +150,10 @@ class Stage0Config:
     # also measure the fair test: same bits, size and share removed as the standard method, pruning placed by
     # sensitivity (planner.same_size_pruning_plan)
     prune_sweep_same_size: bool = True
+    # Pruning levels test, part of every Stage 0 run (stage0/pruning_levels.py): Wanda, structured and low-rank
+    # each prune all layers, the non-guarded layers and the guarded layers only, at every share here, and the
+    # perplexity is measured (pruning only). Empty list = off.
+    pruning_levels: list[float] = field(default_factory=lambda: [round(0.1 * i, 1) for i in range(3, 10)])
     # Threshold study (MODE "threshold_sweep", stage0/threshold_sweep.py): measure the plan at every threshold and
     # guard size (rounding follows prune_sweep_quantize)
     threshold_sweep: list[float] = field(default_factory=lambda: [round(0.1 * i, 1) for i in range(1, 10)])
@@ -161,6 +165,10 @@ class Stage0Config:
             opts = getattr(self, name)
             if not isinstance(opts, (list, tuple)) or not opts or list(opts) != sorted(set(opts)):
                 raise ValueError(f"stage0.{name} must be ascending with no repeats, got {opts}")
+        if not all(isinstance(r, (int, float)) and 0 < r <= 1 for r in self.pruning_levels):
+            raise ValueError(f"stage0.pruning_levels must be shares in (0, 1], got {self.pruning_levels}")
+        if len({round(r * 100) for r in self.pruning_levels}) < len(set(self.pruning_levels)):  # rows named by %
+            raise ValueError(f"stage0.pruning_levels must differ by at least 1%, got {self.pruning_levels}")
         # the KV predictions look up the standard row's bits among the measured options (stage0/run.py predict_kv)
         if self.kv_uniform_bits not in self.kv_bits_options and self.kv_uniform_bits < self.baseline_bits:
             raise ValueError(f"stage0.kv_uniform_bits {self.kv_uniform_bits} must be one of kv_bits_options "

@@ -52,5 +52,6 @@ def small_cfg(tmp_path):
         "eval.latency_repeats": 3,
         "stage0.kv_group_size": 8,
         "stage0.kv_calib_samples": 4,
+        "stage0.pruning_levels": [],  # 63 extra pruned models per Stage 0 run; test_pruning_levels.py turns it on
         "stage0.guard_top_k": 1,  # the toy model has 4 layers; guard one so the others can still be pruned
     })

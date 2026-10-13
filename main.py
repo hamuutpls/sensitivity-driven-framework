@@ -102,6 +102,9 @@ SWEEP = {
 PRUNE_SWEEP_RATIOS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]  # shares removed from each pruned layer
 PRUNE_SWEEP_QUANTIZE = True  # True: also store the rest at the plan's bits (4 / 8); False: pruning only
 PRUNE_SWEEP_SAME_SIZE = True  # True: also the fair test, same size and share removed, pruning placed by sensitivity
+# 6b. Pruning levels test, part of every Stage 0 run (results in <run>/stage_0_pruning_levels/)
+PRUNING_LEVELS = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]  # every Stage 0 run: Wanda / structured / low-rank on all,
+#   non-guarded and guarded-only layers at each share, perplexity measured (pruning only); [] = off
 THRESHOLD_SWEEP = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]  # MODE "threshold_sweep": protection thresholds to measure
 GUARD_SWEEP = [0, 3, 5, 8]  # MODE "threshold_sweep": never-pruned layer counts to measure with each threshold
 
@@ -171,6 +174,7 @@ def build_config():
         "stage0.prune_sweep_ratios": PRUNE_SWEEP_RATIOS,
         "stage0.prune_sweep_quantize": PRUNE_SWEEP_QUANTIZE,
         "stage0.prune_sweep_same_size": PRUNE_SWEEP_SAME_SIZE,
+        "stage0.pruning_levels": PRUNING_LEVELS,
         "stage0.threshold_sweep": THRESHOLD_SWEEP,
         "stage0.guard_sweep": GUARD_SWEEP,
         "calibration.seq_len": CALIB_SEQ_LEN,
