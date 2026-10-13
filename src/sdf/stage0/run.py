@@ -18,6 +18,7 @@ from sdf.run import RunContext
 from sdf.stage0.planner import (
     CompressionPlan,
     guarded_layers,
+    level_tag,
     PlanCost,
     baseline_cost,
     plan_compression,
@@ -339,7 +340,7 @@ def run_stage0(
     )
     # A resumed run writes into the same folder, and each file below is only saved when its part succeeds: remove
     # the old ones first, so Stage 1-3 never load a plan from an earlier run next to this run's plans.
-    for f in _PLAN_OUTPUTS:
+    for f in [*_PLAN_OUTPUTS, *(f.name for f in rep.dir.glob("prune_plan_*.json"))]:  # with the level plans
         (rep.dir / f).unlink(missing_ok=True)
     # Exposure is always scored against layer removal when that profile exists (it does whenever the guard is
     # on), so plans built from different measures are comparable; against its own ranks every measure that
@@ -405,6 +406,13 @@ def run_stage0(
     quant.save(rep.dir / "quant_plan.json")
     prune.save(rep.dir / "prune_plan.json")
     prune_same.save(rep.dir / "prune_plan_same_size.json")
+    for level in s0.pruning_levels:  # Stage 2 runs once per level (Mohammad, 2026-10-13)
+        tag = level_tag(level)
+        ours = plan_compression(scores, candidate["sensitive_threshold"], level, s0.protected_bits,
+                                s0.compressed_bits, guarded)
+        pruning_only(ours, s0.baseline_bits).save(rep.dir / f"prune_plan_{tag}.json")
+        same_size_pruning_plan(scores, s0.baseline_bits, level, profile.layer_numel,
+                               guarded).save(rep.dir / f"prune_plan_same_size_{tag}.json")
     if kv is not None:
         _add_kv_details(rep, *kv)
         kv[0].save(rep.dir / "kv_profile.json")

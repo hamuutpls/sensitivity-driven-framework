@@ -126,6 +126,17 @@ def uniform_plan(scores: list[float], bits: int, prune_ratio: float) -> Compress
     return CompressionPlan(layers, "uniform", None, prune_ratio)
 
 
+def level_tag(ratio: float) -> str:
+    """"030" for 0.3: the suffix of a pruning level's plan files and Stage 2 rows."""
+    return f"{round(ratio * 100):03d}"
+
+
+def cap_pruning(plan: CompressionPlan, max_ratio: float) -> CompressionPlan:
+    """`plan` with no layer pruned above `max_ratio` (structured pruning at 75%, Mohammad 2026-10-13)."""
+    return replace(plan, layers=tuple(replace(lp, pruning_ratio=min(lp.pruning_ratio, max_ratio))
+                                      for lp in plan.layers))
+
+
 def same_size_pruning_plan(
     scores: list[float],
     bits: int,

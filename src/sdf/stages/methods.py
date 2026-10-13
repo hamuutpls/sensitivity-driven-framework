@@ -79,6 +79,9 @@ class Method:
     # weights and activations quantized together (JointPlan): the standard row's (weight bits, activation bits),
     # None for the Stage 0 "original method" settings; None for a method that is not joint
     joint: tuple[int | None, int | None] | None = None
+    # most a Stage 2 method removes from one layer; plans asking for more are capped (structured: 75%, Mohammad
+    # 2026-10-13), and the row says so
+    max_ratio: float | None = None
 
 
 @dataclass(frozen=True)
@@ -214,7 +217,7 @@ METHODS: dict[str, Method] = {m.name: m for m in [
            calibrated=True, library="in repo (torch)", version=3),  # |w| x input norm per output row; 3: prunes only
     # removes whole feed-forward channels; real speed and size gains once a backend cuts them out
     Method("structured_prune", 2, "Structured pruning (feed-forward channels)", _PRUNE_PLANS,
-           _calibrated(structured_prune_), calibrated=True, storage="free",
+           _calibrated(structured_prune_), calibrated=True, storage="free", max_ratio=0.75,
            library="in repo (torch)", version=2),
     # rank chosen so each layer keeps (1 - planned share) of its numbers; activation-aware SVD
     Method("low_rank", 2, "Low-rank (activation-aware SVD)", _PRUNE_PLANS, _calibrated(low_rank_),
@@ -297,7 +300,8 @@ def series(quant: Method, prune: Method) -> Method:
                   version=quant.version * 1000 + prune.version, params=tuple(dict.fromkeys(quant.params + prune.params)),
                   calibrated=quant.calibrated or prune.calibrated, library=prune.library, storage=prune.storage,
                   quant_plans=quant.plans * len(prune.plans),  # every pruning plan follows the one bits plan
-                  note=quant.note, fixed_bits=quant.fixed_bits, unavailable=unavailable)
+                  note=quant.note, fixed_bits=quant.fixed_bits, unavailable=unavailable,
+                  max_ratio=prune.max_ratio)
 
 
 def methods_for(stage: int, names: list[str]) -> list[Method]:

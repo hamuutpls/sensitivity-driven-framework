@@ -92,7 +92,9 @@ def write_handoff(
                      "`CompressionPlan.load`, `ActivationPlan.load`"])
     rows += [
         ["Stage 2: pruning", "share removed per layer (nothing rounded); layers never to prune",
-         "`prune_plan.json` (+ `prune_plan_same_size.json`)", "`CompressionPlan.load`"],
+         "`prune_plan.json` (+ `prune_plan_same_size.json`); one pair per pruning level, "
+         "`prune_plan_<level>.json` + `prune_plan_same_size_<level>.json` (e.g. `_030` for 30%), which Stage 2 runs",
+         "`CompressionPlan.load`"],
         ["Stage 3: KV cache", "key bits, value bits and share of past words kept per layer",
          "`kv_cache_plan.json` (+ `_bits_only`, `kv_profile.json`)" if kv else "not planned (KV_CACHE off)",
          "`KVPlan.load`" if kv else "–"],
