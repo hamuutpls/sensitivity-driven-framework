@@ -27,7 +27,7 @@ _FP = 16  # bit width at which a layer is not quantized
 @contextmanager
 def _round_inputs(model: nn.Module, plan: ActivationPlan, group_size: int, below: int = _FP) -> Iterator[None]:
     """Round each layer's inputs to its planned bits while open; layers at `below` bits or more stay as they are
-    (rtn_act passes stage0.baseline_bits, as Stage 0 measured it)."""
+    (every Stage 1 activation method passes stage0.baseline_bits, as Stage 0 measured it)."""
     with ExitStack() as stack:
         for lp, layer in zip(plan.layers, find_decoder_layers(model)):
             if lp.act_bits < below:
@@ -71,7 +71,7 @@ def _channel_range(model: nn.Module, batches: list[torch.Tensor],
 # Fork hamuutpls/smoothquant @ c61476d: smoothquant/smooth.py smooth_ln_fcs_llama_like.
 @torch.no_grad()
 def smoothquant(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tensor], group_size: int,
-                alpha: float = 0.5) -> ContextManager[None]:
+                alpha: float = 0.5, below: int = _FP) -> ContextManager[None]:
     """SmoothQuant (Xiao et al., 2023): s_j = max|X_j|^a / max|W_j|^(1-a); x / s is folded into the RMSNorm before
     q/k/v and gate/up and the weight columns are multiplied by s. As in the repo for Llama, o_proj and down_proj
     are not smoothed (nothing before them can absorb the division); they are only rounded. Simplified: the max
@@ -88,7 +88,7 @@ def smoothquant(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tens
         norm.weight.div_(s)
         for fc in fcs:
             fc.weight.mul_(s)
-    return _round_inputs(model, plan, group_size)
+    return _round_inputs(model, plan, group_size, below)
 
 
 # ------------------------------------------------------------------------------------------------ rotations
@@ -158,7 +158,7 @@ def _rotate(model: nn.Module, q: torch.Tensor, seed: int) -> None:
 
 # Fork hamuutpls/QuaRot @ 5008669: fake_quant/rotation_utils.py (fuse_layer_norms, rotate_*), hadamard_utils.py.
 def quarot(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tensor], group_size: int,
-           seed: int = 0) -> ContextManager[None]:
+           seed: int = 0, below: int = _FP) -> ContextManager[None]:
     """QuaRot (Ashkboos et al., 2024): fuse RMSNorm weights, rotate the residual stream with a random Hadamard
     matrix, then round the Linear inputs. Simplified: the rotation before down_proj is a random orthogonal matrix
     (intermediate size is not a power of two) and the o_proj input gets only a per-head rotation (the paper's
@@ -166,7 +166,7 @@ def quarot(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tensor], 
     _fuse_norms(model)
     _rotate(model, _orthogonal(model.config.hidden_size, torch.Generator().manual_seed(seed),
                                model.model.embed_tokens.weight.device), seed + 1)
-    return _round_inputs(model, plan, group_size)
+    return _round_inputs(model, plan, group_size, below)
 
 
 # ------------------------------------------------------------------------------------------------ SpinQuant
@@ -192,7 +192,8 @@ def _cayley_step(r: torch.Tensor, grad: torch.Tensor, lr: float) -> torch.Tensor
 
 # Fork hamuutpls/SpinQuant @ 8f47aa3: train_utils/optimizer.py (SGDG, Cayley_loop), same rotation structure as QuaRot.
 def spinquant(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tensor], group_size: int,
-              steps: int = 100, lr: float = 0.1, max_tokens: int = 2048, seed: int = 0) -> ContextManager[None]:
+              steps: int = 100, lr: float = 0.1, max_tokens: int = 2048, seed: int = 0,
+              below: int = _FP) -> ContextManager[None]:
     """SpinQuant (Liu et al., 2024): QuaRot's structure with the residual rotation R1 learned on the orthogonal
     group by Cayley steps, starting from the QuaRot Hadamard. Simplified: the loss is the squared error between
     rounded and unrounded q/k/v/gate/up inputs (the only inputs R1 changes), summed over layers, on up to
@@ -201,7 +202,7 @@ def spinquant(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tensor
     _fuse_norms(model)
     probes, bits = [], []
     for lp, l in zip(plan.layers, find_decoder_layers(model)):
-        if lp.act_bits < _FP:
+        if lp.act_bits < below:
             probes += [l.self_attn.q_proj, l.mlp.gate_proj]
             bits += [lp.act_bits] * 2
     xs: dict[nn.Linear, list[torch.Tensor]] = {}
@@ -223,7 +224,7 @@ def spinquant(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tensor
             best, best_loss = r, loss.item()
         r = _cayley_step(r, grad, lr)
     _rotate(model, best, seed + 1)
-    return _round_inputs(model, plan, group_size)
+    return _round_inputs(model, plan, group_size, below)
 
 
 # ------------------------------------------------------------------------------------------------ RPTQ
@@ -241,14 +242,14 @@ def _kmeans(points: torch.Tensor, k: int, gen: torch.Generator, iters: int = 20)
 # Fork hamuutpls/RPTQ4LLM @ 96190691: quantize/reorder_utils.py (tensor_calc_reorder_index: k-means on [min, max]).
 @torch.no_grad()
 def rptq(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tensor], group_size: int,
-         clusters: int = 32, seed: int = 0) -> ContextManager[None]:
+         clusters: int = 32, seed: int = 0, below: int = _FP) -> ContextManager[None]:
     """RPTQ (Yuan et al., 2023): channels of each Linear input are clustered by their calibration [min, max] and
     every cluster is rounded with one static min/max scale. Simplified: the channels are not physically reordered
     (that only matters for kernel layout; here a per-channel scale tensor does the same), the clusters come from
     k-means on the original model (the repo also fuses the reorder into LayerNorm / weights), `group_size` is unused
     and only decoder Linear inputs are rounded (no KV cache, as in this stage)."""
     gen = torch.Generator().manual_seed(seed)
-    linears = [(lp.act_bits, m) for lp, ms in zip(plan.layers, _decoder_linears(model)) if lp.act_bits < _FP
+    linears = [(lp.act_bits, m) for lp, ms in zip(plan.layers, _decoder_linears(model)) if lp.act_bits < below
                for m in ms]
     ranges = _channel_range(model, batches, [m for _, m in linears])
     labels = {}

@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import statistics
 import sys
 import time
 
@@ -77,7 +78,7 @@ def main(args: dict) -> dict:
     for name in ("val", "heldout"):
         out[f"vllm_ppl_{name}"] = nll(args[name])
 
-    def timed(prompt_len: int, new: int) -> float:
+    def timed(prompt_len: int, new: int) -> list[float]:
         ids = [{"prompt_token_ids": args["val"][0][:prompt_len]}]
         sp = SamplingParams(max_tokens=new, temperature=0, ignore_eos=True)
         for _ in range(args["warmup"]):
@@ -89,13 +90,17 @@ def main(args: dict) -> dict:
             llm.generate(ids, sp, use_tqdm=False)
             torch.cuda.synchronize()
             ts.append(time.perf_counter() - t0)
-        return sum(ts) / len(ts)
+        return ts
 
-    prefill = timed(args["prompt_len"], 1)
-    full = timed(args["prompt_len"], args["decode_tokens"])
-    out["vllm_prefill_ms"] = prefill * 1e3
-    out["vllm_decode_ms_per_token"] = ((full - prefill) * 1e3 / (args["decode_tokens"] - 1)
-                                       if args["decode_tokens"] > 1 else float("nan"))
+    prefill = [t * 1e3 for t in timed(args["prompt_len"], 1)]
+    full = [t * 1e3 for t in timed(args["prompt_len"], args["decode_tokens"])]
+    # decode per token from the i-th prefill and i-th full run; the std lets the report treat a difference within it
+    # as a tie
+    decode = ([(f - p) / (args["decode_tokens"] - 1) for f, p in zip(full, prefill)]
+              if args["decode_tokens"] > 1 else [float("nan")])
+    for name, ts in (("prefill_ms", prefill), ("decode_ms_per_token", decode)):
+        out[f"vllm_{name}"] = statistics.fmean(ts)
+        out[f"vllm_{name}_std"] = statistics.stdev(ts) if len(ts) > 1 else 0.0
     out["vllm_peak_memory_gb"] = torch.cuda.max_memory_allocated() / 1e9
     out["vllm_kv_cache_reserved_gb"] = kv_bytes / 1e9
     return out

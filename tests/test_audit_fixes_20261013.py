@@ -151,6 +151,55 @@ def test_trtllm_worker_turns_block_reuse_off_and_reads_logits_at_the_right_posit
                      "heldout": [[1, 2, 3, 4]], "prompt_len": 8, "warmup": 0, "repeats": 1, "decode_tokens": 2})
 
 
+def _clock(durations, before=()):
+    """A stand-in for time.perf_counter: the given readings first, then start/stop pairs `durations` seconds apart."""
+    reads = list(before) + [x for d in durations for x in (0.0, d)]
+    return lambda: reads.pop(0)
+
+
+_PREFILL, _FULL = (0.010, 0.012, 0.014), (0.110, 0.112, 0.120)  # 3 repeats each; decode 10 tokens after the first
+
+
+def _check_timings(out, prefix):
+    assert math.isclose(out[f"{prefix}_prefill_ms"], 12.0, rel_tol=1e-9)
+    assert math.isclose(out[f"{prefix}_prefill_ms_std"], 2.0, rel_tol=1e-9)
+    decode = [(f - p) * 1e3 / 10 for f, p in zip(_FULL, _PREFILL)]
+    assert math.isclose(out[f"{prefix}_decode_ms_per_token"], sum(decode) / 3, rel_tol=1e-9)
+    assert math.isclose(out[f"{prefix}_decode_ms_per_token_std"], float(torch.tensor(decode).std()), rel_tol=1e-6)
+
+
+def test_vllm_and_trtllm_workers_report_the_spread_of_their_timings(monkeypatch, tmp_path):
+    from sdf.eval import vllm_worker
+
+    windows = [[5, 6, 7, 8]]
+
+    def generate(prompts, sp, use_tqdm):
+        return [types.SimpleNamespace(prompt_logprobs=[None] + [{t: types.SimpleNamespace(logprob=-1.0)}
+                                                                for t in p["prompt_token_ids"][1:]]) for p in prompts]
+
+    _fake_vllm(monkeypatch, generate)
+    monkeypatch.setattr(vllm_worker.time, "perf_counter", _clock(_PREFILL + _FULL))
+    _check_timings(vllm_worker.main({"model_dir": "m", "seq_len": 4, "prompt_len": 2, "decode_tokens": 11,
+                                     "linear_backend": None, "val": windows, "heldout": windows, "warmup": 0,
+                                     "repeats": 3}), "vllm")
+
+    worker, _, hf = _fake_trt(monkeypatch, tmp_path, lambda n: torch.zeros(n, 8))
+    monkeypatch.setattr(worker.time, "perf_counter", _clock(_PREFILL + _FULL, before=(0.0, 1.0)))  # build time
+    _check_timings(worker.main({"model_dir": str(hf), "engine_dir": str(tmp_path / "engine"), "seq_len": 4,
+                                "val": [[1, 2, 3, 4]], "heldout": [[1, 2, 3, 4]], "prompt_len": 2, "warmup": 0,
+                                "repeats": 3, "decode_tokens": 11}), "trtllm")
+
+
+def test_a_serving_timing_difference_within_its_spread_is_a_tie(tmp_path):
+    from sdf.eval import vllm_backend  # registers the vLLM metrics, std included
+
+    assert "vllm_decode_ms_per_token_std" in vllm_backend.METRICS
+    rep = _reporter(tmp_path, ["vllm_decode_ms_per_token", "vllm_ppl_val"])
+    _pair(rep, {"vllm_decode_ms_per_token": 5.00, "vllm_decode_ms_per_token_std": 0.2, "vllm_ppl_val": 10.0},
+          {"vllm_decode_ms_per_token": 4.95, "vllm_decode_ms_per_token_std": 0.2, "vllm_ppl_val": 9.0})
+    assert rep.verdict(rep.rows[1]) == (["vllm_ppl_val"], [], [])  # 0.05 ms faster is inside the 0.2 ms spread
+
+
 # 4 ------------------------------------------------------------------------------------------------------------
 def _reporter(tmp_path, metrics):
     return StageReporter(1, tmp_path, "t", {}, {}, {}, DeploymentRequirement(), list(metrics))
@@ -297,6 +346,32 @@ def test_rtn_act_rounds_by_the_same_rule_alone_and_in_a_joint_method(tiny_llama)
     assert torch.equal(alone, ref) and torch.equal(together, ref)
     alone, together = logits(base8, 4)
     assert torch.equal(alone, together) and not torch.equal(alone, ref)
+
+
+@pytest.mark.parametrize("name", ["smoothquant", "quarot", "spinquant", "rptq"])
+def test_every_activation_method_leaves_layers_at_the_baseline_bits_unrounded(tiny_llama, name):
+    from sdf.search_space import SEARCH_SPACE
+    from sdf.stage0.activation import uniform_activation_plan
+    from sdf.stages.methods import WITH, JointPlan, MethodCall
+
+    x = torch.randint(0, 64, (2, 12), generator=torch.Generator().manual_seed(0))
+    batches = [torch.randint(0, 64, (2, 12), generator=torch.Generator().manual_seed(i)) for i in range(2)]
+    base8 = FrameworkConfig().with_overrides({"stage0.baseline_bits": 8})
+    candidate = SEARCH_SPACE.make({})
+    with torch.no_grad():
+        ref = tiny_llama(x).logits
+
+    def drift(method, plan):
+        model = copy.deepcopy(tiny_llama)
+        with method.apply(MethodCall(model, plan, candidate, base8, lambda: batches)), torch.no_grad():
+            return (model(x).logits - ref).abs().max().item()  # SpinQuant needs gradients while it is applied
+
+    alone, joint = METHODS[name], methods_for(1, [f"rtn{WITH}{name}"])[0]
+    weights16 = uniform_plan([0.0] * 4, 16, 0.0)  # weights left alone: only the activations change
+    for bits, rounded in ((8, False), (4, True)):  # at the baseline (8) nothing is rounded; below it, it is
+        acts = uniform_activation_plan(4, bits)
+        for d in (drift(alone, acts), drift(joint, JointPlan(weights16, acts))):
+            assert (d > 1e-5) == rounded, (bits, d)  # the transform alone moves the logits by < 1e-6
 
 
 # 18 -----------------------------------------------------------------------------------------------------------

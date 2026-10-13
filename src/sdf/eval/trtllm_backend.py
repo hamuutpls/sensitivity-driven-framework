@@ -34,7 +34,7 @@ from sdf.utils.logging import get_logger
 log = get_logger(__name__)
 
 # Bump when a change alters the measured numbers, so cached TensorRT-LLM results are not reused.
-VERSION = 3  # 3: KV block reuse off, so prefill is a real prefill; 2: mixed-bit plans build through a per-layer checkpoint (were errors in 1)
+VERSION = 4  # 4: timings report their std across repeats; 3: KV block reuse off, so prefill is a real prefill; 2: mixed-bit plans build through a per-layer checkpoint (were errors in 1)
 
 _NOTE = " Measured in TensorRT-LLM, NVIDIA's program for running models fast, after building the model at the plan's bits."
 METRICS.update({
@@ -51,9 +51,15 @@ METRICS.update({
                                  "Time to turn the saved model into a TensorRT engine." + _NOTE),
     "trtllm_prefill_ms": MetricSpec("TensorRT-LLM prefill time", "ms", "lower", "time to read the prompt (TensorRT-LLM)",
                                     "Time to read a prompt and write one word-piece." + _NOTE),
+    "trtllm_prefill_ms_std": MetricSpec("TensorRT-LLM prefill time (std)", "ms", None,
+                                        "spread of prompt-reading times (TensorRT-LLM)",
+                                        "How much the prefill time varied between repeated runs."),
     "trtllm_decode_ms_per_token": MetricSpec("TensorRT-LLM decode time per token", "ms", "lower",
                                              "time per written word-piece (TensorRT-LLM)",
                                              "Time to write one word-piece." + _NOTE),
+    "trtllm_decode_ms_per_token_std": MetricSpec("TensorRT-LLM decode time per token (std)", "ms", None,
+                                                 "spread of times per written word-piece (TensorRT-LLM)",
+                                                 "How much the decode time per token varied between repeated runs."),
     "trtllm_ppl_val": MetricSpec("TensorRT-LLM perplexity (validation half)", "", "lower",
                                  "prediction error in TensorRT-LLM (validation half)",
                                  "Prediction error of the built engine on the validation half of the test text (lower "
