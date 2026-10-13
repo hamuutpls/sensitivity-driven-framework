@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from sdf.data import eval_data_label
 from sdf.reporting.markdown import _table
 from sdf.reporting.reporter import StageReporter
 from sdf.run import RunContext
@@ -42,11 +43,12 @@ def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, 
         subdir="stage_0_threshold_sweep", title="Protection thresholds: how many layers to protect",
         conditions={"model": cfg.model.name, "seed": cfg.run.seed, "device": str(device),
                     "backend": "HF Transformers", "pruning": "magnitude, per output row (simulated)",
-                    "rounding": f"round-to-nearest at the plan's bits (group size {gs})",
+                    "rounding": (f"round-to-nearest at the plan's bits (group size {gs})" if s0.prune_sweep_quantize
+                                 else "none (pruning only)"),
                     "thresholds": ", ".join(f"{t:g}" for t in thresholds),
                     "never-pruned layers (guard sizes)": ", ".join(map(str, guards)),
                     "share removed from unprotected layers": pr, "sensitivity score": profile.method,
-                    "evaluation data": f"wikitext-2 test, {cfg.eval.seq_len}-token windows, validation/held-out halves"},
+                    "evaluation data": eval_data_label(cfg.eval)},
         main_metrics=METRICS,
     )
     evaluate = make_evaluator(ctx, handle, text_loader, device)

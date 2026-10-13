@@ -28,14 +28,14 @@ from typing import Any, Callable, ContextManager, Iterator
 import torch
 from torch import nn
 
-from sdf.stage0.activation import ActivationPlan, quantize_inputs
+from sdf.stage0.activation import ActivationPlan
 from sdf.stage0.kv_cache import KVPlan, kv_projections, quantize_output
 from sdf.stage0.planner import CompressionPlan, bits_only
 from sdf.stage0.prune_sweep import apply_plan
 from sdf.stage0.sensitivity import int_zero
 from sdf.stage0.sensitivity import find_decoder_layers
 from sdf.stages.pruning import low_rank_, structured_prune_, wanda_
-from sdf.stages.activation_methods import ACTIVATION_METHODS
+from sdf.stages.activation_methods import ACTIVATION_METHODS, _round_inputs
 from sdf.stages.bnb import WEIGHT_METHODS_BNB
 from sdf.stages.weights import awq_, gptq_
 from sdf.stages.weights_a import WEIGHT_METHODS_A
@@ -127,12 +127,7 @@ def _calibrated(fn: Callable) -> Callable[[MethodCall], ContextManager[dict[str,
 
 @contextmanager
 def _rtn_activations(call: MethodCall) -> Iterator[dict[str, Any]]:
-    plan: ActivationPlan = call.plan
-    gs, base = call.cfg.stage0.act_group_size, call.cfg.stage0.baseline_bits
-    with ExitStack() as stack:
-        for lp, layer in zip(plan.layers, find_decoder_layers(call.model)):
-            if lp.act_bits < base:
-                stack.enter_context(quantize_inputs(layer, lp.act_bits, gs))
+    with _round_inputs(call.model, call.plan, call.cfg.stage0.act_group_size):
         yield {}
 
 
@@ -186,8 +181,7 @@ _ACT_EXTRA: dict[str, Callable[[MethodCall], dict[str, Any]]] = {
 def _fork_methods() -> list[Method]:
     out = []
     for registry in (WEIGHT_METHODS_A, WEIGHT_METHODS_B, WEIGHT_METHODS_BNB):
-        for name, (fn, label, params, library, *rest) in registry.items():
-            takes_bits, simplified = (rest[0], rest[1]) if len(rest) == 2 else (True, rest[0])
+        for name, (fn, label, params, library, takes_bits, simplified) in registry.items():
             out.append(Method(
                 name, 1, label, _WEIGHT_PLANS, _calibrated(fn), params=params, calibrated=name != "bitsandbytes",
                 library=library, note=f"{_SIMPLIFIED}{simplified}; {_SIZE_NOTE}" if simplified else _SIZE_NOTE,
@@ -245,17 +239,6 @@ _JOINT_PLANS = ("quant", "joint_weights")  # separate weight + activation plans;
 W8A8 = "_w8a8"  # suffix of a joint method whose only row is the standard with every layer at W8A8
 
 
-@contextmanager
-def _round_inputs(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tensor],
-                  group_size: int) -> Iterator[None]:
-    """rtn_act as an activation_methods.py function: nothing to rewrite, round the inputs while open."""
-    with ExitStack() as stack:
-        for lp, layer in zip(plan.layers, find_decoder_layers(model)):
-            if lp.act_bits < 16:
-                stack.enter_context(quantize_inputs(layer, lp.act_bits, group_size))
-        yield
-
-
 def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
     """`weights` (Stage 1 weight method) and the activation method `acts` (rtn_act or an activation_methods.py one)
     on one model. The activation method first rewrites the model (smoothing or rotation, nothing for rtn_act), the
@@ -266,7 +249,8 @@ def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
     if weights.stage != 1 or weights.plans != _WEIGHT_PLANS:
         raise ValueError(f"{weights.name} is not a Stage 1 weight method")
     if acts == "rtn_act":
-        fn, extra, label = _round_inputs, (lambda c: {}), "round-to-nearest activations"
+        fn, extra, label = (lambda model, plan, batches, gs: _round_inputs(model, plan, gs), (lambda c: {}),
+                            "round-to-nearest activations")
     elif acts in ACTIVATION_METHODS:
         fn, extra, label = ACTIVATION_METHODS[acts][0], _ACT_EXTRA[acts], ACTIVATION_METHODS[acts][1]
     else:
@@ -302,10 +286,16 @@ def series(quant: Method, prune: Method) -> Method:
         with quant.apply(replace(call, plan=bits_only(call.plan))) as first, prune.apply(call) as second:
             yield {**first, **second}
 
-    return Method(prune.name + AFTER + quant.name, 2, f"{prune.label} after {quant.label}", prune.plans, apply,
+    # low-rank rounds its own factors with round-to-nearest, replacing what the Stage 1 method did to the weights
+    unavailable = quant.unavailable or (f"{prune.label} cannot follow a Stage 1 method: it rounds its factors with "
+                                        "round-to-nearest, which replaces the Stage 1 rounding"
+                                        if prune.name == "low_rank" else "")
+    return Method(prune.name + AFTER + quant.name, 2, f"{prune.label} after {quant.label}", prune.plans,
+                  apply if quant.apply and prune.apply and not unavailable else None,
                   version=quant.version * 1000 + prune.version, params=tuple(dict.fromkeys(quant.params + prune.params)),
                   calibrated=quant.calibrated or prune.calibrated, library=prune.library, storage=prune.storage,
-                  quant_plans=quant.plans * len(prune.plans))  # every pruning plan follows the one bits plan
+                  quant_plans=quant.plans * len(prune.plans),  # every pruning plan follows the one bits plan
+                  note=quant.note, fixed_bits=quant.fixed_bits, unavailable=unavailable)
 
 
 def methods_for(stage: int, names: list[str]) -> list[Method]:

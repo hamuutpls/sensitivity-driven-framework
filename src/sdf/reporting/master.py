@@ -14,7 +14,7 @@ from openpyxl import Workbook
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.utils import get_column_letter
 
-from sdf.reporting.excel import GREEN, RED, _header, save_workbook
+from sdf.reporting.excel import GREEN, RED, _cell as _xl_cell, _header, save_workbook
 from sdf.reporting.markdown import _column_notes, _table, original_model_lines, requirement_cell
 from sdf.reporting.metrics import METRICS, is_number, label
 from sdf.utils.cache import atomic_write_text
@@ -67,7 +67,7 @@ def _workbook(stages, rows, cols, path: Path) -> None:
     _header(ws, headers)
     for r in rows:
         pct = r["deltas"].get("ppl_val", {}).get("vs_original_pct")
-        ws.append([r["stage"], r["row"], r["status"]] + [r["metrics"].get(c) for c in cols]
+        ws.append([r["stage"], r["row"], r["status"]] + [_xl_cell(r["metrics"].get(c)) for c in cols]
                   + [pct, requirement_cell(r["requirement"])])
     # Win/loss vs the standard method: lower perplexity is better, so a negative change is a win.
     col = get_column_letter(len(headers) - 1)

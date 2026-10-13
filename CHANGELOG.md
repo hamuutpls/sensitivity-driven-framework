@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-10-13: ponytail audit fixes
+
+From the ponytail audit of main 9a7ef8f (`/mnt/project-files/audits/ponytail-audit-20261013.md`); numbers are the
+audit's. Covered by `tests/test_audit_fixes_20261013.py` (every test there fails on 9a7ef8f). Finding 8 (the
+Stage 3 standard row for token-dropping methods) is left for the Stage 3 work.
+
+- Pruning: the same-size plan at prune ratio 0 prunes nothing (it gave every layer ~1e-19, so low-rank cut every
+  layer) (1). Structured pruning raises when a layer is planned above its feed-forward share instead of silently
+  removing less than the size it reports (2). Pruning after a Stage 1 method keeps that method's limits (QTIP and
+  ABQ-LLM fail with their reason, BiLLM's framework row is refused) (5); low-rank after a Stage 1 method is
+  refused, since it re-rounds its factors with round-to-nearest and replaces the Stage 1 rounding (6).
+- Serving: vLLM runs with prefix caching off and TensorRT-LLM with KV block reuse off, so prefill time is a real
+  prefill, not a cache hit (backend versions bumped: those rows are measured again) (3). Both size the model for
+  the latency prompt plus new tokens and refuse a prompt longer than an eval window (13). llama.cpp refuses a
+  SentencePiece tokenizer without its `tokenizer.model` (perplexity was silently wrong) (14).
+- Reports: one verdict (`StageReporter.verdict`) behind both "Key findings" and the plain summary, on the main
+  metrics only; a timing difference within the rows' std is a tie (4). The master workbook shows NaN/inf as text
+  (19). Evaluation-data text follows `eval.dataset`, the threshold-sweep rounding line follows
+  `prune_sweep_quantize`, the score comparison counts the real layers, `handoff.md` lists the joint plan files (20).
+- Stage 0: a run clears its old plan files first, so a resumed run never mixes plans of two runs (7). The FP16 cache
+  key keeps vLLM/TensorRT-LLM settings at their defaults (changing a path re-measured everything; default-setting
+  entries stay valid) (9). `kv_uniform_bits` must be one of `kv_bits_options` (a typo crashed Stage 0 after
+  profiling) (10). With `act_plan="from_weights"` the joint plan gets that plan's real average activation bits
+  (11). The score comparison uses `stage0.normalization` (12).
+- Stage 1: one input-rounding function, so `rtn_act` alone and inside a joint method round by the same rule (15).
+  SqueezeLLM, SpQR, AQLM, QuIP#, PB-LLM and BiLLM no longer key their cache on `gptq_groupsize`, which they ignore
+  (those standard rows are recomputed once) (18).
+- Figures: the stage roles and run ID match the current pipeline (17).
+- Lean: deleted `scripts/colab_aqlm_debug.py`, `StageReporter.findings`, `BILLM_FIXED_BITS`, an unused import and a
+  redundant check; the GPTQ and compressed-tensors exports share `save_tensors`; the vLLM and TensorRT-LLM backends
+  share `run_worker`; the Stage 0 sweep grid refuses settings Stage 0 ignores (`smoothquant_alpha`).
+
 ## 2026-10-11: test sweep, 28 edge-case bugs fixed
 
 Most are covered by `tests/test_edge_cases.py` (each of those tests failed before its fix); the serving workers'

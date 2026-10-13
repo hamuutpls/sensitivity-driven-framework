@@ -50,7 +50,7 @@ def test_bits_only_plan_required(tiny_llama, name):
 
 
 def test_registry_shape():
-    assert wb.BILLM_FIXED_BITS and set(wb.WEIGHT_METHODS_B) == {"aqlm", "quip", "quipsharp", "pbllm", "billm"}
+    assert set(wb.WEIGHT_METHODS_B) == {"aqlm", "quip", "quipsharp", "pbllm", "billm"}
     assert [v[4] for v in wb.WEIGHT_METHODS_B.values()] == [True, True, True, True, False]
 
 

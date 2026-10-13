@@ -55,6 +55,12 @@ def calibration_batches(
     return list(windows.split(batch_size))
 
 
+def eval_data_label(ev) -> str:
+    """The evaluation data as report text, from the eval config (dataset and window length)."""
+    name = "wikitext-2" if ev.dataset == "wikitext2" else ev.dataset
+    return f"{name} test, {ev.seq_len}-token windows, validation/held-out halves"
+
+
 def eval_windows(
     texts: list[str], tokenizer, seq_len: int, max_windows: int | None = None
 ) -> tuple[torch.Tensor, torch.Tensor]:

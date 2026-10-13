@@ -85,6 +85,12 @@ def write_handoff(
          "`quant_plan.json`", "`CompressionPlan.load`"],
         ["Stage 1: activations", "bits per layer for the numbers passed between layers",
          "`activation_plan.json`" + (" (+ `activation_profile.json`)" if act_prof else ""), "`ActivationPlan.load`"],
+    ]
+    if (path.parent / "joint_weight_plan.json").exists():
+        rows.append(["Stage 1: weights and activations together", "a weight and an activation bit length per layer, "
+                     "planned together", "`joint_weight_plan.json` + `joint_activation_plan.json`",
+                     "`CompressionPlan.load`, `ActivationPlan.load`"])
+    rows += [
         ["Stage 2: pruning", "share removed per layer (nothing rounded); layers never to prune",
          "`prune_plan.json` (+ `prune_plan_same_size.json`)", "`CompressionPlan.load`"],
         ["Stage 3: KV cache", "key bits, value bits and share of past words kept per layer",

@@ -62,7 +62,8 @@ def structured_prune_(model: nn.Module, plan: CompressionPlan, batches: list[tor
     (a row of each input Linear and the matching column of the output Linear), as many as remove the planned share
     of the layer's weights, lowest ||x_j|| * ||W_out[:, j]|| first.
     Removed channels are zeroed here (same accuracy); Stage 4 can cut them out for real size and speed.
-    ponytail: attention heads are never removed; add head pruning if feed-forward channels run out."""
+    ponytail: attention heads are never removed; a layer planned above its feed-forward share raises (add head
+    pruning if that is needed)."""
     hidden = model.config.hidden_size
     for lp, layer in zip(plan.layers, find_decoder_layers(model)):
         if lp.pruning_ratio == 0:
@@ -73,7 +74,11 @@ def structured_prune_(model: nn.Module, plan: CompressionPlan, batches: list[tor
         ups, down = found
         total = sum(m.weight.numel() for m in layer.modules() if isinstance(m, nn.Linear))
         per_channel = sum(m.in_features for m in ups) + down.out_features
-        k = min(down.in_features, round(lp.pruning_ratio * total / per_channel))
+        k = round(lp.pruning_ratio * total / per_channel)
+        if k > down.in_features:  # the row's size comes from the plan, so removing less must not pass silently
+            raise ValueError(f"layer {lp.layer}: structured pruning can remove at most "
+                             f"{down.in_features * per_channel / total:.1%} of the layer (its feed-forward "
+                             f"channels), the plan asks for {lp.pruning_ratio:.1%}")
         score = input_sq_norms(model, layer, batches)[down].sqrt() * down.weight.float().norm(dim=0)
         drop = score.argsort()[:k]
         down.weight.data[:, drop] = 0

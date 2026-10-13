@@ -37,7 +37,10 @@ def main(args: dict) -> dict:
     extra = {"linear_backend": args["linear_backend"], "enforce_eager": True} if args.get("linear_backend") else {}
     share = args.get("gpu_memory_utilization")
     share = memory_share(*torch.cuda.mem_get_info()) if share is None else share
-    llm = LLM(model=args["model_dir"], dtype="float16", max_model_len=args["seq_len"] + 8, seed=0,
+    # long enough for the perplexity windows and the latency prompt + new tokens; prefix caching off, or every timed
+    # prefill after the first reads the repeated prompt from the cache and measures about one decode step
+    n = max(args["seq_len"], args["prompt_len"] + args["decode_tokens"]) + 8
+    llm = LLM(model=args["model_dir"], dtype="float16", max_model_len=n, seed=0, enable_prefix_caching=False,
               kv_cache_memory_bytes=kv_bytes, gpu_memory_utilization=share, **extra)
     out: dict = {}
     if extra:  # a layer whose activations should be rounded must run on a kernel that does it, or the row is wrong
@@ -71,6 +74,9 @@ def main(args: dict) -> dict:
         out[f"vllm_ppl_{name}"] = nll(args[name])
 
     def timed(prompt_len: int, new: int) -> float:
+        if len(args["val"][0]) < prompt_len:  # the prompt is cut from the first perplexity window
+            raise ValueError(f"latency prompt of {prompt_len} tokens is longer than an eval window "
+                             f"({len(args['val'][0])}); raise eval.seq_len")
         ids = [{"prompt_token_ids": args["val"][0][:prompt_len]}]
         sp = SamplingParams(max_tokens=new, temperature=0, ignore_eos=True)
         for _ in range(args["warmup"]):

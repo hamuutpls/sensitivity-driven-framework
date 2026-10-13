@@ -34,9 +34,10 @@ CALIB = ("calib_dataset", "calib_samples")
 
 def default_grid(points: int = 5) -> dict[str, list[Any]]:
     """Every choice of a categorical parameter; `points` evenly spaced values of a continuous one. Only the
-    parameters Stage 0 plans with (stages 0 and 1); later stages' parameters do not change a Stage 0 plan."""
+    parameters a Stage 0 plan depends on (Stage 0's own, and the group size of its memory prediction); the
+    others do not change a Stage 0 plan."""
     grid = {}
-    for p in (p for p in SEARCH_SPACE.params if p.stage <= 1):
+    for p in (p for p in SEARCH_SPACE.params if p.stage == 0 or p.name == "gptq_groupsize"):
         if p.choices is not None:
             grid[p.name] = list(p.choices)
         else:

@@ -14,9 +14,6 @@ as plain FP16.
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -26,6 +23,7 @@ from torch import nn
 
 from sdf.config import EvalConfig
 from sdf.eval import ct_export, gptq_export
+from sdf.eval.worker import run_worker
 from sdf.reporting.metrics import METRICS, MetricSpec
 from sdf.stage0.activation import ActivationPlan
 from sdf.stage0.planner import CompressionPlan
@@ -35,7 +33,7 @@ log = get_logger(__name__)
 
 # Bump when a change alters the measured numbers, or turns cached error rows into measurable ones, so cached vLLM
 # results are not reused.
-VERSION = 3  # 3: start-up memory share follows the free memory (rows failed vLLM's 0.92 check in 2)
+VERSION = 4  # 4: prefix caching off, so prefill is a real prefill; 3: start-up memory share follows the free memory (rows failed vLLM's 0.92 check in 2)
 
 _NOTE = " Measured in vLLM, a program for running models on servers, after saving the model at the plan's bits."
 METRICS.update({
@@ -98,20 +96,6 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
                 "gpu_memory_utilization": cfg.vllm_gpu_memory_utilization,
                 "act_layers": [] if acts is None else [lp.layer for lp, w in zip(acts.layers, plan.layers)
                                                        if lp.act_bits < baseline_bits and w.bit_width < baseline_bits]}
-        (d / "args.json").write_text(json.dumps(args))
-        cmd = [cfg.vllm_python, str(Path(__file__).with_name("vllm_worker.py")), str(d / "args.json")]
-        log.info("vLLM: %s", " ".join(cmd))
-        # vLLM compiles kernels with tools installed next to its Python (ninja); a venv's bin/ is not on PATH
-        # unless the venv is activated, so put it there.
-        env = {**os.environ, "PATH": os.pathsep.join([str(Path(cfg.vllm_python).parent), os.environ.get("PATH", "")])}
-        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
-        if r.returncode:
-            text = r.stderr or r.stdout
-            log.warning("vllm_worker failed (%d):\n%s", r.returncode, text[-4000:])
-            # the cause is the last line naming an error (vLLM's "Unsupported quantization config: ..." etc.)
-            cause = next((ln.strip() for ln in reversed(text.splitlines()) if "rror" in ln and "http" not in ln),
-                         text.strip()[-300:])
-            raise VLLMError(f"vllm_worker failed ({r.returncode}): {cause}")
-        out = {"vllm_size_gb": size, **json.loads(r.stdout.strip().splitlines()[-1])}
+        out = {"vllm_size_gb": size, **run_worker(cfg.vllm_python, "vllm_worker.py", args, d, VLLMError)}
     log.info("vLLM: %s", ", ".join(f"{k}={v:.4g}" for k, v in out.items() if isinstance(v, float)))
     return out

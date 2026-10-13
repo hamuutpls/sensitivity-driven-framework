@@ -11,7 +11,7 @@ from typing import Any, Callable
 import torch
 
 from sdf.config import _default_sources
-from sdf.data import calibration_batches, eval_windows, load_texts
+from sdf.data import calibration_batches, eval_data_label, eval_windows, load_texts
 from sdf.eval.metrics import measure_model
 from sdf.reporting.reporter import StageReporter
 from sdf.run import RunContext
@@ -198,9 +198,12 @@ def profile_key(ctx: RunContext, cand: dict[str, Any], score: str | None = None)
 def fp16_key(ctx: RunContext, device: torch.device) -> dict[str, Any]:
     cfg = ctx.cfg
     hw = torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu"
-    # Downstream and llama.cpp settings are left out: the FP16 perplexity and latency do not depend on them (and
-    # existing cache entries stay valid); their results are cached under their own keys.
-    ev = {k: v for k, v in asdict(cfg.eval).items() if not k.startswith(("downstream", "llamacpp"))}
+    # Downstream and serving-backend settings do not change the FP16 perplexity and latency; their results are cached
+    # under their own keys. Downstream and llama.cpp ones are left out; vLLM and TensorRT-LLM ones are kept at
+    # their defaults, so entries made with the defaults stay valid.
+    default = type(cfg.eval)()
+    ev = {k: getattr(default, k) if k.startswith(("vllm", "trtllm")) else v for k, v in asdict(cfg.eval).items()
+          if not k.startswith(("downstream", "llamacpp"))}
     return {"model": cfg.model.name, "dtype": cfg.model.dtype, "eval": ev, "hardware": hw,
             "backend": "hf-transformers", "seed": cfg.run.seed,
             "latency": 2, **source_key(cfg, cfg.eval.dataset)}  # latency 2: timed with deterministic algorithms off (2026-10-06)
@@ -300,6 +303,13 @@ def load_guard(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
     return guarded_layers(removal.raw_scores, k), removal.cost.get("wall_clock_s", 0.0)
 
 
+# Plan and profile files run_stage0 writes into stage_0/ (what Stages 1-3 load)
+_PLAN_OUTPUTS = ("joint_weight_plan.json", "joint_activation_plan.json", "joint_profile.json", "quant_plan.json",
+                 "prune_plan.json", "prune_plan_same_size.json", "kv_profile.json", "kv_cache_plan.json",
+                 "kv_cache_plan_bits_only.json", "activation_plan.json", "activation_profile.json",
+                 "compression_plan.json", "sensitivity_profile.json")
+
+
 def run_stage0(
     ctx: RunContext,
     candidate: dict[str, Any],
@@ -322,11 +332,15 @@ def run_stage0(
         stage=0, title="Sensitivity profiling and compression planning",
         conditions={"model": cfg.model.name, "calibration": f"{candidate['calib_dataset']}, "
                     f"{candidate['calib_samples']} x {cfg.calibration.seq_len} tokens", "seed": cfg.run.seed,
-                    "evaluation data": f"wikitext-2 test, {cfg.eval.seq_len}-token windows, validation/held-out halves",
+                    "evaluation data": eval_data_label(cfg.eval),
                     "device": str(device), "backend": "HF Transformers",
                     "group size for memory prediction": candidate["gptq_groupsize"]},
         main_metrics=MAIN_METRICS,
     )
+    # A resumed run writes into the same folder, and each file below is only saved when its part succeeds: remove
+    # the old ones first, so Stage 1-3 never load a plan from an earlier run next to this run's plans.
+    for f in _PLAN_OUTPUTS:
+        (rep.dir / f).unlink(missing_ok=True)
     # Exposure is always scored against layer removal when that profile exists (it does whenever the guard is
     # on), so plans built from different measures are comparable; against its own ranks every measure that
     # protects k layers scores the same.
@@ -495,7 +509,9 @@ def _joint_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle
     and the same average activation bits as the activation plan unless set otherwise, so the two can be compared."""
     s0 = ctx.cfg.stage0
     avg_w = s0.joint_avg_weight_bits or sum(lp.bit_width for lp in quant.layers) / len(quant.layers)
-    avg_a = s0.joint_avg_act_bits or s0.act_avg_bits
+    # a plan made from the weight plan does not aim at act_avg_bits: give the joint plan that plan's real average
+    avg_a = s0.joint_avg_act_bits or (act.avg_bits if s0.act_plan == "from_weights" and act is not None
+                                      else s0.act_avg_bits)
     out = None
     with rep.method(METHOD_JOINT, "framework", label="Our method: weights and activations planned together",
                     plain_desc="each layer was tested with its weights and its incoming numbers rounded together, at "

@@ -92,6 +92,10 @@ def _save_tokenizer(tokenizer: Any, out: Path) -> None:
         src = Path(snapshot_download(tokenizer.name_or_path, allow_patterns=["tokenizer.model"]))
     if (src / "tokenizer.model").exists():
         shutil.copy2(src / "tokenizer.model", out / "tokenizer.model")
+    elif getattr(tokenizer, "vocab_files_names", {}).get("vocab_file") == "tokenizer.model":
+        # a SentencePiece tokenizer without its model file: llama.cpp perplexity would be silently wrong
+        raise FileNotFoundError(f"tokenizer.model not found in {src}; llama.cpp needs it for this SentencePiece "
+                                "tokenizer (perplexity is wrong without it)")
 
 
 def _run(cmd: list[Any]) -> str:

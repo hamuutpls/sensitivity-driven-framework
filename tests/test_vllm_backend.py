@@ -67,7 +67,8 @@ def _worker_share(monkeypatch, args):
     monkeypatch.setitem(sys.modules, "vllm", types.SimpleNamespace(LLM=llm, SamplingParams=None))
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda: (36.27e9, 39.49e9))
     with pytest.raises(_Stop):
-        vllm_worker.main({"model_dir": "m", "seq_len": 8, "linear_backend": None, **args})
+        vllm_worker.main({"model_dir": "m", "seq_len": 8, "prompt_len": 4, "decode_tokens": 2, "linear_backend": None,
+                          **args})
     return seen["gpu_memory_utilization"]
 
 

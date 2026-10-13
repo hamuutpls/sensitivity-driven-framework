@@ -22,10 +22,9 @@ from typing import Any
 import torch
 from torch import nn
 
-from sdf.eval.gptq_export import pack, symmetric_grid
+from sdf.eval.gptq_export import pack, save_tensors, symmetric_grid
 from sdf.stage0.activation import ActivationPlan
 from sdf.stage0.planner import CompressionPlan, require_bits_only
-from sdf.stage0.sensitivity import find_decoder_layers
 
 BITS = (2, 4, 8)  # pack-quantized widths that fill an int32 exactly
 ACT_BITS = (4, 8)  # activation widths vLLM has kernels for (Humming W*A8 and W*A4)
@@ -93,8 +92,6 @@ def has_online_rotation(model: nn.Module) -> bool:
 def export(model: nn.Module, tokenizer: Any, weights: CompressionPlan, acts: ActivationPlan, group_size: int,
            act_group_size: int, out_dir: Path, baseline_bits: int = 16) -> float:
     """Save `model` under the joint plan (weights, acts) to out_dir; returns the checkpoint size in GB."""
-    from safetensors.torch import save_file
-
     require_bits_only(weights, "the compressed-tensors export")
     if has_online_rotation(model):
         raise ValueError("the model rotates inputs while it runs (QuaRot/SpinQuant); a saved checkpoint cannot hold "
@@ -102,23 +99,8 @@ def export(model: nn.Module, tokenizer: Any, weights: CompressionPlan, acts: Act
     qc = quant_config(weights, acts, group_size, act_group_size, baseline_bits)  # validates before writing
     if not qc["config_groups"]:
         raise ValueError(f"no layer below {baseline_bits} bits; nothing to export in compressed-tensors format")
-    layers = find_decoder_layers(model)
     bits_of = {lp.layer: lp.bit_width for lp in weights.layers}
-    index = {id(m): i for i, layer in enumerate(layers) for m in layer.modules()}
-    quantized: set[str] = set()
-    tensors: dict[str, torch.Tensor] = {}
-    for name, m in model.named_modules():
-        if isinstance(m, nn.Linear) and id(m) in index and bits_of[index[id(m)]] < baseline_bits:
-            tensors.update({f"{name}.{k}": v.contiguous() for k, v in
-                            quantize_linear(m.weight, bits_of[index[id(m)]], group_size).items()})
-            if m.bias is not None:
-                tensors[f"{name}.bias"] = m.bias.detach().half().cpu()
-            quantized.add(name + ".")
-    for name, p in model.state_dict().items():
-        if not any(name.startswith(q) for q in quantized):
-            tensors[name] = p.detach().half().cpu().contiguous() if p.is_floating_point() else p.cpu()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    save_file(tensors, out_dir / "model.safetensors", metadata={"format": "pt"})
+    save_tensors(model, bits_of, baseline_bits, quantize_linear, group_size, out_dir)
     cfg = model.config.to_dict()
     cfg["quantization_config"] = qc
     cfg["torch_dtype"] = "float16"

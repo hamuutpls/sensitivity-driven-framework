@@ -2,8 +2,8 @@
 
     pip install matplotlib && python docs/figures/make_figures.py
 
-The numbers are copied from the final Stage 0 run 20261001-184158_781ac2 (TinyLlama-1.1B-Chat, RTX 5070 Ti,
-main 7af8ab0, main.py defaults): its handoff.md, plus the layer-removal perplexity rises from the scores
+The numbers are copied from the Stage 0 run 20261003-144910_3df5df (TinyLlama-1.1B-Chat, RTX 5070 Ti,
+main.py defaults; same on Colab, 20261004-120724_3c2a04): its handoff.md, plus the layer-removal perplexity rises from the scores
 comparison run (f57e864). The run folders live on Mohammad's PC, not in the repo.
 # ponytail: numbers are a snapshot; read results/<run_id>/stage_0/*.json instead once figures are needed per run.
 """
@@ -70,13 +70,13 @@ def fig1_pipeline():
     box(ax, 1, 31, 14, 26, "Original model\nTinyLlama 1.1B\n22 layers\n2.20 GB at 16 bits", NOTE)
     box(ax, 21, 31, 17, 26, "Stage 0  (done)\nSensitivity plan\nTests each layer and\nwrites one plan per\nlater stage", DONE)
     arrow(ax, (15.5, 44), (20.5, 44))
-    stages = [("Stage 1  (planned)\nWeights: the stored numbers\nGPTQ, AWQ, pruning, low-rank", 56),
-              ("Stage 2  (planned)\nActivations: numbers passed\nbetween layers\nSmoothQuant, QuaRot, RPTQ, SpinQuant", 31),
-              ("Stage 3  (planned)\nKV cache: short-term memory\nwhile writing\nQuaRot KV, KVQuant, H2O, SnapKV", 6)]
-    for text, y in stages:
-        box(ax, 46, y, 26, 20, text, PLANNED, dashed=True, fs=8.8)
+    stages = [("Stage 1  (done)\nQuantization: weights and the\nnumbers passed between layers\nGPTQ, AWQ, SmoothQuant, QuaRot", 56, True),
+              ("Stage 2  (done)\nPruning: removing weights\nWanda, structured channels,\nlow-rank", 31, True),
+              ("Stage 3  (planned)\nKV cache: short-term memory\nwhile writing\nQuaRot KV, KVQuant, H2O, SnapKV", 6, False)]
+    for text, y, done in stages:
+        box(ax, 46, y, 26, 20, text, DONE if done else PLANNED, dashed=not done, fs=8.8)
         arrow(ax, (38.5, 44), (45.5, y + 10))
-        arrow(ax, (72.5, y + 10), (79.5, 44), dashed=True, color=PLANNED)
+        arrow(ax, (72.5, y + 10), (79.5, 44), dashed=not done, color=NOTE if done else PLANNED)
     box(ax, 80, 31, 19, 26, "Stage 4  (planned)\nEvaluation on real\nsoftware: HF, llama.cpp,\nvLLM, TensorRT-LLM", PLANNED, dashed=True)
     box(ax, 21, 83, 78, 12, "Search  (planned)\nTries many settings (threshold, share removed, group size, ...) with\nMOBO, MFBO and NSGA-III; keeps the best trade-offs of accuracy, memory, speed",
         PLANNED, dashed=True, fs=8.8)
@@ -99,9 +99,9 @@ def fig2_stage0_method():
             "1. Skip one layer\nRun the text with that\nlayer taken out",
             "2. Measure the damage\nRise in perplexity\n(how surprised the model\nis by real text)",
             "3. Rank the layers\nScore 0 (least fragile)\nto 1 (most fragile)",
-            "4. Decide per layer\nScore >= 0.5: 8 bits, keep all\nBelow: 4 bits, remove 30%\nTop 5 by damage:\nnever thinned out"],
+            "4. Decide per layer\nScore >= 0.5: 8 bits, keep all\nBelow: 4 bits (Stage 1),\nremove 30% (Stage 2)\nTop 5 by damage:\nnever thinned out"],
          "compression_plan.json"),
-        (40, "Activations  (for Stage 2)", [
+        (40, "Activations  (for Stage 1)", [
             "1. Round the inputs\nRound one layer's inputs\nto 4 bits, then to 8 bits",
             "2. Measure the damage\nRise in perplexity\nat each bit width",
             "3. Share out the bits\nAverage 6 bits; 8 bits go to\nthe layers hurt most at 4",
@@ -176,7 +176,7 @@ def fig3_weight_plan():
 
 def fig4_activation_plan():
     fig, ax = plt.subplots(figsize=(13, 5.6))
-    fig.suptitle("Figure 4. Activation plan for Stage 2: where rounding the passed-on numbers hurts",
+    fig.suptitle("Figure 4. Activation plan for Stage 1: where rounding the passed-on numbers hurts",
                  x=0.02, ha="left", fontsize=14, weight="bold")
     fig.text(0.02, 0.905, RUN, fontsize=9, color=NOTE)
     ax.bar(LAYERS, ACT_DMG4, color=[PROTECT if b == 8 else COMPRESS for b in ACT_BITS])
@@ -192,7 +192,7 @@ def fig4_activation_plan():
             "  copied from weight plan:  0.67\n  standard 8-bit everywhere:  0.009",
             ha="right", fontsize=9, family="monospace", bbox=dict(boxstyle="round,pad=0.6", fc="white", ec=NOTE))
     fig.text(0.02, -0.02, "Lower perplexity rise is better. Activations are the numbers one layer hands to the next while the model runs. Rises are added "
-             "up per layer, which assumes they add; Stage 2 measures the real effect.", fontsize=8.8, color=NOTE)
+             "up per layer, which assumes they add; Stage 1 measures the real effect.", fontsize=8.8, color=NOTE)
     fig.tight_layout(rect=(0, 0, 1, 0.9))
     save(fig, "fig4_activation_plan")
 
@@ -234,8 +234,8 @@ def fig6_handoff():
                      "Every plan is a JSON file next to the Stage 0 report; later stages load it instead of measuring again.")
     box(ax, 36, 40, 28, 22, "Stage 0 results\nTinyLlama, 22 layers\nPerplexity 10.18 (tuning half)\n10.62 (held-out half, never tuned on)", DONE)
     targets = [
-        (2, 72, "Stage 1: weights\ncompression_plan.json\n11 layers protected at 8 bits;\n0, 1, 2, 7, 21 never pruned\n1,003 MB plan vs 777 MB standard", (36, 56)),
-        (66, 72, "Stage 2: activations\nactivation_plan.json\n8 or 4 bits per layer, average 6\nPredicted rise 0.56 vs 0.67 copied\nLayer 1 most fragile", (64, 56)),
+        (2, 72, "Stage 1: weights (bits), Stage 2: pruning\ncompression_plan.json\n11 layers protected at 8 bits;\n0, 1, 2, 7, 21 never pruned\n1,003 MB plan vs 777 MB standard", (36, 56)),
+        (66, 72, "Stage 1: activations\nactivation_plan.json\n8 or 4 bits per layer, average 6\nPredicted rise 0.56 vs 0.67 copied\nLayer 1 most fragile", (64, 56)),
         (2, 6, "Stage 3: KV cache\nkv_cache_plan.json\nKeys/values 4 bits (layer 0 values 2)\nWords kept 10-100% per layer\n13.0 MB -> 3.2 MB predicted", (36, 46)),
         (66, 6, "Stage 4 and search\nresults.json, sensitivity_profile.json\nReference: 47 ms to read a prompt,\n33-46 ms per word (overhead-bound),\n2.45 GB peak memory\nCached profile: trials re-plan in ms", (64, 46)),
     ]

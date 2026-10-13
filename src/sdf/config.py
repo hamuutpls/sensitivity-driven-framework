@@ -160,6 +160,10 @@ class Stage0Config:
             opts = getattr(self, name)
             if not isinstance(opts, (list, tuple)) or not opts or list(opts) != sorted(set(opts)):
                 raise ValueError(f"stage0.{name} must be ascending with no repeats, got {opts}")
+        # the KV predictions look up the standard row's bits among the measured options (stage0/run.py predict_kv)
+        if self.kv_uniform_bits not in self.kv_bits_options and self.kv_uniform_bits < self.baseline_bits:
+            raise ValueError(f"stage0.kv_uniform_bits {self.kv_uniform_bits} must be one of kv_bits_options "
+                             f"{self.kv_bits_options} or >= baseline_bits")
 
 
 @dataclass

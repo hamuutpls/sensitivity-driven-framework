@@ -153,6 +153,8 @@ def same_size_pruning_plan(
     for _ in range(60):
         mid = (lo + hi) / 2
         lo, hi = (mid, hi) if removed(mid) < target else (lo, mid)
+    if target == 0:  # bisection only approaches 0 (ratios ~1e-19), which would still prune every layer
+        hi = 0.0
     layers = tuple(LayerPlan(layer=i, bit_width=bits, pruning_ratio=min(1.0, hi * w), protected=False,
                              sensitivity=s, guarded=i in guarded) for i, (s, w) in enumerate(zip(scores, weight)))
     return CompressionPlan(layers, "same_size_pruning", None, prune_ratio)

@@ -485,7 +485,7 @@ def run_stages(ctx: RunContext, candidate: dict[str, Any], stage0_dir: str | Pat
     st = ctx.cfg.stages
     stage2 = st.stage2_methods + [f"{p}{AFTER}{q}" for q in st.stage2_after for p in st.stage2_methods]
     outputs = {}
-    for stage, names in ((1, st.stage1_methods), (2, stage2 if st.stage2_methods else []), (3, st.stage3_methods)):
+    for stage, names in ((1, st.stage1_methods), (2, stage2), (3, st.stage3_methods)):
         if names:
             for name, path in run_stage(ctx, stage, names, candidate, stage0_dir, **kwargs).items():
                 outputs[f"stage_{stage}_{name}"] = path

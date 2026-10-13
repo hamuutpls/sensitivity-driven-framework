@@ -86,7 +86,7 @@ def _written_files(monkeypatch, plan):
         seen.update({f.name: f.read_text() for f in model_dir.iterdir() if f.suffix == ".json"})
         return subprocess.CompletedProcess(cmd, 1, "", "stop here")
 
-    monkeypatch.setattr(t.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(t.gptq_export, "export", lambda model, tok, plan, g, out: out.mkdir(parents=True))
     ids = torch.zeros(1, 4, dtype=torch.long)
     with pytest.raises(t.TRTLLMError):

@@ -63,8 +63,8 @@ def bnb_(model: nn.Module, plan: CompressionPlan, batches: list[torch.Tensor], g
                 m.weight.copy_(_round(m.weight, lp.bit_width))
 
 
-# name: (fn, label, search-space params, library note, what differs from the fork)
+# name: (fn, label, search-space params, library note, follows the plan's bits, what differs from the fork)
 WEIGHT_METHODS_BNB = {
-    "bitsandbytes": (bnb_, "bitsandbytes (NF4 / int8)", (), "bitsandbytes (CUDA GPU; torch fallback on CPU)",
+    "bitsandbytes": (bnb_, "bitsandbytes (NF4 / int8)", (), "bitsandbytes (CUDA GPU; torch fallback on CPU)", True,
                      "int8 is row-wise absmax without LLM.int8's outlier columns; 4/8 bits only, no per-group size"),
 }
