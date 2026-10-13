@@ -263,7 +263,7 @@ by accident, and the hash alone tells whether two runs had identical settings.
 | `StageReporter(stage, run_dir, title, config, environment, conditions, requirement, main_metrics)` | Creates `run_dir/stage_<N>/`. `conditions` is the dict of identical conditions printed in every report (CMP-02). |
 | `with rep.method(method, variant, **info) as row:` | Adds a row; the stage fills `row.metrics`. `variant` must be `fp16`, `original` or `framework`. |
 | `rep.add_raw(method, variant, records)` | Raw measurements for the Raw sheet (INF-02). |
-| `rep.per_layer`, `rep.findings`, `rep.next_steps`, `rep.sections`, `rep.glossary`, `rep.plain_*` | Stage-specific content; the plain-language fields feed the non-specialist part of `report.md` (REP-06). |
+| `rep.per_layer`, `rep.next_steps`, `rep.sections`, `rep.glossary`, `rep.plain_*` | Stage-specific content; the plain-language fields feed the non-specialist part of `report.md` (REP-06). |
 | `rep.finalize() -> {"report": Path, "xlsx": Path, "json": Path}` | Computes deltas, writes the three files. |
 
 **State dynamics of a row.**

@@ -55,11 +55,15 @@ def mixed_checkpoint(model_dir: Path, out_dir: Path) -> Path:
 
 
 def main(args: dict) -> dict:
+    # the latency prompt is cut from the first perplexity window: check before loading the model
+    if args.get("val") and len(args["val"][0]) < args["prompt_len"]:
+        raise ValueError(f"latency prompt of {args['prompt_len']} tokens is longer than an eval window "
+                         f"({len(args['val'][0])}); raise eval.seq_len or lower eval.latency_prompt_len")
     import torch
     from tensorrt_llm._tensorrt_engine import LLM  # the TensorRT engine backend (not the PyTorch one)
     from tensorrt_llm.llmapi import BuildConfig, KvCacheConfig, SamplingParams
 
-    n = args["seq_len"] + 8
+    n = max(args["seq_len"], args["prompt_len"] + args["decode_tokens"]) + 8  # perplexity windows and latency runs
     base = _used_gb()
     bc = BuildConfig(max_seq_len=n, max_input_len=n, max_batch_size=8, max_num_tokens=8 * n,
                      gather_context_logits=True)
@@ -71,7 +75,8 @@ def main(args: dict) -> dict:
     # The tokenizer comes from the exported HF folder: a converted mixed-bit checkpoint has none, and without one
     # TensorRT-LLM refuses to generate ("tokenizer is required to reset end_id").
     llm = LLM(model=str(model_dir), tokenizer=str(hf_dir), dtype="float16", build_config=bc,
-              kv_cache_config=KvCacheConfig(max_tokens=args.get("kv_tokens", 46000)))
+              kv_cache_config=KvCacheConfig(max_tokens=args.get("kv_tokens", 46000),
+                                            enable_block_reuse=False))  # reuse would time a cached prefill
     out: dict = {"trtllm_build_s": time.perf_counter() - t0}
     eng = Path(args["engine_dir"])
     llm.save(str(eng))

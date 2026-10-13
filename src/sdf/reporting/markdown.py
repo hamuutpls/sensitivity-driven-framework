@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sdf.reporting.metrics import METRICS, ONE_OFF_COSTS, MetricSpec, is_better, is_number, label
+from sdf.reporting.metrics import METRICS, MetricSpec, label
 from sdf.utils.cache import atomic_write_text
 
 if TYPE_CHECKING:
@@ -53,20 +53,11 @@ def _plain_verdicts(rep: "StageReporter") -> list[str]:
             out.append(f"There is no working {VARIANT_PLAIN['original'][0].lower()} result for {fw.method}, "
                        "so the framework could not be compared against it.")
             continue
-        wins, losses, one_off = [], [], []
-        for m in rep.main_metrics:
-            spec = METRICS.get(m)
-            a, b = fw.metrics.get(m), orig.metrics.get(m)
-            if spec is None or not (is_number(a) and is_number(b)):
-                continue
-            better = is_better(m, a - b)
-            if better is None:
-                continue
-            if m in ONE_OFF_COSTS:
-                if not better:
-                    one_off.append(f"{spec.plain or spec.label} ({_value(a - b, spec)} more, paid once)")
-                continue
-            (wins if better else losses).append(spec.plain or spec.label)
+        wins, losses, cost = rep.verdict(fw)
+        plain = lambda m: METRICS[m].plain or METRICS[m].label  # noqa: E731 - verdict() only judges known metrics
+        wins, losses = [plain(m) for m in wins], [plain(m) for m in losses]
+        one_off = [f"{plain(m)} ({_value(fw.metrics[m] - orig.metrics[m], METRICS.get(m))} more, paid once)"
+                   for m in cost]
         if wins and not losses:
             head = "beat the standard method on every measure compared"
         elif losses and not wins:

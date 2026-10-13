@@ -55,7 +55,7 @@ def sweep_main(argv: list[str] | None = None) -> None:
 
     from sdf.run import start_run
     from sdf.stage0.sensitivity import SensitivityProfile
-    from sdf.stage0.sweep import run_sweep
+    from sdf.stage0.sweep import default_grid, run_sweep
 
     cfg = load_config(args.config, _parse_sets(args.set))
     grid = {}
@@ -63,6 +63,8 @@ def sweep_main(argv: list[str] | None = None) -> None:
         name, sep, values = item.partition("=")
         if not sep:
             raise SystemExit(f"--grid expects name=v1,v2, got {item!r}")
+        if name not in default_grid():
+            raise SystemExit(f"--grid {name}: a Stage 0 sweep only varies {sorted(default_grid())}")
         grid[name] = [yaml.safe_load(v) for v in values.split(",")]
         for v in grid[name]:
             SEARCH_SPACE.make({**cfg.hyperparams, name: v})

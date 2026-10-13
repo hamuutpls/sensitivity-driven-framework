@@ -289,14 +289,14 @@ def spqr_(model: nn.Module, plan: CompressionPlan, batches: list[torch.Tensor], 
             spqr_quantize_(m.weight, H, bits, 16, threshold, stat_bits)
 
 
-# (fn, label, search-space params read, library note, simplified vs the fork)
+# (fn, label, search-space params read, library note, follows the plan's bits, simplified vs the fork)
 WEIGHT_METHODS_A = {
-    "omniquant": (omniquant_, "OmniQuant (LWC)", ("gptq_groupsize",), "own torch port of the OmniQuant fork, LWC only",
+    "omniquant": (omniquant_, "OmniQuant (LWC)", ("gptq_groupsize",), "own torch port of the OmniQuant fork, LWC only", True,
                   "no LET; per-Linear Hessian loss with 100 full-batch AdamW steps instead of block-output MSE over 20 epochs"),
-    "squeezellm": (squeezellm_, "SqueezeLLM", ("gptq_groupsize",), "own torch port of the SqueezeLLM fork",
+    "squeezellm": (squeezellm_, "SqueezeLLM", (), "own torch port of the SqueezeLLM fork", True,
                    "magnitude outliers by top share not IQR threshold; GPU Lloyd k-means from uniform init, not sklearn k-means++; no CUDA kernels"),
-    "spqr": (spqr_, "SpQR", ("gptq_groupsize",), "own torch port of the SpQR fork",
+    "spqr": (spqr_, "SpQR", (), "own torch port of the SpQR fork", True,
              "no integer-zero option, outliers kept dense (not CSR); group size fixed at 16; no Spearman permutation"),
-    "efficientqat": (efficientqat_, "EfficientQAT (Block-AP)", ("gptq_groupsize",), "own torch port of the EfficientQAT fork, Block-AP only",
+    "efficientqat": (efficientqat_, "EfficientQAT (Block-AP)", ("gptq_groupsize",), "own torch port of the EfficientQAT fork, Block-AP only", True,
                      "no E2E-QP; per-Linear Hessian loss with 200 full-batch steps instead of block-output MSE over 2 epochs of mini-batches"),
 }

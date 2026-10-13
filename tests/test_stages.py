@@ -62,7 +62,7 @@ FORK_WEIGHT_METHODS = ("omniquant", "squeezellm", "spqr", "efficientqat", "aqlm"
 @pytest.mark.parametrize("stage,method", [(1, "rtn"), (1, "gptq"), (1, "awq")]
                          + [(1, m) for m in ACTIVATION_METHODS_1 + FORK_WEIGHT_METHODS] + [
                                           (2, "unstructured_prune"), (2, "structured_prune"), (2, "low_rank"),
-                                          (2, "unstructured_prune_after_gptq"), (2, "low_rank_after_awq"),
+                                          (2, "unstructured_prune_after_gptq"), (2, "structured_prune_after_awq"),
                                           (3, "rtn_kv")])
 def test_run_stage_end_to_end(stage0_dir, tiny_llama, tokenizer, small_cfg, stage, method):
     ctx = start_run(small_cfg)

@@ -27,7 +27,7 @@ from typing import Any, Callable, Iterator
 import torch
 from torch import nn
 
-from sdf.data import eval_windows
+from sdf.data import eval_data_label, eval_windows
 from sdf.eval.metrics import perplexity
 from sdf.reporting.markdown import _table
 from sdf.reporting.reporter import StageReporter
@@ -135,7 +135,7 @@ def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, toke
                     "backend": "HF Transformers", "pruning": "magnitude, per output row (simulated)",
                     "rounding": rounding, "levels": ", ".join(f"{r:.0%}" for r in ratios),
                     "framework threshold": threshold, "never pruned (guard)": sorted(guarded),
-                    "evaluation data": f"wikitext-2 test, {cfg.eval.seq_len}-token windows, validation/held-out halves"},
+                    "evaluation data": eval_data_label(cfg.eval)},
         main_metrics=METRICS,
     )
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -79,22 +79,19 @@ def quantize_linear(weight: torch.Tensor, bits: int, group_size: int) -> dict[st
             "g_idx": (torch.arange(in_f) // (in_f // scale.shape[1])).int()}
 
 
-def export(model: nn.Module, tokenizer: Any, plan: CompressionPlan, group_size: int, out_dir: Path) -> float:
-    """Save `model` under `plan` (bits only) to out_dir; returns the checkpoint size in GB."""
+def save_tensors(model: nn.Module, bits_of: dict[int, int], below: int, quantize: Callable[..., dict[str, torch.Tensor]],
+                 group_size: int, out_dir: Path) -> None:
+    """Write out_dir/model.safetensors: every decoder Linear of a layer under `below` bits as `quantize(weight, bits,
+    group_size)` (plus its bias in FP16), everything else in FP16."""
     from safetensors.torch import save_file
 
-    require_bits_only(plan, "the GPTQ-format export")
-    if all(lp.bit_width >= 16 for lp in plan.layers):
-        raise ValueError("no layer below 16 bits; nothing to export in GPTQ format")
-    layers = find_decoder_layers(model)
-    bits_of = {lp.layer: lp.bit_width for lp in plan.layers}
-    index = {id(m): i for i, layer in enumerate(layers) for m in layer.modules()}
+    index = {id(m): i for i, layer in enumerate(find_decoder_layers(model)) for m in layer.modules()}
     quantized: set[str] = set()
     tensors: dict[str, torch.Tensor] = {}
     for name, m in model.named_modules():
-        if isinstance(m, nn.Linear) and id(m) in index and bits_of[index[id(m)]] < 16:
+        if isinstance(m, nn.Linear) and id(m) in index and bits_of[index[id(m)]] < below:
             tensors.update({f"{name}.{k}": v.contiguous() for k, v in
-                            quantize_linear(m.weight, bits_of[index[id(m)]], group_size).items()})
+                            quantize(m.weight, bits_of[index[id(m)]], group_size).items()})
             if m.bias is not None:
                 tensors[f"{name}.bias"] = m.bias.detach().half().cpu()
             quantized.add(name + ".")
@@ -103,6 +100,15 @@ def export(model: nn.Module, tokenizer: Any, plan: CompressionPlan, group_size: 
             tensors[name] = p.detach().half().cpu().contiguous() if p.is_floating_point() else p.cpu()
     out_dir.mkdir(parents=True, exist_ok=True)
     save_file(tensors, out_dir / "model.safetensors", metadata={"format": "pt"})
+
+
+def export(model: nn.Module, tokenizer: Any, plan: CompressionPlan, group_size: int, out_dir: Path) -> float:
+    """Save `model` under `plan` (bits only) to out_dir; returns the checkpoint size in GB."""
+    require_bits_only(plan, "the GPTQ-format export")
+    if all(lp.bit_width >= 16 for lp in plan.layers):
+        raise ValueError("no layer below 16 bits; nothing to export in GPTQ format")
+    bits_of = {lp.layer: lp.bit_width for lp in plan.layers}
+    save_tensors(model, bits_of, 16, quantize_linear, group_size, out_dir)
     common = Counter(b for b in bits_of.values() if b < 16).most_common(1)[0][0]
     dynamic = {rf"+:.*layers\.{i}\..*": {"bits": b} for i, b in bits_of.items() if b != common and b < 16}
     dynamic.update({rf"-:.*layers\.{i}\..*": {} for i, b in bits_of.items() if b >= 16})  # "-:" = left unquantized

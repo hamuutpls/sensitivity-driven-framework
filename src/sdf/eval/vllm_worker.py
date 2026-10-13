@@ -25,6 +25,10 @@ def memory_share(free: float, total: float, cap: float = 0.92, margin: float = 0
 
 
 def main(args: dict) -> dict:
+    # the latency prompt is cut from the first perplexity window: check before loading the model
+    if args.get("val") and len(args["val"][0]) < args["prompt_len"]:
+        raise ValueError(f"latency prompt of {args['prompt_len']} tokens is longer than an eval window "
+                         f"({len(args['val'][0])}); raise eval.seq_len or lower eval.latency_prompt_len")
     import torch
     from vllm import LLM, SamplingParams
 
@@ -37,7 +41,10 @@ def main(args: dict) -> dict:
     extra = {"linear_backend": args["linear_backend"], "enforce_eager": True} if args.get("linear_backend") else {}
     share = args.get("gpu_memory_utilization")
     share = memory_share(*torch.cuda.mem_get_info()) if share is None else share
-    llm = LLM(model=args["model_dir"], dtype="float16", max_model_len=args["seq_len"] + 8, seed=0,
+    # long enough for the perplexity windows and the latency prompt + new tokens; prefix caching off, or every timed
+    # prefill after the first reads the repeated prompt from the cache and measures about one decode step
+    n = max(args["seq_len"], args["prompt_len"] + args["decode_tokens"]) + 8
+    llm = LLM(model=args["model_dir"], dtype="float16", max_model_len=n, seed=0, enable_prefix_caching=False,
               kv_cache_memory_bytes=kv_bytes, gpu_memory_utilization=share, **extra)
     out: dict = {}
     if extra:  # a layer whose activations should be rounded must run on a kernel that does it, or the row is wrong

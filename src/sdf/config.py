@@ -127,7 +127,8 @@ class Stage0Config:
     joint_w_options: list[int] = field(default_factory=lambda: [4, 8, 16])  # ascending
     joint_a_options: list[int] = field(default_factory=lambda: [4, 8, 16])  # ascending
     joint_avg_weight_bits: float | None = None  # None = the Stage 1 weight plan's decoder-layer average
-    joint_avg_act_bits: float | None = None  # None = act_avg_bits (the separate activation plan's average)
+    joint_avg_act_bits: float | None = None  # None = the separate activation plan's average (act_avg_bits, or the
+    # real average of the plan made from the weight plan when act_plan = "from_weights")
     joint_refine_rounds: int = 2  # re-plan from rises measured with every other layer rounded (0 = off)
     baseline_bits: int = 16  # bits/weight of the FP16 model and of unquantised tensors (embeddings, norms, lm_head)
     # KV cache plan (see stage0/kv_cache.py). Per layer: key bits, value bits, share of past tokens kept.
@@ -160,6 +161,10 @@ class Stage0Config:
             opts = getattr(self, name)
             if not isinstance(opts, (list, tuple)) or not opts or list(opts) != sorted(set(opts)):
                 raise ValueError(f"stage0.{name} must be ascending with no repeats, got {opts}")
+        # the KV predictions look up the standard row's bits among the measured options (stage0/run.py predict_kv)
+        if self.kv_uniform_bits not in self.kv_bits_options and self.kv_uniform_bits < self.baseline_bits:
+            raise ValueError(f"stage0.kv_uniform_bits {self.kv_uniform_bits} must be one of kv_bits_options "
+                             f"{self.kv_bits_options} or >= baseline_bits")
 
 
 @dataclass

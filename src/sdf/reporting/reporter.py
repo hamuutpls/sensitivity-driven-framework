@@ -110,7 +110,6 @@ class StageReporter:
         self.rows: list[ComparisonRow] = []
         self.per_layer: list[dict[str, Any]] = []
         self.raw: list[dict[str, Any]] = []
-        self.findings: list[str] = []  # stage-specific findings; the framework-vs-original ones are generated
         self._auto_findings: list[str] = []
         self.anomalies: list[str] = []
         self.next_steps: list[str] = []
@@ -188,27 +187,50 @@ class StageReporter:
                 if d:
                     row.deltas[name] = d
 
+    def verdict(self, fw: ComparisonRow) -> tuple[list[str], list[str], list[str]] | None:
+        """Main metrics on which framework row `fw` beats, loses to, or (one-off costs) costs more than its
+        original row; None when there is no original row. The one judgement behind both the technical findings
+        and the plain summary. Perplexity counts once (see below). A difference within the larger of the two rows' std (a repeated timing's `<name>_std`) is a tie."""
+        orig = self.find_original(fw)
+        if orig is None:
+            return None
+        wins, losses, one_off = [], [], []
+        for m in self.main_metrics:
+            a, b = fw.metrics.get(m), orig.metrics.get(m)
+            if not (is_number(a) and is_number(b)):
+                continue
+            better = is_better(m, a - b)
+            if better is None:
+                continue
+            spread = [x for x in (fw.metrics.get(m.removesuffix("_mean") + "_std"),
+                                  orig.metrics.get(m.removesuffix("_mean") + "_std")) if is_number(x)]
+            if spread and abs(a - b) <= max(spread):
+                continue  # inside the measurement noise
+            if m in ONE_OFF_COSTS:
+                if not better:
+                    one_off.append(m)
+                continue
+            (wins if better else losses).append(m)
+        # validation and held-out perplexity are one measure on two halves of the data: count it once, and only
+        # when both halves agree (a disagreement is a tie)
+        if "ppl_val" in wins + losses and "ppl_heldout" in wins + losses:
+            agree = ("ppl_val" in wins) == ("ppl_heldout" in wins)
+            wins, losses = ([m for m in ms if m != "ppl_heldout" and (agree or m != "ppl_val")]
+                            for ms in (wins, losses))
+        return wins, losses, one_off
+
     def comparison_summary(self) -> list[str]:
-        """Plain-language framework-vs-original findings, one line per method."""
+        """Framework-vs-original findings, one line per method, with the size of each difference."""
         lines = []
         for fw in (r for r in self.rows if r.variant == "framework" and r.status == "ok"):
-            wins, losses, one_off = [], [], []
-            for name, d in fw.deltas.items():
-                abs_d = d.get("vs_original_abs")
-                if abs_d is None:
-                    continue
-                better = is_better(name, abs_d)
-                if better is None:
-                    continue
-                pct = d.get("vs_original_pct")
-                desc = f"{label(name)} ({abs_d:+.4g}{'' if pct is None else f', {pct:+.1f}%'})"
-                (one_off if name in ONE_OFF_COSTS else wins if better else losses).append(desc)
-            if self.find_original(fw) is None:
+            v = self.verdict(fw)
+            if v is None:
                 lines.append(f"**{fw.method}**: no original-method row to compare against.")
                 continue
-            if not any("vs_original_abs" in d for d in fw.deltas.values()):
+            if not any("vs_original_abs" in fw.deltas.get(m, {}) for m in self.main_metrics):
                 lines.append(f"**{fw.method}**: no measure could be compared with the original method.")
                 continue
+            wins, losses, one_off = ([self._delta_text(fw, m) for m in ms] for ms in v)
             verdict = ("beats" if wins and not losses else "trades off against" if wins and losses
                        else "loses to" if losses else "ties with")
             text = f"**{fw.method}**: the framework {verdict} the original method."
@@ -224,6 +246,12 @@ class StageReporter:
                 gaps = ", ".join(f"{k} over by {v:.4g}" for k, v in r.requirement["shortfall"].items())
                 lines.append(f"{r.key} misses the deployment requirement: {gaps}.")
         return lines
+
+    @staticmethod
+    def _delta_text(row: ComparisonRow, m: str) -> str:
+        d = row.deltas.get(m, {})
+        abs_d, pct = d.get("vs_original_abs"), d.get("vs_original_pct")
+        return label(m) + ("" if abs_d is None else f" ({abs_d:+.4g}{'' if pct is None else f', {pct:+.1f}%'})")
 
     # ------------------------------------------------------------------ output
 
@@ -250,7 +278,7 @@ class StageReporter:
 
     @property
     def all_findings(self) -> list[str]:
-        return self._auto_findings + self.findings
+        return self._auto_findings
 
     @property
     def json_path(self) -> Path:

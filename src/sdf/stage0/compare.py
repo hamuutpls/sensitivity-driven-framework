@@ -3,7 +3,6 @@ they rank the layers. Outputs under <run_dir>/stage_0_scores/: report.md, scores
 
 from __future__ import annotations
 
-import dataclasses
 import json
 from typing import Any, Callable
 
@@ -41,9 +40,8 @@ def compare_scores(ctx: RunContext, candidate: dict[str, Any], scores: tuple[str
     profiles: dict[str, SensitivityProfile] = {}
     failures: dict[str, str] = {}
     for score in scores:
-        sub = dataclasses.replace(ctx, cfg=cfg.with_overrides({"stage0.score": score}))
         try:
-            profiles[score], _ = load_profile(sub, candidate, handle, text_loader)
+            profiles[score], _ = load_profile(ctx, candidate, handle, text_loader, score=score)
         except Exception as e:  # noqa: BLE001 - one score failing (e.g. out of memory) must not sink the others
             log.exception("score %s failed", score)
             failures[score] = f"{type(e).__name__}: {e}"
@@ -51,7 +49,7 @@ def compare_scores(ctx: RunContext, candidate: dict[str, Any], scores: tuple[str
         raise RuntimeError(f"every score failed: {failures}")
 
     t = candidate["sensitive_threshold"]
-    ranks = {s: normalize(p.raw_scores) for s, p in profiles.items()}
+    ranks = {s: normalize(p.raw_scores, cfg.stage0.normalization) for s, p in profiles.items()}
     protected = {s: protected_at(r, t) for s, r in ranks.items()}
     names = list(profiles)
     result = {
@@ -123,7 +121,7 @@ def _report(res: dict[str, Any], cand: dict[str, Any]) -> str:
                      + " | " + (f"{pk:.2f}" if pk is not None else "–") + " |")
         L += ["", "**What each column means**", "",
               "- **Way**: how layer sensitivity was measured (see *The ways compared* below).",
-              "- **Agreement with ...**: how alike the two rankings of the 22 layers are (Spearman rank "
+              f"- **Agreement with ...**: how alike the two rankings of the {n} layers are (Spearman rank "
               "correlation): 1 = same order, 0 = no relation, negative = roughly opposite.",
               f"- **Top {TOP_K} layers**: the {TOP_K} layers this way rates most sensitive, most sensitive first.",
               f"- **Same as never-pruned set**: how many of those {TOP_K} are also among the {TOP_K} layers whose "

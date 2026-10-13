@@ -15,7 +15,6 @@ fragile for weights is fragile for activations too.
 
 from __future__ import annotations
 
-import math
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Iterator

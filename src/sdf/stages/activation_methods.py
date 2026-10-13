@@ -25,10 +25,12 @@ _FP = 16  # bit width at which a layer is not quantized
 
 
 @contextmanager
-def _round_inputs(model: nn.Module, plan: ActivationPlan, group_size: int) -> Iterator[None]:
+def _round_inputs(model: nn.Module, plan: ActivationPlan, group_size: int, below: int = _FP) -> Iterator[None]:
+    """Round each layer's inputs to its planned bits while open; layers at `below` bits or more stay as they are
+    (rtn_act passes stage0.baseline_bits, as Stage 0 measured it)."""
     with ExitStack() as stack:
         for lp, layer in zip(plan.layers, find_decoder_layers(model)):
-            if lp.act_bits < _FP:
+            if lp.act_bits < below:
                 stack.enter_context(quantize_inputs(layer, lp.act_bits, group_size))
         yield
 

@@ -19,7 +19,6 @@ from sdf.stage0.planner import CompressionPlan, require_bits_only
 from sdf.stage0.sensitivity import find_decoder_layers
 from sdf.stages.weights import gptq_quantize_, input_hessians
 
-BILLM_FIXED_BITS = True  # BiLLM binarizes every layer the same way: it has no per-layer bit-width knob
 VEC = 8  # AQLM group size and QuIP# lattice dimension
 _GEN_SEED = 0  # random rotations, k-means starts and samples; the runner sets it to the run seed (`set_seed`)
 
@@ -351,7 +350,7 @@ def billm_(model: nn.Module, plan: CompressionPlan, batches: list[torch.Tensor],
            baseline_bits: int, int_zero: bool = True) -> None:
     """BiLLM (Huang et al., 2024, "BiLLM: Pushing the Limit of Post-Training Quantization for LLMs"): about 1 bit per
     weight. Every layer below `baseline_bits` is quantized the same way, whatever its planned bit width
-    (BILLM_FIXED_BITS): the method has no bit-width knob.
+    (its registry entry says it does not follow the plan's bits): the method has no bit-width knob.
 
     Per block of 128 input columns, as in the fork (salient metric "hessian", partition 3, orders (1, 1, 2)): the
     columns with the largest sum of w^2 / Hinv_jj^2 are salient (their number, 1..49, searched for the smallest
@@ -367,16 +366,16 @@ def billm_(model: nn.Module, plan: CompressionPlan, batches: list[torch.Tensor],
 
 _NOTE = "plain-torch port of the fork's core algorithm, see the docstring in sdf.stages.weights_b"
 WEIGHT_METHODS_B = {
-    "aqlm": (aqlm_, "AQLM", ("gptq_groupsize",), f"additive codebooks, greedy residual k-means init ({_NOTE})", True,
+    "aqlm": (aqlm_, "AQLM", (), f"additive codebooks, greedy residual k-means init ({_NOTE})", True,
              "no beam search, no codebook/scale fine-tuning, k-means 12 iterations on a sample, not Hessian-weighted"),
     "quip": (quip_, "QuIP", ("gptq_groupsize",), f"random orthogonal incoherence + LDLQ ({_NOTE})", True,
              "Kronecker QR + permutation instead of the fork's butterfly, no greedy local-search passes"),
-    "quipsharp": (quipsharp_, "QuIP#", ("gptq_groupsize",), f"Hadamard incoherence + E8P lattice VQ ({_NOTE})", True,
+    "quipsharp": (quipsharp_, "QuIP#", (), f"Hadamard incoherence + E8P lattice VQ ({_NOTE})", True,
                   "per-layer searched stage scales instead of fixed opt_scale, Hadamard (x) QR for non-power-of-2 "
                   "dims, GPTQ block feedback, no fine-tuning"),
-    "pbllm": (pbllm_, "PB-LLM", ("gptq_groupsize",), f"partial binarization, salient weights at 8 bits ({_NOTE})", True,
+    "pbllm": (pbllm_, "PB-LLM", (), f"partial binarization, salient weights at 8 bits ({_NOTE})", True,
               "row mean/scale over binarized weights only, one group per matrix, no quantization-aware training"),
-    "billm": (billm_, "BiLLM", ("gptq_groupsize",), f"about 1-bit residual binarization, ignores plan bits ({_NOTE})",
+    "billm": (billm_, "BiLLM", (), f"about 1-bit residual binarization, ignores plan bits ({_NOTE})",
               False, "searches batched over the candidates (same values); quantile on at most 2**24 values of a block; "
               "ignores the plan's bit width (about 1 bit for every layer)"),
 }

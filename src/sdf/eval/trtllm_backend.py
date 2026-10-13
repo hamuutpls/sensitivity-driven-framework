@@ -16,8 +16,6 @@ row (plan None) is built from plain FP16.
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -27,6 +25,7 @@ from torch import nn
 
 from sdf.config import EvalConfig
 from sdf.eval import gptq_export
+from sdf.eval.worker import run_worker
 from sdf.reporting.metrics import METRICS, MetricSpec
 from sdf.stage0.planner import CompressionPlan
 from sdf.stage0.sensitivity import find_decoder_layers
@@ -35,7 +34,7 @@ from sdf.utils.logging import get_logger
 log = get_logger(__name__)
 
 # Bump when a change alters the measured numbers, so cached TensorRT-LLM results are not reused.
-VERSION = 2  # 2: mixed-bit plans build through a per-layer checkpoint (were errors in 1)
+VERSION = 3  # 3: KV block reuse off, so prefill is a real prefill; 2: mixed-bit plans build through a per-layer checkpoint (were errors in 1)
 
 _NOTE = " Measured in TensorRT-LLM, NVIDIA's program for running models fast, after building the model at the plan's bits."
 METRICS.update({
@@ -109,17 +108,6 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
                 "val": val.tolist(), "heldout": held.tolist(), "warmup": cfg.latency_warmup,
                 "repeats": cfg.latency_repeats, "prompt_len": cfg.latency_prompt_len,
                 "decode_tokens": cfg.latency_decode_tokens}
-        (d / "args.json").write_text(json.dumps(args))
-        cmd = [cfg.trtllm_python, str(Path(__file__).with_name("trtllm_worker.py")), str(d / "args.json")]
-        log.info("TensorRT-LLM: %s", " ".join(cmd))
-        env = {**os.environ, "PATH": os.pathsep.join([str(Path(cfg.trtllm_python).parent), os.environ.get("PATH", "")])}
-        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
-        if r.returncode:
-            text = r.stderr or r.stdout
-            log.warning("trtllm_worker failed (%d):\n%s", r.returncode, text[-4000:])
-            cause = next((ln.strip() for ln in reversed(text.splitlines()) if "rror" in ln and "http" not in ln),
-                         text.strip()[-300:])
-            raise TRTLLMError(f"trtllm_worker failed ({r.returncode}): {cause}")
-        out = json.loads(r.stdout.strip().splitlines()[-1])
+        out = run_worker(cfg.trtllm_python, "trtllm_worker.py", args, d, TRTLLMError)
     log.info("TensorRT-LLM: %s", ", ".join(f"{k}={v:.4g}" for k, v in out.items() if isinstance(v, float)))
     return out
