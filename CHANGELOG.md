@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-13: Stage 2 share sweep
+
+Mohammad's asks in the Stage 2 pruning thread ("do a sweep i dont want only 30%", "4", and the answers after).
+
+- Stage 0 saves one Stage 2 plan pair per level in `stage0.pruning_levels` (30% to 90%):
+  `prune_plan_<level>.json` and `prune_plan_same_size_<level>.json`. Stage 2 runs Standard, Our method and Our method
+  same size at every level, as rows named `<method>_<level>` (e.g. `low_rank_030`). Each label gives the level and
+  the share of the decoder layers' weights really removed. An older Stage 0 folder without level plans runs once, as
+  before, with a warning.
+- Every Stage 2 row also runs on llama.cpp, vLLM and TensorRT-LLM (before: Stage 1 only). Pruned models keep their
+  zeros, so their memory and speed there match the uncompressed model.
+- Structured pruning removes at most 75% of a layer, or the layer's feed-forward share when lower, in Stage 2 and
+  in the Stage 0 pruning levels test (before: the feed-forward share, 78.6% in TinyLlama). A capped same-size plan
+  moves what a capped layer cannot take onto the other unguarded layers, so it removes as much as Standard while
+  they can hold it.
+- A llama.cpp failure keeps the row and records why, as vLLM and TensorRT-LLM already did.
+- Pruning levels test: the CSV column `share_of_model_removed` is now `share_of_decoder_weights_removed` (it counts
+  only the decoder layers' weights), and the report column says so. A report with no comparison and no failures no
+  longer says "see the failures below".
+
 ## 2026-10-13: audit follow-ups
 
 Two audit fixes were only partly done in the entry below (found by a review after it merged); tests in

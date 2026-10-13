@@ -30,7 +30,8 @@ from sdf.eval.metrics import measure_model
 from sdf.run import RunContext
 from sdf.stage0.activation import ActivationPlan, uniform_activation_plan
 from sdf.stage0.kv_cache import KVPlan, KVProfile, predict_kv, uniform_kv_plan
-from sdf.stage0.planner import CompressionPlan, baseline_cost, cap_pruning, combine_plans, level_tag, uniform_plan
+from sdf.stage0.planner import (CompressionPlan, baseline_cost, cap_pruning, combine_plans, level_tag,
+                                same_size_pruning_plan, uniform_plan)
 from sdf.stage0.pruning_levels import layer_caps
 from sdf.stage0.run import (_cost_metrics, _kv_metrics, calib_batches, fp16_key, load_fp16, source_key,
                             setup, stage_reporter, weight_cost)
@@ -440,7 +441,7 @@ def run_stage(
     for m, plans, level in (row for method in methods for row in sweep(method, all_plans)):
         simulated_any |= m.simulated
         orig, cap_note = _capped(m, original_plan(m, plans, s0, candidate["prune_ratio_aggressive"]
-                                                  if level is None else level), caps)
+                                                  if level is None else level), caps, plans.profile.layer_numel)
         with rep.method(m.name, "original", description=f"{m.label}, standard settings: {_describe(orig)}",
                         simulated=m.simulated) as row:
             _label_level(row, level, orig, plans.profile.layer_numel)
@@ -476,7 +477,8 @@ def run_stage(
                 info["label"], info["plain_desc"] = plain
             with rep.method(m.name + suffix, "framework", **info) as row:
                 if level is not None and all(k in plans.plans for k in _plan_keys(m, plan_key)):
-                    _label_level(row, level, _capped(m, framework_plan(m, plans, plan_key), caps)[0],
+                    _label_level(row, level, _capped(m, framework_plan(m, plans, plan_key), caps,
+                                                     plans.profile.layer_numel)[0],
                                  plans.profile.layer_numel)
                 _require(m)
                 if m.note:
@@ -486,7 +488,7 @@ def run_stage(
                 if gone := [plans.files[k] for k in _plan_keys(m, plan_key) if k not in plans.plans]:
                     raise FileNotFoundError(f"{', '.join(gone)} not in {plans.dir}; re-run Stage 0 with this plan "
                                             "enabled")
-                plan, cap_note = _capped(m, framework_plan(m, plans, plan_key), caps)
+                plan, cap_note = _capped(m, framework_plan(m, plans, plan_key), caps, plans.profile.layer_numel)
                 if cap_note:
                     row.info["note"] = "; ".join(n for n in (row.info.get("note"), cap_note) if n)
                 row.info["description"] = f"{m.label}, Stage 0 {_describe(plan)}"
@@ -508,18 +510,26 @@ def run_stage(
     return rep.finalize()
 
 
-def _capped(m: Method, plan: Any, caps: Callable[[float], tuple[float, ...]]) -> tuple[Any, str]:
+def _capped(m: Method, plan: Any, caps: Callable[[float], tuple[float, ...]],
+            layer_numel: list[int]) -> tuple[Any, str]:
     """`plan` capped at the method's most per layer (`caps(Method.max_ratio)`: 75%, or the layer's feed-forward
-    share when lower), and the row's note when it was ("" if not)."""
+    share when lower), and the row's note when it was ("" if not). A same-size plan is rebuilt with the caps, so
+    what a capped layer cannot take moves to the other unguarded layers and the total still matches the standard
+    row while they can hold it (Mohammad, 2026-10-13)."""
     if m.max_ratio is None or not isinstance(plan, CompressionPlan):
         return plan, ""
-    layer_cap = caps(m.max_ratio)
+    layer_cap = list(caps(m.max_ratio))
     if all(lp.pruning_ratio <= c for lp, c in zip(plan.layers, layer_cap)):
         return plan, ""
     asked = max(lp.pruning_ratio for lp in plan.layers)
-    return (cap_pruning(plan, list(layer_cap)),
-            f"capped at {min(layer_cap):.1%} of each layer (the plan asked for up to {asked:.0%}; at most "
+    note = (f"capped at {min(layer_cap):.1%} of each layer (the plan asked for up to {asked:.0%}; at most "
             f"{m.max_ratio:.0%}, or the layer's feed-forward share when lower)")
+    if plan.kind != "same_size_pruning":
+        return cap_pruning(plan, layer_cap), note
+    refit = same_size_pruning_plan([lp.sensitivity for lp in plan.layers], plan.layers[0].bit_width,
+                                   plan.prune_ratio_aggressive, layer_numel,
+                                   frozenset(lp.layer for lp in plan.layers if lp.guarded), layer_cap)
+    return combine_plans(plan, refit), note + "; what the capped layers could not take moved to the other layers"
 
 
 def _label_level(row, level: float | None, plan: CompressionPlan, layer_numel: list[int]) -> None:

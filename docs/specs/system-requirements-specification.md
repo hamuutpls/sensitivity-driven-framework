@@ -243,7 +243,7 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | ID | Requirement | Pri | Status | Ver | Source | Design |
 |---|---|---|---|---|---|---|
 | S2-01 | Stage 2 shall support Wanda (unstructured), structured pruning and low-rank decomposition. It shall round nothing, except that low-rank factors are stored at the plan's bits. | M | Implemented | T | DEC (2026-10-07) | SDD §7 |
-| S2-02 | In the framework variant, each layer's pruning ratio shall come from the Stage 0 pruning plan (`prune_plan.json`, `prune_plan_same_size.json`, S0-18): bits at the baseline, layers the guard protects never pruned. | M | Implemented | T | DEC (2026-10-07) | SDD §7 |
+| S2-02 | In the framework variant, each layer's pruning ratio shall come from the Stage 0 pruning plan (`prune_plan.json`, `prune_plan_same_size.json`, S0-18): bits at the baseline, layers the guard protects never pruned. Since 2026-10-13 Stage 2 runs every method at each level in `stage0.pruning_levels` (30% to 90%), with the level plans `prune_plan_<level>.json` and `prune_plan_same_size_<level>.json`; structured pruning removes at most 75% of a layer, or its feed-forward share when lower, and a capped same-size plan moves the rest onto the other unguarded layers. Every Stage 2 row also runs on llama.cpp, vLLM and TensorRT-LLM. | M | Implemented | T | DEC (2026-10-13) | SDD §7 |
 | S2-03 | Stage 2 shall run on the uncompressed model (path 0 > 2 > 4) and, as `<pruning>_after_<quantization>`, on the model a Stage 1 weight method has quantized (path 0 > 1 > 2 > 4); the series plan takes bits from the quantization plan and ratios from the pruning plan. | M | Implemented | T | DEC (2026-10-07) | SDD §7 |
 
 #### 3.1.9 Stage 3: KV-cache compression (S3)

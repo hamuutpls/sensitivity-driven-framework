@@ -145,6 +145,7 @@ def same_size_pruning_plan(
     prune_ratio: float,
     layer_numel: list[int],
     guarded: frozenset[int] = frozenset(),
+    caps: list[float] | None = None,
 ) -> CompressionPlan:
     """The fair pruning test: every layer at `bits` like `uniform_plan(scores, bits, prune_ratio)`, and the same
     total number of weights removed, but placed by sensitivity instead of evenly.
@@ -154,12 +155,18 @@ def same_size_pruning_plan(
     predicted size and the same share removed as the uniform plan, so any accuracy difference comes only from
     where the pruning goes. When the unguarded layers can't absorb it all (high ratios), they are emptied and
     the plan stays bigger than uniform; the caller sees that in the predicted cost.
+
+    `caps[l]`: the most layer l may lose (structured pruning, Mohammad 2026-10-13); what a capped layer cannot
+    take goes to the other unguarded layers, so the total still matches while they can hold it.
     """
     _check_ratio(prune_ratio)
     n = len(scores)
     weight = [0.0 if i in guarded else 1.0 - s + 1.0 / max(n - 1, 1) for i, s in enumerate(scores)]
     target = prune_ratio * sum(layer_numel)
-    removed = lambda c: sum(min(1.0, c * w) * m for w, m in zip(weight, layer_numel))  # noqa: E731
+    top = caps or [1.0] * n
+    if len(top) != n:
+        raise ValueError(f"{len(top)} caps for {n} layers")
+    removed = lambda c: sum(min(t, c * w) * m for w, m, t in zip(weight, layer_numel, top))  # noqa: E731
     lo, hi = 0.0, 1.0
     while removed(hi) < target and hi < 1e6:
         hi *= 2
@@ -168,8 +175,9 @@ def same_size_pruning_plan(
         lo, hi = (mid, hi) if removed(mid) < target else (lo, mid)
     if target == 0:  # bisection only approaches 0 (ratios ~1e-19), which would still prune every layer
         hi = 0.0
-    layers = tuple(LayerPlan(layer=i, bit_width=bits, pruning_ratio=min(1.0, hi * w), protected=False,
-                             sensitivity=s, guarded=i in guarded) for i, (s, w) in enumerate(zip(scores, weight)))
+    layers = tuple(LayerPlan(layer=i, bit_width=bits, pruning_ratio=min(t, hi * w), protected=False,
+                             sensitivity=s, guarded=i in guarded)
+                   for i, (s, w, t) in enumerate(zip(scores, weight, top)))
     return CompressionPlan(layers, "same_size_pruning", None, prune_ratio)
 
 

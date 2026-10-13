@@ -224,3 +224,38 @@ def test_a_llamacpp_failure_keeps_the_row_and_records_why(stage0_dir, tiny_llama
     row = rows["unstructured_prune_030/framework"]
     assert row["status"] == "ok" and row["metrics"]["ppl_val"] > 0
     assert row["info"]["llamacpp_error"] == "llama-quantize exited with 1"
+
+
+def test_same_size_plan_moves_what_a_capped_layer_cannot_take_to_the_other_layers():
+    from sdf.stage0.planner import same_size_pruning_plan
+    scores, numel = [0.9, 0.1, 0.2, 0.5, 0.0], [100, 100, 100, 100, 100]
+    free = same_size_pruning_plan(scores, 16, 0.5, numel, frozenset({0}))
+    assert max(lp.pruning_ratio for lp in free.layers) > 0.7  # without caps the most robust layer goes above 70%
+    capped = same_size_pruning_plan(scores, 16, 0.5, numel, frozenset({0}), [0.7] * 5)
+    ratios = [lp.pruning_ratio for lp in capped.layers]
+    assert ratios[0] == 0 and max(ratios) <= 0.7 + 1e-9
+    assert sum(ratios) / 5 == pytest.approx(0.5, abs=1e-6)  # the same total as the standard row
+    full = same_size_pruning_plan(scores, 16, 0.7, numel, frozenset({0}), [0.7] * 5)  # more than 4 x 70% can hold
+    assert [lp.pruning_ratio for lp in full.layers] == pytest.approx([0, 0.7, 0.7, 0.7, 0.7])
+    assert same_size_pruning_plan(scores, 16, 0.5, numel, frozenset({0}), None).to_dict() == free.to_dict()
+    with pytest.raises(ValueError):
+        same_size_pruning_plan(scores, 16, 0.5, numel, frozenset({0}), [0.7])
+
+
+def test_capping_a_same_size_plan_keeps_its_total_and_the_stage1_bits():
+    from sdf.stage0.planner import combine_plans, same_size_pruning_plan
+    from sdf.stages.runner import _capped
+    scores, numel = [0.9, 0.1, 0.2, 0.5, 0.0], [100, 100, 100, 100, 100]
+    same = same_size_pruning_plan(scores, 16, 0.5, numel, frozenset({0}))
+    bits = replace(same, layers=tuple(replace(lp, bit_width=b, pruning_ratio=0.0)
+                                      for lp, b in zip(same.layers, (8, 4, 4, 8, 4))))
+    after_stage1 = combine_plans(bits, same)  # a series row: Stage 1 bits, same-size pruning
+    m = METHODS["structured_prune"]
+    plan, note = _capped(m, after_stage1, lambda r: (0.7,) * 5, numel)
+    ratios = [lp.pruning_ratio for lp in plan.layers]
+    assert max(ratios) <= 0.7 + 1e-9 and sum(ratios) / 5 == pytest.approx(0.5, abs=1e-6)
+    assert [lp.bit_width for lp in plan.layers] == [8, 4, 4, 8, 4]
+    assert "moved to the other layers" in note
+    std, std_note = _capped(m, uniform_plan(scores, 16, 0.9), lambda r: (0.7,) * 5, numel)
+    assert {lp.pruning_ratio for lp in std.layers} == {0.7} and "moved" not in std_note
+    assert _capped(m, uniform_plan(scores, 16, 0.3), lambda r: (0.7,) * 5, numel)[1] == ""

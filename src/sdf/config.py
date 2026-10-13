@@ -65,16 +65,18 @@ class EvalConfig:
     # cuda_graph: replay prefill / decode step as CUDA graphs (GPU time only); eager: plain HF calls (before
     # 2026-10-06; mostly Python and kernel-launch overhead for a 1B model)
     latency_mode: str = "cuda_graph"
-    # llama.cpp backend (Stage 1 rows; sdf/eval/llamacpp.py): folder with the release programs (llama-quantize,
-    # llama-bench, llama-perplexity) and the path of its convert_hf_to_gguf.py. None = not measured.
+    # llama.cpp backend (Stage 1 and Stage 2 rows; sdf/eval/llamacpp.py): folder with the release programs
+    # (llama-quantize, llama-bench, llama-perplexity) and the path of its convert_hf_to_gguf.py. None = not measured.
     llamacpp_dir: str | None = None
     llamacpp_convert: str | None = None
-    # vLLM backend (Stage 1 rows; sdf/eval/vllm_backend.py): the Python that has vLLM installed (Linux only). None = not measured.
+    # vLLM backend (Stage 1 and Stage 2 rows; sdf/eval/vllm_backend.py): the Python that has vLLM installed (Linux
+    # only). None = not measured.
     vllm_python: str | None = None
     # Share of the GPU vLLM may claim at start-up (vLLM refuses to start when less is free). None = what is free
     # when it starts, minus 2%, at most 0.92 (vllm_worker.memory_share). Changes no measured number.
     vllm_gpu_memory_utilization: float | None = None
-    # TensorRT-LLM backend (Stage 1 rows; sdf/eval/trtllm_backend.py): the Python that has TensorRT-LLM (Linux only).
+    # TensorRT-LLM backend (Stage 1 and Stage 2 rows; sdf/eval/trtllm_backend.py): the Python that has
+    # TensorRT-LLM (Linux only).
     trtllm_python: str | None = None
     # Downstream multiple-choice tasks (lm-evaluation-harness task names); empty = not measured.
     downstream_tasks: list[str] = field(default_factory=list)
@@ -152,7 +154,9 @@ class Stage0Config:
     prune_sweep_same_size: bool = True
     # Pruning levels test, part of every Stage 0 run (stage0/pruning_levels.py): Wanda, structured and low-rank
     # each prune all layers, the non-guarded layers and the guarded layers only, at every share here, and the
-    # perplexity is measured (pruning only). Empty list = off.
+    # perplexity is measured (pruning only). Stage 0 also saves one Stage 2 plan pair per level
+    # (prune_plan_<level>.json, prune_plan_same_size_<level>.json), and Stage 2 runs each method at every level.
+    # Empty list = off (Stage 2 then runs once, at prune_ratio_aggressive).
     pruning_levels: list[float] = field(default_factory=lambda: [round(0.1 * i, 1) for i in range(3, 10)])
     # Threshold study (MODE "threshold_sweep", stage0/threshold_sweep.py): measure the plan at every threshold and
     # guard size (rounding follows prune_sweep_quantize)

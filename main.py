@@ -104,7 +104,8 @@ PRUNE_SWEEP_QUANTIZE = True  # True: also store the rest at the plan's bits (4 /
 PRUNE_SWEEP_SAME_SIZE = True  # True: also the fair test, same size and share removed, pruning placed by sensitivity
 # 6b. Pruning levels test, part of every Stage 0 run (results in <run>/stage_0_pruning_levels/)
 PRUNING_LEVELS = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]  # every Stage 0 run: Wanda / structured / low-rank on all,
-#   non-guarded and guarded-only layers at each share, perplexity measured (pruning only); [] = off
+#   non-guarded and guarded-only layers at each share, perplexity measured (pruning only); Stage 2 also runs at each
+#   share (Standard, Our method, Our method same size); [] = off
 THRESHOLD_SWEEP = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]  # MODE "threshold_sweep": protection thresholds to measure
 GUARD_SWEEP = [0, 3, 5, 8]  # MODE "threshold_sweep": never-pruned layer counts to measure with each threshold
 
