@@ -128,6 +128,11 @@ METRICS: dict[str, MetricSpec] = {
         "Weight sparsity", "", None, "share of the model's numbers removed",
         "Pruning deletes numbers that matter least. This is the share of all the model's numbers that the "
         "plan deletes (0.1 means 10%)."),
+    "decoder_weights_removed": MetricSpec(
+        "Share of the decoder layers' weights removed", "", None, "share of the decoder layers' weights removed",
+        "Pruning deletes numbers that matter least. This is the share of the decoder layers' weights (the Linear "
+        "weights of the repeated layers; embeddings, output head and norms are not counted) that the row deletes "
+        "(0.1 means 10%)."),
     "zero_weight_share": MetricSpec(
         "Weights exactly 0", "", None, "share of the layers' numbers that are exactly zero",
         "A check that quantization removed nothing. Rounding onto a grid that contains 0 turns some small numbers "

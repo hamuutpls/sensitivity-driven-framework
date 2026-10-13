@@ -136,12 +136,12 @@ def run_pruning_levels(ctx, candidate: dict[str, Any], handle, text_loader: Call
                                    f"{cfg.calibration.seq_len} tokens",
                     "levels": ", ".join(f"{r:.0%}" for r in levels), "guarded layers": sorted(guarded),
                     "layer sets": ", ".join(sets), "rounding": "none (pruning only)"},
-        main_metrics=["ppl_val", "ppl_heldout", "sparsity"])
+        main_metrics=["ppl_val", "ppl_heldout", "decoder_weights_removed"])
     for old in (CSV_NAME, rep.report_path.name, rep.xlsx_path.name, rep.json_path.name):  # no stale outputs on a rerun
         (rep.dir / old).unlink(missing_ok=True)
     if fp16:
         with rep.method("baseline", "fp16", description="uncompressed model (Stage 0 measurement)") as row:
-            row.metrics.update({k: fp16[k] for k in ("ppl_val", "ppl_heldout") if k in fp16}, sparsity=0.0)
+            row.metrics.update({k: fp16[k] for k in ("ppl_val", "ppl_heldout") if k in fp16}, decoder_weights_removed=0.0)
     batches: list[torch.Tensor] = []
     windows: list[torch.Tensor] = []
 
@@ -169,14 +169,14 @@ def run_pruning_levels(ctx, candidate: dict[str, Any], handle, text_loader: Call
                 per_layer = max(lp.pruning_ratio for lp in plan.layers)  # what is really removed (capped)
                 removed = share_removed(model, plan)
                 record = {"technique": tech, "layer_set": set_name, "level": r, "layers_pruned": len(layers),
-                          "share_removed_per_pruned_layer": per_layer, "share_of_model_removed": removed,
+                          "share_removed_per_pruned_layer": per_layer, "share_of_decoder_weights_removed": removed,
                           "ppl_val": None, "ppl_heldout": None, "status": "failed"}
                 shown = f"{per_layer:.1%} (capped from {r:.0%})" if per_layer + 1e-9 < r else f"{r:.0%}"
                 with rep.method(f"{tech}_{set_name}_{round(r * 100):03d}", "original", key_term=False,
                                 label=f"{tech_label}, {LAYER_SETS[set_name].lower()}, {shown}",
                                 description=f"{tech_label} removes {shown} of each of layers {layers}"
                                             " (pruning only, nothing rounded)") as row:
-                    row.metrics.update(sparsity=removed, protected_layers=num_layers - len(layers))
+                    row.metrics.update(decoder_weights_removed=removed, protected_layers=num_layers - len(layers))
                     key = {**key_base, "technique": tech, "version": [VERSION, METHODS[_METHOD[tech]].version],
                            "ratios": [lp.pruning_ratio for lp in plan.layers]}
                     result, row.info["cached"] = ctx.cache.get_or_compute(
