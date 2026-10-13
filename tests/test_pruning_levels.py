@@ -10,7 +10,7 @@ from transformers import LlamaConfig, LlamaForCausalLM
 
 from sdf.run import start_run
 from sdf.search_space import SEARCH_SPACE
-from sdf.stage0.pruning_levels import (CSV_NAME, capped_plan, feed_forward_share, layer_set, level_plan, restored,
+from sdf.stage0.pruning_levels import (CSV_NAME, SUBDIR, capped_plan, feed_forward_share, layer_set, level_plan, restored,
                                        share_removed)
 from sdf.stage0.run import run_stage0
 from sdf.stage0.sensitivity import find_decoder_layers
@@ -79,7 +79,8 @@ def test_every_stage0_run_measures_each_technique_layer_set_and_level(small_cfg,
     before = copy.deepcopy(tiny_llama.state_dict())
     res = run_stage0(ctx, SEARCH_SPACE.make({"calib_samples": 16}), model=tiny_llama, tokenizer=tokenizer,
                      text_loader=fake_texts)
-    with open(res.outputs["report"].parent / CSV_NAME) as f:
+    levels_dir = res.outputs["report"].parent.parent / SUBDIR
+    with open(levels_dir / CSV_NAME) as f:
         rows = list(csv.DictReader(f))
     assert len(rows) == 3 * 3 * 2
     assert {(r["technique"], r["layer_set"], r["level"]) for r in rows} == {
@@ -96,18 +97,38 @@ def test_every_stage0_run_measures_each_technique_layer_set_and_level(small_cfg,
     assert by[("wanda", "all_layers", "0.9")]["ppl_val"] != by[("wanda", "all_layers", "0.3")]["ppl_val"]
     after = tiny_llama.state_dict()
     assert all(torch.equal(before[k], after[k].to(before[k].dtype)) for k in before)
-    assert "Pruning levels test (for Stage 2)" in res.outputs["report"].read_text()
+    assert "Pruning levels test (for Stage 2)" in res.outputs["report"].read_text()  # pointer in Stage 0's report
+    report = (levels_dir / "report.md").read_text()
+    assert "Perplexity by technique, layer set and level" in report and "capped from 90%" in report
+    assert (levels_dir / "stage_0_comparison.xlsx").exists()
+    stage0_rows = res.outputs["json"].read_text()
+    assert "wanda_all_layers_030" not in stage0_rows  # the 63 rows stay out of Stage 0's own tables
 
 
 def test_pruning_levels_can_be_turned_off(small_cfg, tiny_llama, tokenizer):
     cfg = small_cfg.with_overrides({"stage0.pruning_levels": [], "stage0.joint_plan": False})
     res = run_stage0(start_run(cfg), SEARCH_SPACE.make({"calib_samples": 16}), model=tiny_llama, tokenizer=tokenizer,
                      text_loader=fake_texts)
-    assert not (res.outputs["report"].parent / CSV_NAME).exists()
+    assert not (res.outputs["report"].parent.parent / SUBDIR).exists()
 
 
-def test_pruning_levels_must_be_shares(small_cfg, tiny_llama, tokenizer):
-    cfg = small_cfg.with_overrides({"stage0.pruning_levels": [0.3, 1.5], "stage0.joint_plan": False})
-    with pytest.raises(ValueError, match="pruning_levels"):
-        run_stage0(start_run(cfg), SEARCH_SPACE.make({"calib_samples": 16}), model=tiny_llama, tokenizer=tokenizer,
-                   text_loader=fake_texts)
+def test_pruning_levels_must_be_shares(small_cfg):
+    for bad in ([0.3, 1.5], [0.0], [0.3, 0.301]):
+        with pytest.raises(ValueError, match="pruning_levels"):
+            small_cfg.with_overrides({"stage0.pruning_levels": bad})
+
+
+def test_without_a_guard_only_the_all_layers_set_runs(small_cfg, tiny_llama, tokenizer):
+    cfg = small_cfg.with_overrides({"stage0.pruning_levels": [0.5], "stage0.joint_plan": False,
+                                    "stage0.guard_top_k": 0})
+    res = run_stage0(start_run(cfg), SEARCH_SPACE.make({"calib_samples": 16}), model=tiny_llama, tokenizer=tokenizer,
+                     text_loader=fake_texts)
+    with open(res.outputs["report"].parent.parent / SUBDIR / CSV_NAME) as f:
+        rows = list(csv.DictReader(f))
+    assert {r["layer_set"] for r in rows} == {"all_layers"} and len(rows) == 3
+    assert all(r["status"] == "ok" for r in rows)
+
+
+def test_feed_forward_share_refuses_a_layer_without_a_feed_forward_block(tiny_llama):
+    with pytest.raises(ValueError, match="feed-forward"):
+        feed_forward_share(tiny_llama, torch.nn.Sequential(torch.nn.Linear(32, 32)))

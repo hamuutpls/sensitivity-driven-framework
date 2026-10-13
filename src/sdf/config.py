@@ -165,6 +165,10 @@ class Stage0Config:
             opts = getattr(self, name)
             if not isinstance(opts, (list, tuple)) or not opts or list(opts) != sorted(set(opts)):
                 raise ValueError(f"stage0.{name} must be ascending with no repeats, got {opts}")
+        if not all(isinstance(r, (int, float)) and 0 < r <= 1 for r in self.pruning_levels):
+            raise ValueError(f"stage0.pruning_levels must be shares in (0, 1], got {self.pruning_levels}")
+        if len({round(r * 100) for r in self.pruning_levels}) < len(set(self.pruning_levels)):  # rows named by %
+            raise ValueError(f"stage0.pruning_levels must differ by at least 1%, got {self.pruning_levels}")
         # the KV predictions look up the standard row's bits among the measured options (stage0/run.py predict_kv)
         if self.kv_uniform_bits not in self.kv_bits_options and self.kv_uniform_bits < self.baseline_bits:
             raise ValueError(f"stage0.kv_uniform_bits {self.kv_uniform_bits} must be one of kv_bits_options "
