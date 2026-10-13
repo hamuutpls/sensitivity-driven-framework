@@ -10,7 +10,8 @@ from transformers import LlamaConfig, LlamaForCausalLM
 
 from sdf.run import start_run
 from sdf.search_space import SEARCH_SPACE
-from sdf.stage0.pruning_levels import (CSV_NAME, SUBDIR, capped_plan, feed_forward_share, layer_set, level_plan, restored,
+from sdf.stage0.pruning_levels import (CSV_NAME, SUBDIR, capped_plan, feed_forward_share, layer_caps, layer_set,
+                                       level_plan, restored,
                                        share_removed)
 from sdf.stage0.run import run_stage0
 from sdf.stage0.sensitivity import find_decoder_layers
@@ -40,6 +41,16 @@ def test_feed_forward_share_of_tinyllama_is_78_6_percent():
     with torch.device("meta"):
         model = LlamaForCausalLM(cfg)
     assert feed_forward_share(model, find_decoder_layers(model)[0]) == pytest.approx(0.786, abs=5e-4)
+    assert layer_caps(model, 0.75) == [0.75]  # TinyLlama: the 75% cap, below its feed-forward share
+
+
+def test_structured_levels_are_capped_at_75_percent_on_tinyllama():
+    cfg = LlamaConfig(vocab_size=32000, hidden_size=2048, intermediate_size=5632, num_hidden_layers=2,
+                      num_attention_heads=32, num_key_value_heads=4)
+    with torch.device("meta"):
+        model = LlamaForCausalLM(cfg)
+    capped = capped_plan(model, level_plan(2, [0, 1], 0.9, 16))
+    assert [lp.pruning_ratio for lp in capped.layers] == [0.75, 0.75]
 
 
 def test_structured_levels_above_the_feed_forward_share_are_capped_and_remove_every_channel(tiny_llama):
@@ -91,7 +102,7 @@ def test_every_stage0_run_measures_each_technique_layer_set_and_level(small_cfg,
     assert by[("wanda", "guarded_layers_only", "0.3")]["layers_pruned"] == "1"  # guard_top_k = 1
     assert by[("wanda", "non_guarded_layers", "0.3")]["layers_pruned"] == "3"
     assert float(by[("structured", "all_layers", "0.9")]["share_removed_per_pruned_layer"]) == pytest.approx(6144 / 9216)
-    assert float(by[("wanda", "all_layers", "0.9")]["share_of_model_removed"]) == pytest.approx(0.9)
+    assert float(by[("wanda", "all_layers", "0.9")]["share_of_decoder_weights_removed"]) == pytest.approx(0.9)
     # pruning changes the model (the toy model is untrained, so only a difference is checked, not a direction),
     # and every row starts again from the unpruned model, which is left as it was
     assert by[("wanda", "all_layers", "0.9")]["ppl_val"] != by[("wanda", "all_layers", "0.3")]["ppl_val"]
@@ -100,6 +111,8 @@ def test_every_stage0_run_measures_each_technique_layer_set_and_level(small_cfg,
     assert f"../{SUBDIR}/report.md" in res.outputs["report"].read_text()  # pointer in Stage 0's report
     report = (levels_dir / "report.md").read_text()
     assert "Perplexity by technique, layer set and level" in report and "capped from 90%" in report
+    assert "Share of the decoder layers' weights removed" in report and "Weight sparsity" not in report
+    assert "no standard-versus-our-method comparison" in report and "see the failures below" not in report
     assert (levels_dir / "stage_0_comparison.xlsx").exists()
     stage0_rows = res.outputs["json"].read_text()
     assert "wanda_all_layers_030" not in stage0_rows  # the 63 rows stay out of Stage 0's own tables

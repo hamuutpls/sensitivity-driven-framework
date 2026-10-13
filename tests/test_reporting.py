@@ -129,3 +129,16 @@ def test_measure_latency_restores_deterministic_mode(tiny_llama, small_cfg):
         assert torch.is_deterministic_algorithms_warn_only_enabled()
     finally:
         torch.use_deterministic_algorithms(False)
+
+
+def test_summary_without_a_comparison_mentions_failures_only_when_there_are_some(tmp_path):
+    rep = make_reporter(tmp_path / "ok")
+    with rep.method("baseline", "fp16") as row:
+        row.metrics.update(ppl_val=10.0)
+    md = rep.finalize()["report"].read_text(encoding="utf-8")
+    assert "no standard-versus-our-method comparison" in md and "see the failures below" not in md
+    rep = make_reporter(tmp_path / "failed")
+    with rep.method("rtn", "original"):
+        raise RuntimeError("boom")
+    md = rep.finalize()["report"].read_text(encoding="utf-8")
+    assert "No comparison could be made; see the failures below." in md

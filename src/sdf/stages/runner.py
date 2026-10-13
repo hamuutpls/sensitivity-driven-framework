@@ -15,7 +15,8 @@ from __future__ import annotations
 import functools
 import gc
 import time
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -29,7 +30,9 @@ from sdf.eval.metrics import measure_model
 from sdf.run import RunContext
 from sdf.stage0.activation import ActivationPlan, uniform_activation_plan
 from sdf.stage0.kv_cache import KVPlan, KVProfile, predict_kv, uniform_kv_plan
-from sdf.stage0.planner import CompressionPlan, baseline_cost, combine_plans, uniform_plan
+from sdf.stage0.planner import (CompressionPlan, baseline_cost, cap_pruning, combine_plans, level_tag,
+                                same_size_pruning_plan, uniform_plan)
+from sdf.stage0.pruning_levels import layer_caps
 from sdf.stage0.run import (_cost_metrics, _kv_metrics, calib_batches, fp16_key, load_fp16, source_key,
                             setup, stage_reporter, weight_cost)
 from sdf.stage0.sensitivity import SensitivityProfile, find_decoder_layers, normalize
@@ -100,6 +103,9 @@ class Stage0Plans:
     plans: dict[str, Any]  # plan key (PLAN_FILES) -> plan; keys whose file is missing are absent
     profile: SensitivityProfile  # layer sizes, for the predicted weight memory
     kv_profile: KVProfile | None  # layer key/value sizes, for the predicted KV memory
+    # Stage 2 pruning levels Stage 0 saved (prune_plan_<level>.json): share -> {"prune": ..., "prune_same_size": ...}
+    levels: dict[float, dict[str, CompressionPlan]] = field(default_factory=dict)
+    files: dict[str, str] = field(default_factory=lambda: {k: f for k, (f, _) in PLAN_FILES.items()})
 
     @property
     def num_layers(self) -> int:
@@ -113,11 +119,36 @@ class Stage0Plans:
                                     "stages.stage0_dir at <run>/stage_0")
         plans = {k: cls_.load(d / f) for k, (f, cls_) in PLAN_FILES.items() if (d / f).exists()}
         kv_prof = KVProfile.load(d / "kv_profile.json") if (d / "kv_profile.json").exists() else None
-        out = cls(d, plans, SensitivityProfile.load(d / "sensitivity_profile.json"), kv_prof)
-        for k, p in plans.items():
+        by_tag: dict[str, dict[str, CompressionPlan]] = {}
+        loaded = list(plans.items())
+        for f in sorted(d.glob("prune_plan_*.json")):
+            if m := re.fullmatch(r"prune_plan_(same_size_)?(\d{3})\.json", f.name):
+                p = CompressionPlan.load(f)
+                by_tag.setdefault(m[2], {})["prune_same_size" if m[1] else "prune"] = p
+                loaded.append((f.name, p))
+        levels = {int(t) / 100: ps for t, ps in by_tag.items()}
+        out = cls(d, plans, SensitivityProfile.load(d / "sensitivity_profile.json"), kv_prof, levels)
+        for k, p in loaded:
             if len(p.layers) != out.num_layers:
-                raise ValueError(f"{PLAN_FILES[k][0]} has {len(p.layers)} layers, the profile {out.num_layers}")
+                raise ValueError(f"{out.files.get(k, k)} has {len(p.layers)} layers, the profile {out.num_layers}")
         return out
+
+    def at_level(self, ratio: float) -> "Stage0Plans":
+        """These plans with the pruning plans of one level in place of the default ones."""
+        tag = level_tag(ratio)
+        files = {"prune": f"prune_plan_{tag}.json", "prune_same_size": f"prune_plan_same_size_{tag}.json"}
+        plans = {k: p for k, p in self.plans.items() if k not in files}
+        return replace(self, plans={**plans, **self.levels[ratio]}, files={**self.files, **files})
+
+
+def sweep(m: Method, plans: Stage0Plans) -> list[tuple[Method, Stage0Plans, float | None]]:
+    """The row groups of one method: (method, plans, level). A Stage 2 method runs once per pruning level Stage 0
+    saved (Mohammad, 2026-10-13), named <method>_<level>, e.g. low_rank_030; any other method, or a Stage 0 folder
+    without level plans, once (level None: the standard row prunes prune_ratio_aggressive)."""
+    if kind_of(m) != "prune" or not plans.levels:
+        return [(m, plans, None)]
+    return [(replace(m, name=f"{m.name}_{level_tag(r)}"), plans.at_level(r), r)
+            for r in sorted(plans.levels)]
 
 
 # What a plan is about, by plan key: the standard method and the cost prediction differ by kind.
@@ -252,7 +283,7 @@ def run_stage(
         raise ValueError(f"run_stage runs Stages 1-3, not {stage}")
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
     methods = methods_for(stage, method_names)
-    plans = Stage0Plans.load(stage0_dir)
+    plans = all_plans = Stage0Plans.load(stage0_dir)
     device, handle, text_loader = setup(ctx, None, tokenizer, text_loader)
     dtype = getattr(torch, cfg.model.dtype)
     if model_factory is None:
@@ -262,13 +293,14 @@ def run_stage(
             return AutoModelForCausalLM.from_pretrained(cfg.model.name, torch_dtype=dtype).to(device)
     handle.factory = model_factory  # an FP16 cache miss builds the model like every row
 
-    use_llamacpp = stage == 1 and cfg.eval.llamacpp_dir is not None  # weight and WxAy rows (see lc_on)
+    use_llamacpp = stage in (1, 2) and cfg.eval.llamacpp_dir is not None  # weight, WxAy, pruning rows
     lc_key = [cfg.eval.llamacpp_dir, cfg.eval.llamacpp_convert, llamacpp.VERSION] if use_llamacpp else None
     # Serving backends run in a Python of their own (Linux only) on the model saved at the plan's bits; weight and
-    # WxAy rows of Stage 1 (see be_on). name -> (module, its error for a plan it cannot load, cache key part)
+    # WxAy rows of Stage 1, pruning rows of Stage 2 (see be_on). name -> (module, its error for a plan it cannot
+    # load, cache key part)
     serving = {name: (mod, err, [py, mod.VERSION]) for name, mod, err, py in (
         ("vllm", vllm_backend, vllm_backend.VLLMError, cfg.eval.vllm_python),
-        ("trtllm", trtllm_backend, trtllm_backend.TRTLLMError, cfg.eval.trtllm_python)) if stage == 1 and py}
+        ("trtllm", trtllm_backend, trtllm_backend.TRTLLMError, cfg.eval.trtllm_python)) if stage in (1, 2) and py}
     calib = (f"{candidate['calib_dataset']}, {candidate['calib_samples']} x {cfg.calibration.seq_len} tokens")
     rep = stage_reporter(
         ctx, candidate, handle, plans.profile, ("stages", "stage0", "calibration", "eval", "model", "run"),
@@ -306,10 +338,10 @@ def run_stage(
     # and TensorRT-LLM have no kernels for them on this hardware, so they run its weights at the plan's bits with
     # 16-bit activations, and the row says so (Mohammad's choice, 2026-10-11).
     def lc_on(method: Method) -> bool:
-        return use_llamacpp and kind_of(method) in ("weights", "joint")
+        return use_llamacpp and kind_of(method) in ("weights", "joint", "prune")
 
     def be_on(method: Method) -> bool:
-        return bool(serving) and kind_of(method) in ("weights", "joint")
+        return bool(serving) and kind_of(method) in ("weights", "joint", "prune")
 
     def build_and_measure(method: Method, plan: Any) -> dict[str, Any]:
         model = model_factory()
@@ -329,15 +361,13 @@ def run_stage(
                 if lc_on(method):
                     if rotated:
                         info["llamacpp_error"] = _ROTATED
-                    elif not joint:
-                        metrics.update(llamacpp.measure(model, handle.tokenizer, weights, val, held, cfg.eval,
-                                                        s0.baseline_bits))
-                    else:  # a WxAy row keeps its HF numbers if llama.cpp fails
+                    else:  # a row keeps its HF numbers if llama.cpp fails, as with vLLM (Mohammad, 2026-10-13)
                         try:
                             metrics.update(llamacpp.measure(model, handle.tokenizer, weights, val, held, cfg.eval,
                                                             s0.baseline_bits))
-                            info["llamacpp_activations"] = _WEIGHTS_ONLY
-                        except RuntimeError as e:
+                            if joint:
+                                info["llamacpp_activations"] = _WEIGHTS_ONLY
+                        except Exception as e:  # noqa: BLE001 - a missing program or file too, not only a failed run
                             log.warning("llama.cpp could not measure %s: %s", method.name, e)
                             info["llamacpp_error"] = str(e)
                 for name, (mod, err, _) in serving.items() if be_on(method) else ():
@@ -394,17 +424,31 @@ def run_stage(
                                                 s0.baseline_bits, candidate["gptq_groupsize"]))
                 row.metrics.update(be)
 
+    @functools.cache
+    def caps(max_ratio: float) -> tuple[float, ...]:  # per layer: the model is built once, only when needed
+        model = model_factory()
+        try:
+            return tuple(layer_caps(model, max_ratio))
+        finally:
+            del model
+            _free_memory()
+
     simulated_any = False
-    for m in methods:
+    if stage == 2 and not all_plans.levels:
+        log.warning("Stage 2: no pruning level plans in %s (stage0.pruning_levels was empty, or an older Stage 0 "
+                    "run); each method runs once, its standard row at %.0f%%", all_plans.dir,
+                    100 * candidate["prune_ratio_aggressive"])
+    for m, plans, level in (row for method in methods for row in sweep(method, all_plans)):
         simulated_any |= m.simulated
-        orig = original_plan(m, plans, s0, candidate["prune_ratio_aggressive"])
+        orig = original_plan(m, plans, s0, candidate["prune_ratio_aggressive"] if level is None else level)
         with rep.method(m.name, "original", description=f"{m.label}, standard settings: {_describe(orig)}",
                         simulated=m.simulated) as row:
+            orig, cap_note = _capped(m, orig, caps, plans.profile.layer_numel)
+            row.info["description"] = f"{m.label}, standard settings: {_describe(orig)}"
+            _label_level(row, m, level, orig, plans.profile.layer_numel)
             _require(m)
-            if m.note:
-                row.info["note"] = m.note
-            if m.fixed_bits:
-                row.info["note"] = f"{m.note}; {m.fixed_bits}".strip("; ")
+            if note := "; ".join(n for n in (m.note, m.fixed_bits, cap_note) if n):
+                row.info["note"] = note
             key = {"stage": stage, "method": m.name, "version": m.version, "plan": orig.to_dict(),
                    "params": {p: candidate[p] for p in m.params}, **fp16_key(ctx, device),
                    "downstream": [list(cfg.eval.downstream_tasks), cfg.eval.downstream_limit],
@@ -428,19 +472,23 @@ def run_stage(
 
         for plan_key in m.plans:
             suffix, *plain = _PLAN_ROWS.get(plan_key, ("",))
-            info = {"compare_to": m.name, "plan_file": PLAN_FILES[plan_key][0], "simulated": m.simulated}
+            info = {"compare_to": m.name, "plan_file": plans.files[plan_key], "simulated": m.simulated}
             if plain:
                 info["label"], info["plain_desc"] = plain
             with rep.method(m.name + suffix, "framework", **info) as row:
+                _label_level(row, m, level, None, plans.profile.layer_numel)  # until the plan is known
+                if gone := [plans.files[k] for k in _plan_keys(m, plan_key) if k not in plans.plans]:
+                    raise FileNotFoundError(f"{', '.join(gone)} not in {plans.dir}; re-run Stage 0 with this plan "
+                                            "enabled")
+                plan, cap_note = _capped(m, framework_plan(m, plans, plan_key), caps, plans.profile.layer_numel)
+                _label_level(row, m, level, plan, plans.profile.layer_numel)
                 _require(m)
                 if m.note:
                     row.info["note"] = m.note
                 if m.fixed_bits:
                     raise ValueError(f"{m.label} cannot follow a per-layer bit plan: {m.fixed_bits}")
-                if gone := [PLAN_FILES[k][0] for k in _plan_keys(m, plan_key) if k not in plans.plans]:
-                    raise FileNotFoundError(f"{', '.join(gone)} not in {plans.dir}; re-run Stage 0 with this plan "
-                                            "enabled")
-                plan = framework_plan(m, plans, plan_key)
+                if cap_note:
+                    row.info["note"] = "; ".join(n for n in (row.info.get("note"), cap_note) if n)
                 row.info["description"] = f"{m.label}, Stage 0 {_describe(plan)}"
                 result = build_and_measure(m, plan)
                 row.metrics.update(plan_metrics(plan, plans, cfg, candidate, m.storage))
@@ -458,6 +506,44 @@ def run_stage(
             "but kept in the uncompressed format. Their accuracy is real; their memory is the plan's prediction, "
             "and their speed is not the speed a real compressed model would have.")
     return rep.finalize()
+
+
+def _capped(m: Method, plan: Any, caps: Callable[[float], tuple[float, ...]],
+            layer_numel: list[int]) -> tuple[Any, str]:
+    """`plan` capped at the method's most per layer (`caps(Method.max_ratio)`: 75%, or the layer's feed-forward
+    share when lower), and the row's note when it was ("" if not). A same-size plan is rebuilt with the caps, so
+    what a capped layer cannot take moves to the other unguarded layers and the total still matches the standard
+    row while they can hold it (Mohammad, 2026-10-13)."""
+    if m.max_ratio is None or not isinstance(plan, CompressionPlan):
+        return plan, ""
+    layer_cap = list(caps(m.max_ratio))
+    if all(lp.pruning_ratio <= c for lp, c in zip(plan.layers, layer_cap)):
+        return plan, ""
+    asked = max(lp.pruning_ratio for lp in plan.layers)
+    note = (f"capped at {m.max_ratio:.0%} of each layer, or the layer's feed-forward share when lower (lowest cap "
+            f"{min(layer_cap):.1%}; the plan asked for up to {asked:.0%})")
+    if plan.kind != "same_size_pruning":
+        return cap_pruning(plan, layer_cap), note
+    # the same total as the capped standard row: the level on every layer, each at most its cap
+    level = plan.prune_ratio_aggressive
+    target = sum(min(level, c) * n for c, n in zip(layer_cap, layer_numel)) / sum(layer_numel)
+    refit = same_size_pruning_plan([lp.sensitivity for lp in plan.layers], plan.layers[0].bit_width, target,
+                                   layer_numel, frozenset(lp.layer for lp in plan.layers if lp.guarded), layer_cap)
+    return combine_plans(plan, refit), note + "; what the capped layers could not take moved to the other layers"
+
+
+def _label_level(row, m: Method, level: float | None, plan: CompressionPlan | None, layer_numel: list[int]) -> None:
+    """A pruning level's row label: the technique, the row's kind, the level and the share of the decoder layers'
+    weights the row really removes (Mohammad, 2026-10-13), which differs when structured pruning is capped or the
+    same-size plan runs out of layers. Without a plan (it failed to load) the share is left out."""
+    if level is None:
+        return
+    kind = row.info.get("kind_label") or row.plain_name
+    row.info["kind_label"] = kind  # the plain name before this label replaces it
+    row.info["label"] = f"{m.label}: {kind}, level {level:.0%}"
+    if plan is not None:
+        removed = sum(lp.pruning_ratio * n for lp, n in zip(plan.layers, layer_numel)) / sum(layer_numel)
+        row.info["label"] += f", {removed:.1%} of the layer weights removed"
 
 
 _ROTATED = ("not measured: the model rotates inputs while it runs (QuaRot/SpinQuant), and a saved model file "

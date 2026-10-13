@@ -108,7 +108,11 @@ def _plain_part(rep: "StageReporter") -> list[str]:
 
     # 1. one-paragraph summary
     summary = rep.plain_summary or " ".join(v.replace("**", "") for v in verdicts)
-    lines = ["## Summary", "", summary or "No comparison could be made; see the failures below.", ""]
+    if not summary:
+        summary = ("No comparison could be made; see the failures below." if any(r.status != "ok" for r in rep.rows)
+                   else "This report has no standard-versus-our-method comparison; the results are in the tables "
+                        "below.")
+    lines = ["## Summary", "", summary, ""]
 
     lines += original_model_lines(rep.original_model)
 
