@@ -97,7 +97,7 @@ def test_every_stage0_run_measures_each_technique_layer_set_and_level(small_cfg,
     assert by[("wanda", "all_layers", "0.9")]["ppl_val"] != by[("wanda", "all_layers", "0.3")]["ppl_val"]
     after = tiny_llama.state_dict()
     assert all(torch.equal(before[k], after[k].to(before[k].dtype)) for k in before)
-    assert "Pruning levels test (for Stage 2)" in res.outputs["report"].read_text()  # pointer in Stage 0's report
+    assert f"../{SUBDIR}/report.md" in res.outputs["report"].read_text()  # pointer in Stage 0's report
     report = (levels_dir / "report.md").read_text()
     assert "Perplexity by technique, layer set and level" in report and "capped from 90%" in report
     assert (levels_dir / "stage_0_comparison.xlsx").exists()

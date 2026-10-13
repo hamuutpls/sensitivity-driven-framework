@@ -426,7 +426,7 @@ def run_stage0(
             levels_dir = run_pruning_levels(ctx, candidate, handle, text_loader, profile, guarded, fp16_metrics)
             rep.sections.append(("Pruning levels test (for Stage 2)",
                                  f"Wanda, structured and low-rank pruning at {len(s0.pruning_levels)} levels on all, "
-                                 f"non-guarded and guarded-only layers: see {levels_dir.name}/report.md."))
+                                 f"non-guarded and guarded-only layers: see ../{levels_dir.name}/report.md."))
         except Exception as exc:  # noqa: BLE001 - the plans are saved; keep Stage 0's own report and hand-off
             log.exception("pruning levels test failed")
             rep.anomalies.append(f"pruning levels test failed: {type(exc).__name__}: {exc}")

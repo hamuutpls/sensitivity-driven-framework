@@ -137,7 +137,8 @@ def run_pruning_levels(ctx, candidate: dict[str, Any], handle, text_loader: Call
                     "levels": ", ".join(f"{r:.0%}" for r in levels), "guarded layers": sorted(guarded),
                     "layer sets": ", ".join(sets), "rounding": "none (pruning only)"},
         main_metrics=["ppl_val", "ppl_heldout", "sparsity"])
-    (rep.dir / CSV_NAME).unlink(missing_ok=True)
+    for old in (CSV_NAME, rep.report_path.name, rep.xlsx_path.name, rep.json_path.name):  # no stale outputs on a rerun
+        (rep.dir / old).unlink(missing_ok=True)
     if fp16:
         with rep.method("baseline", "fp16", description="uncompressed model (Stage 0 measurement)") as row:
             row.metrics.update({k: fp16[k] for k in ("ppl_val", "ppl_heldout") if k in fp16}, sparsity=0.0)
