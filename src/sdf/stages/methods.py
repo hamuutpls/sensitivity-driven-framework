@@ -127,7 +127,7 @@ def _calibrated(fn: Callable) -> Callable[[MethodCall], ContextManager[dict[str,
 
 @contextmanager
 def _rtn_activations(call: MethodCall) -> Iterator[dict[str, Any]]:
-    with _round_inputs(call.model, call.plan, call.cfg.stage0.act_group_size):
+    with _round_inputs(call.model, call.plan, call.cfg.stage0.act_group_size, call.cfg.stage0.baseline_bits):
         yield {}
 
 
@@ -249,8 +249,8 @@ def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
     if weights.stage != 1 or weights.plans != _WEIGHT_PLANS:
         raise ValueError(f"{weights.name} is not a Stage 1 weight method")
     if acts == "rtn_act":
-        fn, extra, label = (lambda model, plan, batches, gs: _round_inputs(model, plan, gs), (lambda c: {}),
-                            "round-to-nearest activations")
+        fn, extra, label = (lambda model, plan, batches, gs, below: _round_inputs(model, plan, gs, below),
+                            (lambda c: {"below": c.cfg.stage0.baseline_bits}), "round-to-nearest activations")
     elif acts in ACTIVATION_METHODS:
         fn, extra, label = ACTIVATION_METHODS[acts][0], _ACT_EXTRA[acts], ACTIVATION_METHODS[acts][1]
     else:

@@ -55,6 +55,10 @@ def mixed_checkpoint(model_dir: Path, out_dir: Path) -> Path:
 
 
 def main(args: dict) -> dict:
+    # the latency prompt is cut from the first perplexity window: check before loading the model
+    if args.get("val") and len(args["val"][0]) < args["prompt_len"]:
+        raise ValueError(f"latency prompt of {args['prompt_len']} tokens is longer than an eval window "
+                         f"({len(args['val'][0])}); raise eval.seq_len or lower eval.latency_prompt_len")
     import torch
     from tensorrt_llm._tensorrt_engine import LLM  # the TensorRT engine backend (not the PyTorch one)
     from tensorrt_llm.llmapi import BuildConfig, KvCacheConfig, SamplingParams
@@ -94,9 +98,6 @@ def main(args: dict) -> dict:
         out[f"trtllm_ppl_{name}"] = ppl(args[name])
 
     def timed(new: int) -> float:
-        if len(args["val"][0]) < args["prompt_len"]:  # the prompt is cut from the first perplexity window
-            raise ValueError(f"latency prompt of {args['prompt_len']} tokens is longer than an eval window "
-                             f"({len(args['val'][0])}); raise eval.seq_len")
         ids = [args["val"][0][:args["prompt_len"]]]
         sp = SamplingParams(max_tokens=new, temperature=0, ignore_eos=True)
         for _ in range(args["warmup"]):

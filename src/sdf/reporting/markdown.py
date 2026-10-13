@@ -54,7 +54,7 @@ def _plain_verdicts(rep: "StageReporter") -> list[str]:
                        "so the framework could not be compared against it.")
             continue
         wins, losses, cost = rep.verdict(fw)
-        plain = lambda m: METRICS[m].plain or METRICS[m].label if m in METRICS else label(m)  # noqa: E731
+        plain = lambda m: METRICS[m].plain or METRICS[m].label  # noqa: E731 - verdict() only judges known metrics
         wins, losses = [plain(m) for m in wins], [plain(m) for m in losses]
         one_off = [f"{plain(m)} ({_value(fw.metrics[m] - orig.metrics[m], METRICS.get(m))} more, paid once)"
                    for m in cost]

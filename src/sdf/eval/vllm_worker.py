@@ -25,6 +25,10 @@ def memory_share(free: float, total: float, cap: float = 0.92, margin: float = 0
 
 
 def main(args: dict) -> dict:
+    # the latency prompt is cut from the first perplexity window: check before loading the model
+    if args.get("val") and len(args["val"][0]) < args["prompt_len"]:
+        raise ValueError(f"latency prompt of {args['prompt_len']} tokens is longer than an eval window "
+                         f"({len(args['val'][0])}); raise eval.seq_len or lower eval.latency_prompt_len")
     import torch
     from vllm import LLM, SamplingParams
 
@@ -74,9 +78,6 @@ def main(args: dict) -> dict:
         out[f"vllm_ppl_{name}"] = nll(args[name])
 
     def timed(prompt_len: int, new: int) -> float:
-        if len(args["val"][0]) < prompt_len:  # the prompt is cut from the first perplexity window
-            raise ValueError(f"latency prompt of {prompt_len} tokens is longer than an eval window "
-                             f"({len(args['val'][0])}); raise eval.seq_len")
         ids = [{"prompt_token_ids": args["val"][0][:prompt_len]}]
         sp = SamplingParams(max_tokens=new, temperature=0, ignore_eos=True)
         for _ in range(args["warmup"]):

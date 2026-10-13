@@ -146,6 +146,9 @@ def test_trtllm_worker_turns_block_reuse_off_and_reads_logits_at_the_right_posit
     assert math.isclose(out["trtllm_ppl_val"], 1.0, rel_tol=1e-6)
     assert built["kv_cache_config"]["enable_block_reuse"] is False
     assert built["build_config"]["max_seq_len"] == max(4, 2 + 6) + 8
+    with pytest.raises(ValueError, match="longer than an eval window"):  # checked before the engine is built
+        worker.main({"model_dir": str(hf), "engine_dir": str(tmp_path / "e2"), "seq_len": 4, "val": [[1, 2, 3, 4]],
+                     "heldout": [[1, 2, 3, 4]], "prompt_len": 8, "warmup": 0, "repeats": 1, "decode_tokens": 2})
 
 
 # 4 ------------------------------------------------------------------------------------------------------------
@@ -162,16 +165,17 @@ def _pair(rep, original, framework):
 
 
 def test_findings_and_plain_summary_give_the_same_verdict_and_noise_is_a_tie(tmp_path):
-    rep = _reporter(tmp_path, ["ppl_val", "decode_ms_per_token_mean", "peak_memory_gb"])
+    rep = _reporter(tmp_path, ["ppl_val", "decode_ms_per_token_mean", "peak_memory_gb", "build_time_s"])
     # the audit's case: better perplexity, 0.001 ms faster (std 0.2), 1% more peak memory
     _pair(rep, {"ppl_val": 10.0, "decode_ms_per_token_mean": 5.000, "decode_ms_per_token_std": 0.2,
-                "peak_memory_gb": 1.00, "decode_tokens_per_s": 200.0},
+                "peak_memory_gb": 1.00, "decode_tokens_per_s": 200.0, "build_time_s": 10.0},
           {"ppl_val": 9.0, "decode_ms_per_token_mean": 4.999, "decode_ms_per_token_std": 0.2,
-           "peak_memory_gb": 1.01, "decode_tokens_per_s": 200.04})
+           "peak_memory_gb": 1.01, "decode_tokens_per_s": 200.04, "build_time_s": 25.0})
     technical, plain = rep.comparison_summary()[0], _plain_verdicts(rep)[0]
     assert "trades off" in technical and "trade-off" in plain
     assert "Decode latency" not in technical and "throughput" not in technical.lower()  # noise; not a main metric
-    assert rep.verdict(rep.rows[1]) == (["ppl_val"], ["peak_memory_gb"], [])
+    assert rep.verdict(rep.rows[1]) == (["ppl_val"], ["peak_memory_gb"], ["build_time_s"])
+    assert "One-off cost: Build time (+15" in technical and "paid once" in plain
 
 
 # 5, 6 ---------------------------------------------------------------------------------------------------------
@@ -249,16 +253,29 @@ def test_llamacpp_refuses_a_sentencepiece_tokenizer_without_its_model_file(tmp_p
 # 15 -----------------------------------------------------------------------------------------------------------
 def test_rtn_act_rounds_by_the_same_rule_alone_and_in_a_joint_method(tiny_llama):
     from sdf.stage0.activation import uniform_activation_plan
-    from sdf.stages.methods import MethodCall, _rtn_activations
+    from sdf.stages.methods import WITH, JointPlan, MethodCall, _rtn_activations
 
-    cfg = FrameworkConfig().with_overrides({"stage0.baseline_bits": 8})  # used to round only below 8 bits
-    plan = uniform_activation_plan(4, 8)
     x = torch.randint(0, 64, (1, 8))
+    weights16 = uniform_plan([0.0] * 4, 16, 0.0)  # weights left alone: only the activation rounding differs
+    joint = methods_for(1, [f"rtn{WITH}rtn_act"])[0]
+
+    def logits(cfg, bits):
+        acts = uniform_activation_plan(4, bits)
+        with torch.no_grad():
+            with _rtn_activations(MethodCall(tiny_llama, acts, {"gptq_groupsize": 128}, cfg, lambda: [])):
+                alone = tiny_llama(x).logits
+            with joint.apply(MethodCall(tiny_llama, JointPlan(weights16, acts), {"gptq_groupsize": 128}, cfg,
+                                        lambda: [])):
+                together = tiny_llama(x).logits
+        return alone, together
+
     with torch.no_grad():
         ref = tiny_llama(x).logits
-        with _rtn_activations(MethodCall(tiny_llama, plan, {}, cfg, lambda: [])):
-            rounded = tiny_llama(x).logits
-    assert not torch.equal(ref, rounded)  # 8-bit inputs are rounded, as in the joint methods
+    base8 = FrameworkConfig().with_overrides({"stage0.baseline_bits": 8})
+    alone, together = logits(base8, 8)  # at the baseline: nothing rounded, alone or joint (joint rounded before)
+    assert torch.equal(alone, ref) and torch.equal(together, ref)
+    alone, together = logits(base8, 4)
+    assert torch.equal(alone, together) and not torch.equal(alone, ref)
 
 
 # 18 -----------------------------------------------------------------------------------------------------------
