@@ -47,7 +47,7 @@ def test_cap_pruning_lowers_only_the_layers_above_the_cap():
     assert [lp.bit_width for lp in capped.layers] == [16, 16, 16]
 
 
-def test_structured_pruning_is_capped_at_75_percent():
+def test_structured_pruning_max_ratio_is_75_percent_and_series_methods_keep_it():
     assert METHODS["structured_prune"].max_ratio == 0.75
     assert METHODS["unstructured_prune"].max_ratio is None and METHODS["low_rank"].max_ratio is None
     (after,) = methods_for(2, ["structured_prune_after_gptq"])
@@ -131,7 +131,7 @@ def test_stage2_runs_every_level_on_every_backend(stage0_dir, tiny_llama, tokeni
     std = rows["unstructured_prune_090/original"]
     assert "level 90%, 90.0% of the layer weights removed" in std["info"]["label"]
     capped = rows["structured_prune_090/original"]
-    assert "capped at 60.0% of each layer (the plan asked for up to 90%" in capped["info"]["note"]
+    assert "lowest cap 60.0%; the plan asked for up to 90%" in capped["info"]["note"]
     assert "level 90%, 60.0% of the layer weights removed" in capped["info"]["label"]
     assert capped["metrics"]["sparsity"] < std["metrics"]["sparsity"]
     assert "capped" not in rows["structured_prune_030/original"]["info"].get("note", "")
@@ -139,7 +139,9 @@ def test_stage2_runs_every_level_on_every_backend(stage0_dir, tiny_llama, tokeni
     same = rows["unstructured_prune_090_same_size/framework"]
     assert same["info"]["plan_file"] == "prune_plan_same_size_090.json"
     assert "level 90%, 75.0% of the layer weights removed" in same["info"]["label"]  # 3 of 4 equal layers emptied
-    assert same["info"]["label"].startswith("Our method, same amount removed")
+    assert same["info"]["label"].startswith("Unstructured pruning (Wanda): Our method, same amount removed")
+    labels = [r["info"]["label"] for k, r in rows.items() if k != "baseline/fp16"]
+    assert len(set(labels)) == len(labels)  # every row can be told apart in the plain report
     assert rows["low_rank_030/framework"]["info"]["compare_to"] == "low_rank_030"
 
 
@@ -165,7 +167,7 @@ def test_series_rows_sweep_too_with_the_stage1_bits_and_the_cap(stage0_dir, tiny
     for k, r in rows.items():
         assert r["status"] == "ok", (k, r.get("error"))
     ours = rows["structured_prune_after_rtn_090/framework"]
-    assert "capped at 60.0%" in ours["info"]["note"] and "level 90%" in ours["info"]["label"]
+    assert "lowest cap 60.0%" in ours["info"]["note"] and "level 90%" in ours["info"]["label"]
     plans = [p for p in calls if p is not None]
     assert len(plans) == 6 and all(min(lp.bit_width for lp in p.layers) < 16 for p in plans)  # the Stage 1 bits
     assert all(max(lp.pruning_ratio for lp in p.layers) <= 0.6 for p in plans if p.layers[0].pruning_ratio)
@@ -207,7 +209,7 @@ def test_structured_cap_drops_to_the_feed_forward_share_when_that_is_lower(stage
     for k, r in rows.items():
         assert r["status"] == "ok", (k, r.get("error"))
     capped = rows["structured_prune_090/original"]
-    assert "capped at 66.7% of each layer" in capped["info"]["note"]
+    assert "capped at 75% of each layer, or the layer's feed-forward share when lower (lowest cap 66.7%" in capped["info"]["note"]
     assert "level 90%, 66.7% of the layer weights removed" in capped["info"]["label"]
 
 
@@ -259,3 +261,17 @@ def test_capping_a_same_size_plan_keeps_its_total_and_the_stage1_bits():
     std, std_note = _capped(m, uniform_plan(scores, 16, 0.9), lambda r: (0.7,) * 5, numel)
     assert {lp.pruning_ratio for lp in std.layers} == {0.7} and "moved" not in std_note
     assert _capped(m, uniform_plan(scores, 16, 0.3), lambda r: (0.7,) * 5, numel)[1] == ""
+
+
+def test_capped_same_size_matches_the_capped_standard_total_when_caps_differ():
+    from sdf.stage0.planner import same_size_pruning_plan
+    from sdf.stages.runner import _capped
+    scores, numel, caps = [0.1, 0.2, 0.3, 0.4], [100, 100, 100, 100], (0.5, 0.75, 0.75, 0.75)
+    m = METHODS["structured_prune"]
+    std, _ = _capped(m, uniform_plan(scores, 16, 0.7), lambda r: caps, numel)
+    same, note = _capped(m, same_size_pruning_plan(scores, 16, 0.7, numel), lambda r: caps, numel)
+    removed = lambda p: sum(lp.pruning_ratio for lp in p.layers) / 4  # noqa: E731
+    assert removed(std) == pytest.approx(0.65)
+    assert removed(same) == pytest.approx(removed(std), abs=1e-6)
+    assert all(lp.pruning_ratio <= c + 1e-9 for lp, c in zip(same.layers, caps))
+    assert "lowest cap 50.0%" in note

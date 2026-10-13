@@ -612,7 +612,7 @@ weight method has quantized. Diagrams: [`class-stages`](../diagrams/class-stages
 |---|---|
 | `unstructured_prune`, `structured_prune`, `low_rank` (`stages/pruning.py`) | Plans `prune`, `prune_same_size` (ratios; bits at the baseline). Round nothing; low-rank stores its factors at the plan's bits (none at the baseline). |
 | `series(quant, prune)` (`stages/methods.py`) | Method `<pruning>_after_<quantization>`: `quant.apply` with `bits_only(plan)`, then `prune.apply` with the combined plan (`combine_plans(quant_plan, prune_plan)`). Selected by `stages.stage2_after`. |
-| `run_stage(ctx, 2, names, ...)` | Original row: every layer pruned at `prune_ratio_aggressive` (uniform `uniform_bits` first in the series path). Framework rows: `prune` (our method's ratios) and `prune_same_size` (as many numbers removed as the original, placed by sensitivity). |
+| `run_stage(ctx, 2, names, ...)` | Original row: every layer pruned at `prune_ratio_aggressive` (uniform `uniform_bits` first in the series path). Framework rows: `prune` (our method's ratios) and `prune_same_size` (as many numbers removed as the original, placed by sensitivity). Since 2026-10-13, when Stage 0 saved level plans (`prune_plan_<level>.json`, `prune_plan_same_size_<level>.json`, one pair per `stage0.pruning_levels` entry), each method runs once per level as `<method>_<level>` (`sweep`, `Stage0Plans.at_level`), the original row pruning every layer at the level. Structured pruning is capped per layer at the lower of 75% and the feed-forward share (`layer_caps`, `_capped`); a capped same-size plan is rebuilt so it removes what the capped original row removes. Every Stage 2 row also runs on llama.cpp, vLLM and TensorRT-LLM. |
 
 ### 7.3 Rationale
 

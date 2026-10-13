@@ -147,7 +147,7 @@ def sweep(m: Method, plans: Stage0Plans) -> list[tuple[Method, Stage0Plans, floa
     without level plans, once (level None: the standard row prunes prune_ratio_aggressive)."""
     if kind_of(m) != "prune" or not plans.levels:
         return [(m, plans, None)]
-    return [(replace(m, name=f"{m.name}_{level_tag(r)}", label=f"{m.label}, {r:.0%}"), plans.at_level(r), r)
+    return [(replace(m, name=f"{m.name}_{level_tag(r)}"), plans.at_level(r), r)
             for r in sorted(plans.levels)]
 
 
@@ -367,7 +367,7 @@ def run_stage(
                                                             s0.baseline_bits))
                             if joint:
                                 info["llamacpp_activations"] = _WEIGHTS_ONLY
-                        except RuntimeError as e:
+                        except Exception as e:  # noqa: BLE001 - a missing program or file too, not only a failed run
                             log.warning("llama.cpp could not measure %s: %s", method.name, e)
                             info["llamacpp_error"] = str(e)
                 for name, (mod, err, _) in serving.items() if be_on(method) else ():
@@ -440,15 +440,15 @@ def run_stage(
                     100 * candidate["prune_ratio_aggressive"])
     for m, plans, level in (row for method in methods for row in sweep(method, all_plans)):
         simulated_any |= m.simulated
-        orig, cap_note = _capped(m, original_plan(m, plans, s0, candidate["prune_ratio_aggressive"]
-                                                  if level is None else level), caps, plans.profile.layer_numel)
+        orig = original_plan(m, plans, s0, candidate["prune_ratio_aggressive"] if level is None else level)
         with rep.method(m.name, "original", description=f"{m.label}, standard settings: {_describe(orig)}",
                         simulated=m.simulated) as row:
-            _label_level(row, level, orig, plans.profile.layer_numel)
+            orig, cap_note = _capped(m, orig, caps, plans.profile.layer_numel)
+            row.info["description"] = f"{m.label}, standard settings: {_describe(orig)}"
+            _label_level(row, m, level, orig, plans.profile.layer_numel)
             _require(m)
-            row.info["note"] = "; ".join(n for n in (m.note, m.fixed_bits, cap_note) if n)
-            if not row.info["note"]:
-                del row.info["note"]
+            if note := "; ".join(n for n in (m.note, m.fixed_bits, cap_note) if n):
+                row.info["note"] = note
             key = {"stage": stage, "method": m.name, "version": m.version, "plan": orig.to_dict(),
                    "params": {p: candidate[p] for p in m.params}, **fp16_key(ctx, device),
                    "downstream": [list(cfg.eval.downstream_tasks), cfg.eval.downstream_limit],
@@ -476,19 +476,17 @@ def run_stage(
             if plain:
                 info["label"], info["plain_desc"] = plain
             with rep.method(m.name + suffix, "framework", **info) as row:
-                if level is not None and all(k in plans.plans for k in _plan_keys(m, plan_key)):
-                    _label_level(row, level, _capped(m, framework_plan(m, plans, plan_key), caps,
-                                                     plans.profile.layer_numel)[0],
-                                 plans.profile.layer_numel)
+                _label_level(row, m, level, None, plans.profile.layer_numel)  # until the plan is known
+                if gone := [plans.files[k] for k in _plan_keys(m, plan_key) if k not in plans.plans]:
+                    raise FileNotFoundError(f"{', '.join(gone)} not in {plans.dir}; re-run Stage 0 with this plan "
+                                            "enabled")
+                plan, cap_note = _capped(m, framework_plan(m, plans, plan_key), caps, plans.profile.layer_numel)
+                _label_level(row, m, level, plan, plans.profile.layer_numel)
                 _require(m)
                 if m.note:
                     row.info["note"] = m.note
                 if m.fixed_bits:
                     raise ValueError(f"{m.label} cannot follow a per-layer bit plan: {m.fixed_bits}")
-                if gone := [plans.files[k] for k in _plan_keys(m, plan_key) if k not in plans.plans]:
-                    raise FileNotFoundError(f"{', '.join(gone)} not in {plans.dir}; re-run Stage 0 with this plan "
-                                            "enabled")
-                plan, cap_note = _capped(m, framework_plan(m, plans, plan_key), caps, plans.profile.layer_numel)
                 if cap_note:
                     row.info["note"] = "; ".join(n for n in (row.info.get("note"), cap_note) if n)
                 row.info["description"] = f"{m.label}, Stage 0 {_describe(plan)}"
@@ -522,23 +520,30 @@ def _capped(m: Method, plan: Any, caps: Callable[[float], tuple[float, ...]],
     if all(lp.pruning_ratio <= c for lp, c in zip(plan.layers, layer_cap)):
         return plan, ""
     asked = max(lp.pruning_ratio for lp in plan.layers)
-    note = (f"capped at {min(layer_cap):.1%} of each layer (the plan asked for up to {asked:.0%}; at most "
-            f"{m.max_ratio:.0%}, or the layer's feed-forward share when lower)")
+    note = (f"capped at {m.max_ratio:.0%} of each layer, or the layer's feed-forward share when lower (lowest cap "
+            f"{min(layer_cap):.1%}; the plan asked for up to {asked:.0%})")
     if plan.kind != "same_size_pruning":
         return cap_pruning(plan, layer_cap), note
-    refit = same_size_pruning_plan([lp.sensitivity for lp in plan.layers], plan.layers[0].bit_width,
-                                   plan.prune_ratio_aggressive, layer_numel,
-                                   frozenset(lp.layer for lp in plan.layers if lp.guarded), layer_cap)
+    # the same total as the capped standard row: the level on every layer, each at most its cap
+    level = plan.prune_ratio_aggressive
+    target = sum(min(level, c) * n for c, n in zip(layer_cap, layer_numel)) / sum(layer_numel)
+    refit = same_size_pruning_plan([lp.sensitivity for lp in plan.layers], plan.layers[0].bit_width, target,
+                                   layer_numel, frozenset(lp.layer for lp in plan.layers if lp.guarded), layer_cap)
     return combine_plans(plan, refit), note + "; what the capped layers could not take moved to the other layers"
 
 
-def _label_level(row, level: float | None, plan: CompressionPlan, layer_numel: list[int]) -> None:
-    """A pruning level's row label: the level and the share of the decoder layers' weights the row really removes
-    (Mohammad, 2026-10-13), which differs when structured pruning is capped or the same-size plan runs out of
-    layers."""
-    if level is not None:
+def _label_level(row, m: Method, level: float | None, plan: CompressionPlan | None, layer_numel: list[int]) -> None:
+    """A pruning level's row label: the technique, the row's kind, the level and the share of the decoder layers'
+    weights the row really removes (Mohammad, 2026-10-13), which differs when structured pruning is capped or the
+    same-size plan runs out of layers. Without a plan (it failed to load) the share is left out."""
+    if level is None:
+        return
+    kind = row.info.get("kind_label") or row.plain_name
+    row.info["kind_label"] = kind  # the plain name before this label replaces it
+    row.info["label"] = f"{m.label}: {kind}, level {level:.0%}"
+    if plan is not None:
         removed = sum(lp.pruning_ratio * n for lp, n in zip(plan.layers, layer_numel)) / sum(layer_numel)
-        row.info["label"] = f"{row.plain_name}, level {level:.0%}, {removed:.1%} of the layer weights removed"
+        row.info["label"] += f", {removed:.1%} of the layer weights removed"
 
 
 _ROTATED = ("not measured: the model rotates inputs while it runs (QuaRot/SpinQuant), and a saved model file "
