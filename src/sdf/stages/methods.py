@@ -153,8 +153,8 @@ _PRUNE_PLANS = ("prune", "prune_same_size")
 
 
 def _transformed_activations(fn: Callable, extra: Callable[[MethodCall], dict[str, Any]] = lambda call: {}):
-    """apply() for an activation_methods.py fn(model, plan, batches, group_size, below, **extra): it rewrites the model into an
-    equivalent one, then returns the context manager that rounds the activations at the plan's bits."""
+    """apply() for an activation_methods.py fn(model, plan, batches, group_size, below, **extra): it rewrites the
+    model into an equivalent one, then returns the context manager that rounds the activations at the plan's bits."""
     @contextmanager
     def apply(call: MethodCall) -> Iterator[dict[str, Any]]:
         with fn(call.model, call.plan, call.batches(), call.cfg.stage0.act_group_size,

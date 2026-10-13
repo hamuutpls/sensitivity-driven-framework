@@ -7,7 +7,8 @@ Two audit fixes were only partly done in the entry below (found by a review afte
 
 - SmoothQuant, QuaRot, SpinQuant and RPTQ, alone and in joint methods, now also leave layers at `baseline_bits` or
   above unrounded, as `rtn_act` and Stage 0 do (they used 16) (15). Their rows change only for a non-default
-  `baseline_bits`, which is already part of their cache key.
+  `baseline_bits`. Method versions are not bumped, so default rows stay cached; a cache made with a non-default
+  `baseline_bits` for these methods (or `rtn_act` joint rows) should be cleared by hand.
 - vLLM and TensorRT-LLM report `<backend>_prefill_ms_std` and `<backend>_decode_ms_per_token_std` (spread across the
   timed repeats), so a timing difference within it is a tie in the verdicts, as for Hugging Face Transformers (4).
   Backend versions bumped (vLLM 5, TensorRT-LLM 4).

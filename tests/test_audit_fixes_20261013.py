@@ -371,7 +371,7 @@ def test_every_activation_method_leaves_layers_at_the_baseline_bits_unrounded(ti
     for bits, rounded in ((8, False), (4, True)):  # at the baseline (8) nothing is rounded; below it, it is
         acts = uniform_activation_plan(4, bits)
         for d in (drift(alone, acts), drift(joint, JointPlan(weights16, acts))):
-            assert (d > 1e-3) == rounded, (bits, d)  # the transform alone moves the logits by < 1e-4
+            assert (d > 1e-5) == rounded, (bits, d)  # the transform alone moves the logits by < 1e-6
 
 
 # 18 -----------------------------------------------------------------------------------------------------------
