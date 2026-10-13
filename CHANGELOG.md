@@ -4,7 +4,7 @@
 
 From the ponytail audit of main 9a7ef8f (`/mnt/project-files/audits/ponytail-audit-20261013.md`); numbers are the
 audit's. Tests in `tests/test_audit_fixes_20261013.py` (every test there fails on 9a7ef8f) cover 1-7, 9, 10, 13-15, 18,
-19, the evaluation-data label and the sweep grid; 11, 12, the other report-text changes and the figures are
+19, the evaluation-data label, the sweep grid and the three review fixes; 11, 12, the other report-text changes and the figures are
 untested small changes. Finding 8 (the
 Stage 3 standard row for token-dropping methods) is left for the Stage 3 work.
 
@@ -32,6 +32,10 @@ Stage 3 standard row for token-dropping methods) is left for the Stage 3 work.
   SqueezeLLM, SpQR, AQLM, QuIP#, PB-LLM and BiLLM no longer key their cache on `gptq_groupsize`, which they ignore
   (every row of those methods, and joint and series rows built on them, is recomputed once) (18).
 - Figures: the stage roles and run ID match the current pipeline (17).
+- Also fixed (found by the review of the audit): low-rank at prune ratio 1.0 removes the layer's weights, as the
+  size prediction counts it (it kept rank 1); validation and held-out perplexity count as one measure in the
+  verdicts, a win or loss only when both halves agree; the Stage 1-3 reports' evaluation-data text follows
+  `eval.dataset`.
 - Lean: deleted `scripts/colab_aqlm_debug.py`, `StageReporter.findings`, `BILLM_FIXED_BITS`, an unused import and a
   redundant check; the GPTQ and compressed-tensors exports share `save_tensors`; the vLLM and TensorRT-LLM backends
   share `run_worker`; the Stage 0 sweep grid refuses settings Stage 0 ignores (`smoothquant_alpha`).

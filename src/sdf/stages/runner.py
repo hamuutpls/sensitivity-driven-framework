@@ -22,7 +22,7 @@ from typing import Any, Callable
 import torch
 from torch import nn
 
-from sdf.data import eval_windows
+from sdf.data import eval_data_label, eval_windows
 from sdf.eval import downstream, llamacpp, trtllm_backend, vllm_backend
 from sdf.eval.ct_export import has_online_rotation
 from sdf.eval.metrics import measure_model
@@ -274,7 +274,7 @@ def run_stage(
         ctx, candidate, handle, plans.profile, ("stages", "stage0", "calibration", "eval", "model", "run"),
         stage=stage, title=TITLES[stage],
         conditions={"model": cfg.model.name, "calibration": calib, "seed": cfg.run.seed,
-                    "evaluation data": f"wikitext-2 test, {cfg.eval.seq_len}-token windows, validation/held-out halves",
+                    "evaluation data": eval_data_label(cfg.eval),
                     "device": str(device), "backend": "HF Transformers", "Stage 0 plans": str(plans.dir),
                     "starting point": "the uncompressed model, for every row (stages are independent)"},
         main_metrics=MAIN_METRICS[stage] + (llamacpp.MAIN_METRICS if use_llamacpp else [])

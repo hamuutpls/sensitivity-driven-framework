@@ -178,6 +178,18 @@ def test_findings_and_plain_summary_give_the_same_verdict_and_noise_is_a_tie(tmp
     assert "One-off cost: Build time (+15" in technical and "paid once" in plain
 
 
+def test_validation_and_held_out_perplexity_count_as_one_measure(tmp_path):
+    rep = _reporter(tmp_path, ["ppl_val", "ppl_heldout", "peak_memory_gb"])
+    _pair(rep, {"ppl_val": 10.0, "ppl_heldout": 10.0, "peak_memory_gb": 1.0},
+          {"ppl_val": 9.0, "ppl_heldout": 9.5, "peak_memory_gb": 1.1})
+    assert rep.verdict(rep.rows[1]) == (["ppl_val"], ["peak_memory_gb"], [])  # one win, not two: a trade-off
+    assert "trades off" in rep.comparison_summary()[0] and "trade-off" in _plain_verdicts(rep)[0]
+    rep = _reporter(tmp_path, ["ppl_val", "ppl_heldout"])
+    _pair(rep, {"ppl_val": 10.0, "ppl_heldout": 10.0}, {"ppl_val": 9.0, "ppl_heldout": 10.5})
+    assert rep.verdict(rep.rows[1]) == ([], [], [])  # the halves disagree: a tie
+    assert "ties with" in rep.comparison_summary()[0]
+
+
 # 5, 6 ---------------------------------------------------------------------------------------------------------
 def test_series_methods_keep_the_stage1_limits():
     qtip = methods_for(2, ["unstructured_prune_after_qtip"])[0]
@@ -187,6 +199,15 @@ def test_series_methods_keep_the_stage1_limits():
     low_rank = methods_for(2, ["low_rank_after_gptq"])[0]
     assert low_rank.apply is None and "replaces the Stage 1 rounding" in low_rank.unavailable
     assert methods_for(2, ["unstructured_prune_after_gptq"])[0].apply is not None
+
+
+def test_low_rank_at_ratio_one_removes_the_layer(tiny_llama):
+    from sdf.stages.pruning import low_rank_
+
+    m = copy.deepcopy(tiny_llama)
+    low_rank_(m, uniform_plan([0.0] * 4, 16, 1.0), [torch.randint(0, 64, (2, 16))], -1, 16)
+    assert all((x.weight == 0).all() for layer in m.model.layers for x in layer.modules()
+               if isinstance(x, torch.nn.Linear))  # was rank 1, while the size prediction counts nothing kept
 
 
 # 7 ------------------------------------------------------------------------------------------------------------

@@ -101,7 +101,10 @@ def low_rank_(model: nn.Module, plan: CompressionPlan, batches: list[torch.Tenso
         norms = input_sq_norms(model, layer, batches)
         for m in (m for m in layer.modules() if isinstance(m, nn.Linear)):
             out, inp = m.weight.shape
-            k = max(1, int((1 - lp.pruning_ratio) * out * inp / (out + inp)))
+            k = int((1 - lp.pruning_ratio) * out * inp / (out + inp))
+            if k == 0:  # nothing kept (ratio 1.0, as the size prediction counts it): the layer is removed
+                m.weight.data.zero_()
+                continue
             d = norms[m].sqrt().clamp(min=1e-6)
             U, S, Vh = torch.linalg.svd(m.weight.float() * d, full_matrices=False)
             A, B = U[:, :k] * S[:k], Vh[:k] / d

@@ -190,7 +190,7 @@ class StageReporter:
     def verdict(self, fw: ComparisonRow) -> tuple[list[str], list[str], list[str]] | None:
         """Main metrics on which framework row `fw` beats, loses to, or (one-off costs) costs more than its
         original row; None when there is no original row. The one judgement behind both the technical findings
-        and the plain summary. A difference within the larger of the two rows' std (a repeated timing's `<name>_std`) is a tie."""
+        and the plain summary. Perplexity counts once (see below). A difference within the larger of the two rows' std (a repeated timing's `<name>_std`) is a tie."""
         orig = self.find_original(fw)
         if orig is None:
             return None
@@ -211,6 +211,12 @@ class StageReporter:
                     one_off.append(m)
                 continue
             (wins if better else losses).append(m)
+        # validation and held-out perplexity are one measure on two halves of the data: count it once, and only
+        # when both halves agree (a disagreement is a tie)
+        if "ppl_val" in wins + losses and "ppl_heldout" in wins + losses:
+            agree = ("ppl_val" in wins) == ("ppl_heldout" in wins)
+            wins, losses = ([m for m in ms if m != "ppl_heldout" and (agree or m != "ppl_val")]
+                            for ms in (wins, losses))
         return wins, losses, one_off
 
     def comparison_summary(self) -> list[str]:
