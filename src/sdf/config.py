@@ -150,6 +150,10 @@ class Stage0Config:
     # also measure the fair test: same bits, size and share removed as the standard method, pruning placed by
     # sensitivity (planner.same_size_pruning_plan)
     prune_sweep_same_size: bool = True
+    # Pruning levels test, part of every Stage 0 run (stage0/pruning_levels.py): Wanda, structured and low-rank
+    # each prune all layers, the non-guarded layers and the guarded layers only, at every share here, and the
+    # perplexity is measured (pruning only). Empty list = off.
+    pruning_levels: list[float] = field(default_factory=lambda: [round(0.1 * i, 1) for i in range(3, 10)])
     # Threshold study (MODE "threshold_sweep", stage0/threshold_sweep.py): measure the plan at every threshold and
     # guard size (rounding follows prune_sweep_quantize)
     threshold_sweep: list[float] = field(default_factory=lambda: [round(0.1 * i, 1) for i in range(1, 10)])
