@@ -5,12 +5,13 @@ import copy
 import json
 from dataclasses import replace
 
+import openpyxl
 import pytest
 
 from sdf.eval import llamacpp, trtllm_backend, vllm_backend
 from sdf.run import start_run
 from sdf.search_space import SEARCH_SPACE
-from sdf.stage0.planner import CompressionPlan, cap_pruning, level_tag, uniform_plan
+from sdf.stage0.planner import CompressionPlan, cap_pruning, decoder_share_removed, level_tag, uniform_plan
 from sdf.stage0.run import run_stage0
 from sdf.stages import methods as methods_mod
 from sdf.stages.methods import METHODS, methods_for
@@ -45,6 +46,16 @@ def test_cap_pruning_lowers_only_the_layers_above_the_cap():
     with pytest.raises(ValueError):
         cap_pruning(plan, [0.75])
     assert [lp.bit_width for lp in capped.layers] == [16, 16, 16]
+
+
+def test_decoder_share_removed_weights_each_layer_by_its_size():
+    plan = uniform_plan([0.1, 0.2, 0.3], 16, 0.0)
+    plan = replace(plan, layers=tuple(replace(lp, pruning_ratio=r) for lp, r in zip(plan.layers, (1.0, 0.5, 0.0))))
+    assert decoder_share_removed(plan, [100, 200, 700]) == pytest.approx((100 + 100) / 1000)
+    assert decoder_share_removed(uniform_plan([0.1, 0.2], 16, 0.3), [10, 30]) == pytest.approx(0.3)
+    assert decoder_share_removed(uniform_plan([0.1, 0.2], 16, 0.0), [10, 30]) == 0.0
+    with pytest.raises(ValueError, match="layer counts differ"):
+        decoder_share_removed(plan, [100, 200])
 
 
 def test_structured_pruning_max_ratio_is_75_percent_and_series_methods_keep_it():
@@ -143,6 +154,19 @@ def test_stage2_runs_every_level_on_every_backend(stage0_dir, tiny_llama, tokeni
     labels = [r["info"]["label"] for k, r in rows.items() if k != "baseline/fp16"]
     assert len(set(labels)) == len(labels)  # every row can be told apart in the plain report
     assert rows["low_rank_030/framework"]["info"]["compare_to"] == "low_rank_030"
+    # every row records the share of the decoder layers' weights removed, next to the whole-model sparsity
+    # (Mohammad, 2026-10-18): it matches the label, and the old column, which also counts weights never pruned, is lower
+    assert rows["baseline/fp16"]["metrics"]["decoder_weights_removed"] == 0.0
+    assert std["metrics"]["decoder_weights_removed"] == pytest.approx(0.9)
+    assert capped["metrics"]["decoder_weights_removed"] == pytest.approx(0.6)
+    assert same["metrics"]["decoder_weights_removed"] == pytest.approx(0.75)
+    for k, r in rows.items():
+        if k != "baseline/fp16":
+            share = r["metrics"]["decoder_weights_removed"]
+            assert f"{share:.1%} of the layer weights removed" in r["info"]["label"], k
+            assert 0 < r["metrics"]["sparsity"] < share, k
+    headers = [c.value for c in next(openpyxl.load_workbook(out["xlsx"])["Summary"].iter_rows(max_row=1))]
+    assert "decoder_weights_removed" in headers and "sparsity" in headers
 
 
 def test_series_rows_sweep_too_with_the_stage1_bits_and_the_cap(stage0_dir, tiny_llama, tokenizer, small_cfg,
@@ -171,6 +195,7 @@ def test_series_rows_sweep_too_with_the_stage1_bits_and_the_cap(stage0_dir, tiny
     plans = [p for p in calls if p is not None]
     assert len(plans) == 6 and all(min(lp.bit_width for lp in p.layers) < 16 for p in plans)  # the Stage 1 bits
     assert all(max(lp.pruning_ratio for lp in p.layers) <= 0.6 for p in plans if p.layers[0].pruning_ratio)
+    assert rows["structured_prune_after_rtn_090/original"]["metrics"]["decoder_weights_removed"] == pytest.approx(0.6)
 
 
 def test_without_level_plans_stage2_runs_each_method_once(stage0_dir, tiny_llama, tokenizer, small_cfg, caplog):
@@ -184,6 +209,7 @@ def test_without_level_plans_stage2_runs_each_method_once(stage0_dir, tiny_llama
                          "unstructured_prune_same_size/framework"}
     assert all(r["status"] == "ok" for r in rows.values())
     assert "level" not in rows["unstructured_prune/original"]["info"].get("label", "")
+    assert all(0 < r["metrics"]["decoder_weights_removed"] < 1 for k, r in rows.items() if k != "baseline/fp16")
     assert "no pruning level plans" in caplog.text
 
 

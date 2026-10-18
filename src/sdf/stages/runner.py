@@ -30,8 +30,8 @@ from sdf.eval.metrics import measure_model
 from sdf.run import RunContext
 from sdf.stage0.activation import ActivationPlan, uniform_activation_plan
 from sdf.stage0.kv_cache import KVPlan, KVProfile, predict_kv, uniform_kv_plan
-from sdf.stage0.planner import (CompressionPlan, baseline_cost, cap_pruning, combine_plans, level_tag,
-                                same_size_pruning_plan, uniform_plan)
+from sdf.stage0.planner import (CompressionPlan, baseline_cost, cap_pruning, combine_plans, decoder_share_removed,
+                                level_tag, same_size_pruning_plan, uniform_plan)
 from sdf.stage0.pruning_levels import layer_caps
 from sdf.stage0.run import (_cost_metrics, _kv_metrics, calib_batches, fp16_key, load_fp16, source_key,
                             setup, stage_reporter, weight_cost)
@@ -71,8 +71,8 @@ TITLES = {1: "Quantization (weights and activations)", 2: "Pruning", 3: "KV-cach
 MAIN_METRICS = {
     1: ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "avg_bits_per_weight", "avg_activation_bits",
         "zero_weight_share", "peak_memory_gb", "prefill_ms_mean", "decode_ms_per_token_mean", "build_time_s"],
-    2: ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "sparsity", "peak_memory_gb", "prefill_ms_mean",
-        "decode_ms_per_token_mean", "build_time_s"],
+    2: ["ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "sparsity", "decoder_weights_removed",
+        "peak_memory_gb", "prefill_ms_mean", "decode_ms_per_token_mean", "build_time_s"],
     3: ["ppl_val", "ppl_heldout", "predicted_kv_memory_gb", "avg_kv_bits", "kv_kept_share", "peak_memory_gb",
         "prefill_ms_mean", "decode_ms_per_token_mean", "build_time_s"],
 }
@@ -236,7 +236,7 @@ def _fp16_plan_metrics(stage: int, plans: Stage0Plans, cfg, candidate) -> dict[s
     if stage == 1:
         return {**weights, **plan_metrics(uniform_activation_plan(plans.num_layers, base), plans, cfg, candidate)}
     if stage == 2:
-        return weights
+        return {**weights, "decoder_weights_removed": 0.0}
     return plan_metrics(uniform_kv_plan(plans.num_layers, base), plans, cfg, candidate)
 
 
@@ -466,6 +466,8 @@ def run_stage(
             result, cached = ctx.cache.get_or_compute(f"stage{stage}_original", key,
                                                       lambda: build_and_measure(m, orig))
             row.metrics.update(plan_metrics(orig, plans, cfg, candidate, m.storage))
+            if stage == 2:
+                row.metrics["decoder_weights_removed"] = decoder_share_removed(orig, plans.profile.layer_numel)
             row.metrics.update(result["metrics"])
             row.info.update(result.get("info", {}), cached=cached)  # .get: rows cached before "info" existed
             rep.add_raw(m.name, "original", result["raw"])
@@ -492,6 +494,8 @@ def run_stage(
                 row.info["description"] = f"{m.label}, Stage 0 {_describe(plan)}"
                 result = build_and_measure(m, plan)
                 row.metrics.update(plan_metrics(plan, plans, cfg, candidate, m.storage))
+                if stage == 2:
+                    row.metrics["decoder_weights_removed"] = decoder_share_removed(plan, plans.profile.layer_numel)
                 row.metrics.update(result["metrics"])
                 row.info.update(result["info"])
                 rep.add_raw(m.name + suffix, "framework", result["raw"])
@@ -542,8 +546,7 @@ def _label_level(row, m: Method, level: float | None, plan: CompressionPlan | No
     row.info["kind_label"] = kind  # the plain name before this label replaces it
     row.info["label"] = f"{m.label}: {kind}, level {level:.0%}"
     if plan is not None:
-        removed = sum(lp.pruning_ratio * n for lp, n in zip(plan.layers, layer_numel)) / sum(layer_numel)
-        row.info["label"] += f", {removed:.1%} of the layer weights removed"
+        row.info["label"] += f", {decoder_share_removed(plan, layer_numel):.1%} of the layer weights removed"
 
 
 _ROTATED = ("not measured: the model rotates inputs while it runs (QuaRot/SpinQuant), and a saved model file "
