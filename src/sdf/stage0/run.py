@@ -956,7 +956,7 @@ def _add_kv_details(rep: StageReporter, prof: KVProfile, plan: KVPlan, bits_only
         "",
         "Attention coverage takes each query's top tokens (an oracle); H2O / SnapKV choose tokens from past "
         "attention and keep a little less. Perplexity rises are summed over layers, assuming they add up. "
-        "Stage 3 measures both for real.",
+        "Stage 3 measures the real perplexity with each technique's own choice of words (simulated).",
     ])))
     if key_mean <= val_mean:
         rep.anomalies.append(f"Keys were no more fragile than values at {low} bits (mean rise {key_mean:.4g} vs "

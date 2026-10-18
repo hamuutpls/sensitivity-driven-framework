@@ -250,9 +250,9 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 
 | ID | Requirement | Pri | Status | Ver | Source | Design |
 |---|---|---|---|---|---|---|
-| S3-01 | Stage 3 shall support QuaRot KV, KVQuant, H2O, SnapKV and InfiniGen. | M | Planned | T | SPEC | SDD §8 |
-| S3-02 | In the framework variant, per-layer key bits, value bits and token budget shall follow the Stage 0 KV cache plan (`kv_cache_plan.json`). | M | Planned | T | SPEC | SDD §8 |
-| S3-03 | QuaRot key-cache bit width shall be the search parameter `quarot_k_bits`. | M | Planned | I | SPEC | SDD §8 |
+| S3-01 | Stage 3 shall support QuaRot KV, KVQuant, H2O, SnapKV and InfiniGen. | M | Done (simulated on HF, 2026-10-18) | T | SPEC | SDD §8 |
+| S3-02 | In the framework variant, per-layer key bits, value bits and token budget shall follow the Stage 0 KV cache plan (`kv_cache_plan.json`). | M | Done (simulated on HF, 2026-10-18) | T | SPEC | SDD §8 |
+| S3-03 | QuaRot key-cache bit width shall be the search parameter `quarot_k_bits`. | M | Done (simulated on HF, 2026-10-18) | I | SPEC | SDD §8 |
 | S3-04 | Stage 3 shall report KV-cache memory and check it against `kv_budget_gb`. | M | Planned | T | SPEC | SDD §8 |
 
 #### 3.1.10 Stage 4: evaluation across backends (S4)

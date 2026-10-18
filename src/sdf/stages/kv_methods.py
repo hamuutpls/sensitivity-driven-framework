@@ -14,6 +14,7 @@ model by `kv_attention`.
 
 from __future__ import annotations
 
+import functools
 import math
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -47,7 +48,8 @@ class LayerKV:
 
 
 def repeat_kv(x: torch.Tensor, groups: int) -> torch.Tensor:
-    """(batch, kv_heads, tokens, dim) -> (batch, kv_heads * groups, tokens, dim), as the Llama attention does."""
+    """(batch, kv_heads, ...) -> (batch, kv_heads * groups, ...); transformers' repeat_kv takes only 4-D tensors,
+    and the keep masks here are 3-D too."""
     return x.repeat_interleave(groups, dim=1)
 
 
@@ -57,11 +59,17 @@ def group_mean(x: torch.Tensor, groups: int) -> torch.Tensor:
     return x.reshape(b, h // groups, groups, *x.shape[2:]).mean(2)
 
 
+@functools.cache
+def _rotation(n: int, device: torch.device) -> torch.Tensor:
+    """Built once per size and device: a host-to-device copy inside the forward would stop CUDA graph capture."""
+    return _orthogonal(n, torch.Generator().manual_seed(0), device)
+
+
 def quarot_round(x: torch.Tensor, bits: int) -> torch.Tensor:
     """x (batch, heads, tokens, head_dim) rotated by a random Hadamard matrix (Stage 1 QuaRot's), rounded with one
     min/max scale per token and head (QuaRot's asymmetric per-head groups), rotated back. The rotation spreads
     outliers over the head."""
-    h = _orthogonal(x.shape[-1], torch.Generator().manual_seed(0), x.device)
+    h = _rotation(x.shape[-1], x.device)
     r = round_to_nearest(x.float() @ h, bits, x.shape[-1])
     return (r @ h.T).to(x.dtype)
 
@@ -106,9 +114,10 @@ def snapkv_keep(scores: torch.Tensor, groups: int, budget: int, window: int = SN
     w = min(window, budget)
     c = group_mean(scores.float().softmax(-1), groups).cumsum(2)
     votes = c - F.pad(c, (0, 0, w, 0))[:, :, :n]  # row i: attention of queries i-w+1..i
-    votes = F.max_pool1d(votes.reshape(-1, 1, n), kernel, 1, kernel // 2).view_as(votes)
     i, j = torch.arange(n, device=scores.device)[:, None], torch.arange(n, device=scores.device)
     in_window = (j > i - w) & causal
+    votes = votes.masked_fill(in_window | ~causal, 0)  # as SnapKV, pool only the words before the window
+    votes = F.max_pool1d(votes.reshape(-1, 1, n), kernel, 1, kernel // 2).view_as(votes)
     sel = votes.masked_fill(in_window | ~causal, -math.inf).topk(budget - w, -1).indices
     picked = torch.zeros_like(keep).scatter_(-1, sel, True) & causal  # rows < budget are overwritten below
     keep[:, :, budget:] = (picked | in_window)[:, :, budget:]
@@ -118,21 +127,22 @@ def snapkv_keep(scores: torch.Tensor, groups: int, budget: int, window: int = SN
 def infinigen_keep(query: torch.Tensor, key: torch.Tensor, groups: int, budget: int,
                    partial: float = INFINIGEN_PARTIAL) -> torch.Tensor:
     """InfiniGen: guess each query's attention from `partial` of the query/key channels (those with the largest
-    |q| x |k|), and fetch only the `budget` words with the highest guess (plus the word itself).
+    |q| x |k| over the words so far), and fetch the word itself plus the `budget` - 1 words with the highest guess.
     shortcut: channels picked from this text's own q/k, not InfiniGen's offline SVD skewing and previous-layer
     speculation; upgrade if the guess quality, not the budget, turns out to decide the result."""
     b, hq, n, d = query.shape
     k = repeat_kv(key, groups)
     c = max(1, round(partial * d))
-    idx = (query.float().abs().sum(2) * k.float().abs().sum(2)).topk(c, -1).indices[:, :, None, :]
-    guess = query.float().gather(-1, idx.expand(-1, -1, n, -1)) @ k.float().gather(-1, idx.expand(-1, -1, n, -1)).mT
+    q = query.float()
+    importance = q.abs().cumsum(2) * k.float().abs().cumsum(2)  # (b, h, n, d): words up to each query only
+    channels = torch.zeros_like(q).scatter_(-1, importance.topk(c, -1).indices, 1.0)
     causal = _causal(n, query.device)
-    guess = group_mean(guess, groups).masked_fill(~causal, -math.inf)
+    eye = torch.eye(n, dtype=torch.bool, device=query.device)
+    guess = group_mean((q * channels) @ k.float().mT, groups).masked_fill(~causal | eye, -math.inf)
     keep = causal.expand(b, hq // groups, n, n).clone()
     if budget >= n:
         return keep
-    picked = torch.zeros_like(keep).scatter_(-1, guess.topk(budget, -1).indices, True)
-    picked |= torch.eye(n, dtype=torch.bool, device=query.device)
+    picked = torch.zeros_like(keep).scatter_(-1, guess.topk(budget - 1, -1).indices, True) | eye
     keep[:, :, budget:] = (picked & causal)[:, :, budget:]
     return keep
 
@@ -156,7 +166,7 @@ def kv_attention_forward(module: nn.Module, query: torch.Tensor, key: torch.Tens
         scores = scores + attention_mask[..., :n_k]
     elif n_q == n_k:
         scores = scores.masked_fill(~_causal(n_q, scores.device), -math.inf)
-    budget = math.ceil(spec.keep_ratio * n_k)
+    budget = math.ceil(round(spec.keep_ratio * n_k, 9))  # round: 0.7 * 10 is 7.000000000000001
     if spec.forget is not None and n_q == n_k and budget < n_k:
         keep = (infinigen_keep(query, key, groups, budget) if spec.forget == "infinigen"
                 else {"h2o": h2o_keep, "snapkv": snapkv_keep}[spec.forget](scores, groups, budget))
@@ -202,11 +212,11 @@ def kmeans_1d(x: torch.Tensor, k: int, iters: int = 25) -> torch.Tensor:
     x = x.float().flatten()
     levels = torch.quantile(x, torch.linspace(0, 1, k, device=x.device))
     for _ in range(iters):
-        idx = (x[:, None] - levels).abs().argmin(1)
+        idx = torch.bucketize(x, (levels[1:] + levels[:-1]) / 2)  # nearest level, no (samples x levels) matrix
         total = torch.zeros(k, device=x.device).index_add_(0, idx, x)
         count = torch.zeros(k, device=x.device).index_add_(0, idx, torch.ones_like(x))
-        levels = torch.where(count > 0, total / count.clamp(min=1), levels)
-    return levels.sort().values
+        levels = torch.where(count > 0, total / count.clamp(min=1), levels).sort().values
+    return levels
 
 
 def snap_to_levels(u: torch.Tensor, levels: torch.Tensor) -> torch.Tensor:
@@ -220,9 +230,9 @@ def _normalize(x: torch.Tensor, lo: torch.Tensor, hi: torch.Tensor) -> torch.Ten
 
 
 def _quantiles(x: torch.Tensor, dim: int) -> tuple[torch.Tensor, torch.Tensor]:
-    q = torch.tensor([KVQUANT_OUTLIERS / 2, 1 - KVQUANT_OUTLIERS / 2], device=x.device)
-    lo, hi = torch.quantile(x.float(), q, dim=dim, keepdim=True)
-    return lo, hi
+    x = x.float()  # float q, not a tensor: no host-to-device copy inside the forward (CUDA graphs)
+    return (torch.quantile(x, KVQUANT_OUTLIERS / 2, dim=dim, keepdim=True),
+            torch.quantile(x, 1 - KVQUANT_OUTLIERS / 2, dim=dim, keepdim=True))
 
 
 @dataclass

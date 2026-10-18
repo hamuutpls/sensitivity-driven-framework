@@ -248,7 +248,11 @@ def predict_kv(plan: KVPlan, profile: KVProfile, context_len: int, batch_size: i
     """Cache size for `batch_size` sequences of `context_len` tokens. Rounded numbers carry one scale and
     zero point (`group_overhead_bits`) per `group_size` numbers; evicted tokens take no space."""
     def rise(rises: list[float], bits: int) -> float:
-        return 0.0 if bits >= baseline_bits else _monotone(rises)[profile.bits_options.index(bits)]
+        if bits >= baseline_bits:
+            return 0.0
+        if bits not in profile.bits_options:  # e.g. QUAROT_K_BITS = 3: never measured, so no prediction
+            return math.nan
+        return _monotone(rises)[profile.bits_options.index(bits)]
 
     per_layer, kept_numbers, all_numbers, bit_sum, damage, attn = [], 0.0, 0.0, 0.0, 0.0, 0.0
     for lp, kd, vd, kr, vr, cov in zip(plan.layers, profile.key_dims, profile.value_dims, profile.key_rise,

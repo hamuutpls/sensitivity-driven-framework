@@ -259,7 +259,8 @@ def write_handoff(
             ("Words kept", "Share of earlier words this layer remembers; the rest are forgotten."),
         ])
         c_un, c_fw, c_bits = kpredict(kuni), kpredict(kplan), kpredict(kbits)
-        rows = [[f"Standard method (uniform {s0.kv_uniform_bits}-bit, nothing forgotten)", _mb(c_un.memory_gb),
+        rows = [[f"Standard method (uniform {s0.kv_uniform_bits}-bit, nothing forgotten; H2O, SnapKV, InfiniGen: 16-bit, "
+                 f"{s0.kv_standard_keep_ratio:.0%} of words kept)", _mb(c_un.memory_gb),
                  f"{c_un.avg_bits:.2f}", f"{c_un.ppl_rise:.4f}"],
                 ["Plan (bits + forgetting)", _mb(c_fw.memory_gb), f"{c_fw.avg_bits:.2f}", f"{c_fw.ppl_rise:.4f}"],
                 ["Plan, bits only", _mb(c_bits.memory_gb), f"{c_bits.avg_bits:.2f}", f"{c_bits.ppl_rise:.4f}"]]

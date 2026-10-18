@@ -119,7 +119,7 @@ results folder (Google Drive on Colab), and (planned) drives four inference back
 | SS-0 | Stage 0: sensitivity profiling and planning | `stage0/sensitivity.py`, `stage0/planner.py`, `stage0/run.py` | Implemented | S0-*, PIPE-03 |
 | SS-1 | Stage 1: quantization (weights, activations) | `stages/weights.py`, `stages/methods.py` | Implemented (weights, RTN activations) | S1-* |
 | SS-2 | Stage 2: pruning | `stages/pruning.py`, `stages/methods.py` | Implemented | S2-* |
-| SS-3 | Stage 3: KV-cache compression | `stage3/` *(planned)* | Planned | S3-*, MET-06 |
+| SS-3 | Stage 3: KV-cache compression | `stages/kv_methods.py`, `stages/methods.py` | Done (simulated on HF) | S3-*, MET-06 |
 | SS-4 | Stage 4: evaluation across backends | `stage4/` *(planned)*; HF measurement in `eval/metrics.py` today | Partial | S4-*, MET-03 |
 | SS-SRCH | Search layer | `search/` *(planned)*; `search_space.py` today | Partial | SRCH-* |
 
@@ -621,7 +621,7 @@ derives the pruning plans from the same sensitivity scores and guard as the quan
 
 ---
 
-## 8. SS-3: Stage 3, KV-cache compression *(planned)*
+## 8. SS-3: Stage 3, KV-cache compression
 
 ### 8.1 Purpose
 

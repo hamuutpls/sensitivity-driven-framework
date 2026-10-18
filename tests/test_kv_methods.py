@@ -79,13 +79,22 @@ def test_snapkv_keeps_the_window_and_the_most_voted_word():
     assert not (keep & ~torch.ones(20, 20, dtype=torch.bool).tril()).any()
 
 
+def test_snapkv_window_votes_do_not_spill_onto_earlier_words():
+    s = torch.full((1, 2, 30, 30), -5.0).masked_fill(~torch.ones(30, 30, dtype=torch.bool).tril(), -math.inf)
+    s[..., 0] = torch.where(torch.isinf(s[..., 0]), s[..., 0], torch.zeros_like(s[..., 0]))  # word 0 mildly liked
+    idx = torch.arange(30)
+    s[..., idx, idx] = 10.0  # every query mostly looks at itself (inside the window)
+    keep = snapkv_keep(s, groups=2, budget=6, window=4, kernel=7)
+    assert keep[..., 25, 0].all()  # not a word next to the window, whose pooled vote would come from the window
+
+
 def test_infinigen_fetches_the_words_with_the_highest_guess():
     g = torch.Generator().manual_seed(1)
     q, k = torch.randn(1, 4, 16, 8, generator=g).abs() + 1, torch.randn(1, 2, 16, 8, generator=g)
     k[:, :, 4] = 10.0  # word 4 matches every (positive) query, whichever channels are used
     keep = infinigen_keep(q, k, groups=2, budget=5)
     counts = keep.sum(-1)
-    assert ((counts[..., 5:] >= 5) & (counts[..., 5:] <= 6)).all()  # top 5, plus the word itself
+    assert (counts[..., 5:] == 5).all()  # the word itself and the top 4 guesses
     assert keep[..., 5:, 4].all() and keep[..., torch.arange(16), torch.arange(16)].all()
     assert not (keep & ~torch.ones(16, 16, dtype=torch.bool).tril()).any()
 
@@ -106,6 +115,8 @@ def test_kv_attention_forward_matches_eager_and_masks_forgotten_words():
     ref, _ = eager_attention_forward(_Attn(LayerKV()), q, k, v, mask, 0.3)
     out, _ = kv_attention_forward(_Attn(LayerKV()), q, k, v, mask, 0.3)
     assert torch.allclose(out, ref, atol=1e-6)
+    _, probs = kv_attention_forward(_Attn(LayerKV(forget="h2o", keep_ratio=0.7)), q, k, v, mask, 0.3)
+    assert ((probs[..., 7:, :] > 0).sum(-1) == 7).all()  # 0.7 x 10 words is 7, not 8 (float rounding)
     out, probs = kv_attention_forward(_Attn(LayerKV(forget="h2o", keep_ratio=0.4)), q, k, v, mask, 0.3)
     assert torch.allclose(out[:, :4], ref[:, :4], atol=1e-6)  # nothing forgotten before the budget (4 words) fills
     assert ((probs[..., 4:, :] > 0).sum(-1) == 4).all()
@@ -176,16 +187,20 @@ def test_standard_rows_paper_defaults(stage0_dir, small_cfg):
     for name in ("rtn_kv", "quarot_kv", "kvquant"):
         assert {(lp.key_bits, lp.keep_ratio) for lp in original_plan(METHODS[name], plans, s0, 0.3).layers} == \
             {(s0.kv_uniform_bits, 1.0)}
-    assert all(METHODS[m].plans == ("kv",) for m in KV_METHODS)  # every technique follows the whole plan
+    assert all(METHODS[m].plans == ("kv",) for m in KV_METHODS if m != "rtn_kv")  # the whole plan
+    assert METHODS["rtn_kv"].plans == ("kv_bits_only",)  # rounding alone; the whole plan would repeat h2o's row
 
 
-def test_quarot_standard_row_uses_quarot_k_bits(tiny_llama, small_cfg, monkeypatch):
+def test_quarot_standard_row_uses_quarot_k_bits(stage0_dir, tiny_llama, small_cfg, monkeypatch):
+    plans, s0 = Stage0Plans.load(stage0_dir), small_cfg.stage0
+    orig = original_plan(METHODS["quarot_kv"], plans, s0, 0.3, quarot_k_bits=2)
+    assert {(lp.key_bits, lp.value_bits, lp.keep_ratio) for lp in orig.layers} == {(2, s0.kv_uniform_bits, 1.0)}
+    assert original_plan(METHODS["kvquant"], plans, s0, 0.3, quarot_k_bits=2).layers[0].key_bits == s0.kv_uniform_bits
     seen = []
     import sdf.stages.methods as mm
     monkeypatch.setattr(mm, "kv_attention", lambda model, specs: seen.append(specs) or kv_attention(model, specs))
-    plan = uniform_kv_plan(4, 4)
-    cand = SEARCH_SPACE.make({"calib_samples": 16, "quarot_k_bits": 2})
-    with METHODS["quarot_kv"].apply(MethodCall(tiny_llama, plan, cand, small_cfg, lambda: [])):
+    cand = SEARCH_SPACE.make({"calib_samples": 16})
+    with METHODS["quarot_kv"].apply(MethodCall(tiny_llama, orig, cand, small_cfg, lambda: [])):
         pass
     assert {(s.rotate_key_bits, s.rotate_value_bits, s.forget) for s in seen[0]} == {(2, 4, None)}
     framework = KVPlan(tuple(KVLayerPlan(i, 8, 2, 0.5 if i else 1.0) for i in range(4)), "sensitivity")
@@ -218,3 +233,18 @@ def test_stage3_backends_run_only_the_uncompressed_row(stage0_dir, tiny_llama, t
             assert r["status"] == "ok", (k, r.get("error"))
             for name in ("llamacpp", "vllm", "trtllm"):
                 assert r["info"][f"{name}_error"].startswith("not run: this backend cannot forget words")
+
+
+def test_backend_reasons_follow_this_runs_backends_not_the_cache(stage0_dir, tiny_llama, tokenizer, small_cfg,
+                                                                 monkeypatch):
+    monkeypatch.setattr(llamacpp, "measure", lambda *a, **k: {m: 1.0 for m in llamacpp.MAIN_METRICS})
+    kwargs = dict(model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
+    cand = SEARCH_SPACE.make({"calib_samples": 16})
+    ctx = start_run(small_cfg)
+    run_stage(ctx, 3, ["rtn_kv"], cand, stage0_dir, **kwargs)  # caches the standard row without backends
+    cfg = small_cfg.with_overrides({"eval.llamacpp_dir": "lc", "eval.llamacpp_convert": "conv.py"})
+    out = run_stage(start_run(cfg), 3, ["rtn_kv"], cand, stage0_dir, **kwargs)
+    rows = {f"{r['method']}/{r['variant']}": r for r in json.loads(out["json"].read_text())["rows"]}
+    assert rows["rtn_kv/original"]["info"]["cached"]
+    assert rows["rtn_kv/original"]["info"]["llamacpp_error"].startswith("not run")
+    assert "vllm_error" not in rows["rtn_kv/original"]["info"]

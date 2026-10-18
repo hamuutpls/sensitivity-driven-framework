@@ -163,7 +163,7 @@ def kind_of(m: Method) -> str:
     return "joint" if m.joint is not None else PLAN_KIND[m.plans[0]]
 
 
-def original_plan(m: Method, plans: Stage0Plans, s0, prune_ratio: float) -> Any:
+def original_plan(m: Method, plans: Stage0Plans, s0, prune_ratio: float, quarot_k_bits: int | None = None) -> Any:
     """The uniform plan of the standard method, from the Stage 0 "original method" settings: `uniform_bits` and
     nothing removed (Stage 1), `prune_ratio` removed from every layer and nothing rounded (Stage 2), both for a
     Stage 2 method run after Stage 1."""
@@ -181,7 +181,10 @@ def original_plan(m: Method, plans: Stage0Plans, s0, prune_ratio: float) -> Any:
                          uniform_activation_plan(plans.num_layers, a or s0.act_uniform_bits))
     if m.forgets:
         return uniform_kv_plan(plans.num_layers, s0.baseline_bits, s0.kv_standard_keep_ratio)
-    return uniform_kv_plan(plans.num_layers, s0.kv_uniform_bits)
+    plan = uniform_kv_plan(plans.num_layers, s0.kv_uniform_bits)
+    if "quarot_k_bits" in m.params and quarot_k_bits is not None:  # QUAROT_K_BITS: QuaRot KV's standard key bits
+        plan = replace(plan, layers=tuple(replace(lp, key_bits=quarot_k_bits) for lp in plan.layers))
+    return plan
 
 
 def _plan_keys(m: Method, plan_key: str) -> list[str]:
@@ -346,6 +349,13 @@ def run_stage(
     def be_on(method: Method) -> bool:
         return bool(serving) and kind_of(method) in ("weights", "joint", "prune")
 
+    def not_on_backends(method: Method) -> dict[str, str]:
+        """Why a Stage 3 row has no backend numbers; set on the row, not in the cached result (the reason
+        depends on which backends this run has, which a KV row's cache key does not hold)."""
+        if kind_of(method) != "kv":
+            return {}
+        return {f"{name}_error": _KV_NOT_ON_BACKENDS for name in ["llamacpp"] * use_llamacpp + list(serving)}
+
     def build_and_measure(method: Method, plan: Any) -> dict[str, Any]:
         model = model_factory()
         info: dict[str, str] = {}
@@ -373,9 +383,6 @@ def run_stage(
                         except Exception as e:  # noqa: BLE001 - a missing program or file too, not only a failed run
                             log.warning("llama.cpp could not measure %s: %s", method.name, e)
                             info["llamacpp_error"] = str(e)
-                if kind_of(method) == "kv":
-                    for name in ["llamacpp"] * use_llamacpp + list(serving):
-                        info[f"{name}_error"] = _KV_NOT_ON_BACKENDS
                 for name, (mod, err, _) in serving.items() if be_on(method) else ():
                     if rotated:
                         info[f"{name}_error"] = _ROTATED
@@ -446,7 +453,8 @@ def run_stage(
                     100 * candidate["prune_ratio_aggressive"])
     for m, plans, level in (row for method in methods for row in sweep(method, all_plans)):
         simulated_any |= m.simulated
-        orig = original_plan(m, plans, s0, candidate["prune_ratio_aggressive"] if level is None else level)
+        orig = original_plan(m, plans, s0, candidate["prune_ratio_aggressive"] if level is None else level,
+                             candidate.get("quarot_k_bits"))
         with rep.method(m.name, "original", description=f"{m.label}, standard settings: {_describe(orig)}",
                         simulated=m.simulated) as row:
             orig, cap_note = _capped(m, orig, caps, plans.profile.layer_numel)
@@ -474,6 +482,7 @@ def run_stage(
             row.metrics.update(plan_metrics(orig, plans, cfg, candidate, m.storage))
             row.metrics.update(result["metrics"])
             row.info.update(result.get("info", {}), cached=cached)  # .get: rows cached before "info" existed
+            row.info.update(not_on_backends(m))
             rep.add_raw(m.name, "original", result["raw"])
 
         for plan_key in m.plans:
@@ -500,6 +509,7 @@ def run_stage(
                 row.metrics.update(plan_metrics(plan, plans, cfg, candidate, m.storage))
                 row.metrics.update(result["metrics"])
                 row.info.update(result["info"])
+                row.info.update(not_on_backends(m))
                 rep.add_raw(m.name + suffix, "framework", result["raw"])
 
     if any(m.storage for m in methods):

@@ -162,15 +162,13 @@ def _kv_method(rounding: str, forget: str) -> Callable[[MethodCall], ContextMana
         s0 = call.cfg.stage0
         names, base = tuple(s0.kv_module_names), s0.baseline_bits
         keys, values = [lp.key_bits for lp in plan.layers], [lp.value_bits for lp in plan.layers]
-        if rounding == "quarot" and plan.kind == "uniform":
-            keys = [call.candidate["quarot_k_bits"]] * len(keys)  # QUAROT_K_BITS: the standard row's key bits
         specs = [LayerKV(kb if rounding == "quarot" and kb < base else 16, vb if rounding == "quarot" and vb < base
                          else 16, forget if lp.keep_ratio < 1 else None, lp.keep_ratio)
                  for lp, kb, vb in zip(plan.layers, keys, values)]
         with ExitStack() as stack:
             if rounding == "rtn":
                 stack.enter_context(_rtn_kv_hooks(call.model, plan, s0))
-            elif rounding == "kvquant":
+            elif rounding == "kvquant" and min(keys + values) < base:
                 layers = calibrate_kvquant(call.model, call.batches(), keys, values, names, base)
                 stack.enter_context(kvquant_hooks(call.model, layers, keys, values, names, base))
             if any(sp != LayerKV() for sp in specs):  # else attention stays the model's own (SDPA)
@@ -180,7 +178,8 @@ def _kv_method(rounding: str, forget: str) -> Callable[[MethodCall], ContextMana
 
 
 _KV_NOTE = ("Simulated: keys and values are rounded in place and forgotten words are masked out of attention for "
-            "each word, so accuracy is real but memory is the plan's prediction and speed is not a smaller cache's.")
+            "each word, so accuracy is real but memory is the plan's prediction, speed is not a smaller cache's, and peak "
+            "memory includes the simulation's masks.")
 _WEIGHT_PLANS = ("quant",)
 _PRUNE_PLANS = ("prune", "prune_same_size")
 
@@ -254,9 +253,10 @@ METHODS: dict[str, Method] = {m.name: m for m in [
            params=("gptq_groupsize",), calibrated=True, storage="free", library="in repo (torch)", version=2),
     # Stage 3: KV cache (stages/kv_methods.py). Standard rows: rounding techniques at stage0.kv_uniform_bits keeping
     # every word, forgetting techniques at 16 bits keeping stage0.kv_standard_keep_ratio (the papers' 20%).
-    # baseline; same rounding as the Stage 0 KV measurement
-    Method("rtn_kv", 3, "Round-to-nearest KV cache", ("kv",), _kv_method("rtn", "h2o"), library="in repo (torch)",
-           note=_KV_NOTE),
+    # baseline; same rounding as the Stage 0 KV measurement. Its Our method row follows the bits-only plan, so it shows
+    # what rounding alone costs (with the full plan it would be the same computation as h2o's row)
+    Method("rtn_kv", 3, "Round-to-nearest KV cache", ("kv_bits_only",), _kv_method("rtn", "h2o"),
+           library="in repo (torch)", note=_KV_NOTE),
     # keys after RoPE and values rotated by a Hadamard matrix, then rounded per token and head
     Method("quarot_kv", 3, "QuaRot KV", ("kv",), _kv_method("quarot", "h2o"), params=("quarot_k_bits",),
            library="in repo (torch Hadamard)", note=_KV_NOTE),
@@ -265,11 +265,11 @@ METHODS: dict[str, Method] = {m.name: m for m in [
            library="in repo (simplified port)", note=_KV_NOTE + " KVQuant: levels from plain k-means, not "
            "sensitivity-weighted; the 1% unrounded outliers are not counted in the predicted memory."),
     # keeps recent + heavy-hitter words
-    Method("h2o", 3, "H2O", ("kv",), _kv_method("rtn", "h2o"), forgets=True, library="in repo (attention hook)",
+    Method("h2o", 3, "H2O", ("kv",), _kv_method("rtn", "h2o"), forgets=True, library="in repo (attention function)",
            note=_KV_NOTE),
     # keeps an observation window and the earlier words it attends to most
     Method("snapkv", 3, "SnapKV", ("kv",), _kv_method("rtn", "snapkv"), forgets=True,
-           library="in repo (attention hook)", note=_KV_NOTE),
+           library="in repo (attention function)", note=_KV_NOTE),
     # guesses attention from 30% of the channels and fetches only the top words; the CPU offloading is not run
     Method("infinigen", 3, "InfiniGen", ("kv",), _kv_method("rtn", "infinigen"), forgets=True,
            library="in repo (simplified port, no CPU offloading)",
