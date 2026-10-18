@@ -2,7 +2,7 @@
 
 Perplexity is measured with one forward pass per text window, so forgetting is simulated per word ("every word",
 Mohammad, 2026-10-18): each word attends only to the past words the technique would still hold at that point, under
-a budget of ceil(keep_ratio x window length) words per layer (the Stage 0 plan's share, or the papers' 20% in the
+a budget of ceil(keep_ratio x window length) words per layer (the Stage 0 plan's share, or H2O's 20% in the
 standard rows). A dropped word is dropped for a whole key/value head (shared by its group of query heads), since that
 is what frees memory. Rounding of cached keys and values is applied in place, as rtn_kv does; nothing is stored
 smaller, so memory comes from the plan's prediction and speed is not a compressed cache's speed.

@@ -267,7 +267,10 @@ def predict_kv(plan: KVPlan, profile: KVProfile, context_len: int, batch_size: i
             all_numbers += context_len * batch_size * d
         per_layer.append(bits / 8 / 1e6)
         damage += rise(kr, lp.key_bits) + rise(vr, lp.value_bits)
-        attn += 1.0 if lp.keep_ratio >= 1.0 else cov[profile.keep_ratios.index(lp.keep_ratio)]
+        if lp.keep_ratio >= 1.0:
+            attn += 1.0
+        else:  # a share Stage 0 did not measure (e.g. stage0.kv_standard_keep_ratio) has no prediction
+            attn += cov[profile.keep_ratios.index(lp.keep_ratio)] if lp.keep_ratio in profile.keep_ratios else math.nan
     return KVCost(memory_gb=sum(per_layer) / 1e3, avg_bits=bit_sum / kept_numbers,
                   kept_share=kept_numbers / all_numbers, ppl_rise=damage, attention_kept=attn / len(plan.layers),
                   per_layer_mb=tuple(per_layer))

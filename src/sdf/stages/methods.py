@@ -252,7 +252,8 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     Method("low_rank", 2, "Low-rank (activation-aware SVD)", _PRUNE_PLANS, _calibrated(low_rank_),
            params=("gptq_groupsize",), calibrated=True, storage="free", library="in repo (torch)", version=2),
     # Stage 3: KV cache (stages/kv_methods.py). Standard rows: rounding techniques at stage0.kv_uniform_bits keeping
-    # every word, forgetting techniques at 16 bits keeping stage0.kv_standard_keep_ratio (the papers' 20%).
+    # every word, forgetting techniques at 16 bits keeping stage0.kv_standard_keep_ratio (H2O's 20%; SnapKV and
+    # InfiniGen set no share: SnapKV a fixed word count, InfiniGen an attention threshold).
     # baseline; same rounding as the Stage 0 KV measurement. Its Our method row follows the bits-only plan, so it shows
     # what rounding alone costs (with the full plan it would be the same computation as h2o's row)
     Method("rtn_kv", 3, "Round-to-nearest KV cache", ("kv_bits_only",), _kv_method("rtn", "h2o"),
@@ -269,12 +270,14 @@ METHODS: dict[str, Method] = {m.name: m for m in [
            note=_KV_NOTE),
     # keeps an observation window and the earlier words it attends to most
     Method("snapkv", 3, "SnapKV", ("kv",), _kv_method("rtn", "snapkv"), forgets=True,
-           library="in repo (attention function)", note=_KV_NOTE),
+           library="in repo (attention function)", note=_KV_NOTE + " SnapKV: its paper keeps a fixed number of words; "
+           "the standard row keeps H2O's 20% instead, and the choice is redone at every word."),
     # guesses attention from 30% of the channels and fetches only the top words; the CPU offloading is not run
     Method("infinigen", 3, "InfiniGen", ("kv",), _kv_method("rtn", "infinigen"), forgets=True,
            library="in repo (simplified port, no CPU offloading)",
-           note=_KV_NOTE + " InfiniGen: channels picked from each text's own queries and keys, no offline skewing; "
-           "the full cache would sit in CPU memory, which is not run here."),
+           note=_KV_NOTE + " InfiniGen: its paper fetches the words above an attention threshold (a varying "
+           "count); the standard row keeps H2O's 20% instead. Channels are picked from the words so far, without the "
+           "offline skewing or the previous layer's guess; the full cache would sit in CPU memory, not run here."),
 ] + _fork_methods()}
 
 AFTER = "_after_"  # "<Stage 2 method>_after_<Stage 1 weight method>": the series path 0 -> 1 -> 2 -> 4

@@ -8,7 +8,8 @@ on Colab; then "do what you recommend" for the four build details.
 - QuaRot KV, KVQuant, H2O, SnapKV and InfiniGen are implemented (`src/sdf/stages/kv_methods.py`). Forgetting is
   simulated per word in the one-pass perplexity: each word sees only what the technique would still hold.
 - Standard rows follow the papers: rounding techniques at 4 bits keeping every word; H2O, SnapKV and InfiniGen at 16
-  bits keeping 20% of the words (`stage0.kv_standard_keep_ratio`, `KV_STANDARD_KEEP_RATIO`).
+  bits keeping 20% of the words (H2O's setting; SnapKV and InfiniGen set no share in their papers;
+  `stage0.kv_standard_keep_ratio`, `KV_STANDARD_KEEP_RATIO`).
 - Our method rows use the whole Stage 0 KV plan (`kv_cache_plan.json`: bits and kept share); QuaRot KV and KVQuant
   forget with H2O's rule. rtn_kv's Our method row stays on the bits-only plan, so it shows rounding alone (with the
   whole plan it would be the same computation as H2O's row).

@@ -99,6 +99,24 @@ def test_infinigen_fetches_the_words_with_the_highest_guess():
     assert not (keep & ~torch.ones(16, 16, dtype=torch.bool).tril()).any()
 
 
+def test_infinigen_is_causal():
+    g = torch.Generator().manual_seed(3)
+    q, k = torch.randn(1, 4, 24, 8, generator=g), torch.randn(1, 2, 24, 8, generator=g)
+    q2, k2 = q.clone(), k.clone()
+    q2[:, :, 20:] *= 50  # later words change, earlier rows must not
+    k2[:, :, 20:] *= 50
+    assert torch.equal(infinigen_keep(q, k, 2, 6)[..., :20, :], infinigen_keep(q2, k2, 2, 6)[..., :20, :])
+
+
+def test_predict_kv_has_no_prediction_for_an_unmeasured_share(stage0_dir):
+    from sdf.stage0.kv_cache import predict_kv
+    prof = Stage0Plans.load(stage0_dir).kv_profile
+    cost = predict_kv(uniform_kv_plan(prof.num_layers, 16, 0.37), prof, 64, 1, 8, 32, 16)
+    assert math.isnan(cost.attention_kept) and cost.memory_gb > 0
+    cost = predict_kv(uniform_kv_plan(prof.num_layers, 3, 1.0), prof, 64, 1, 8, 32, 16)  # 3 bits never measured
+    assert math.isnan(cost.ppl_rise) and cost.avg_bits == 3
+
+
 class _Attn(torch.nn.Module):
     num_key_value_groups = 2
     training = False
