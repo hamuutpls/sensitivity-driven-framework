@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-18: Stage 3 KV-cache techniques
+
+Mohammad's asks in the KV cache (Stage 3) thread: all five techniques, rounding and forgetting, HF and backends,
+on Colab; then "do what you recommend" for the four build details.
+
+- QuaRot KV, KVQuant, H2O, SnapKV and InfiniGen are implemented (`src/sdf/stages/kv_methods.py`). Forgetting is
+  simulated per word in the one-pass perplexity: each word sees only what the technique would still hold.
+- Standard rows follow the papers: rounding techniques at 4 bits keeping every word; H2O, SnapKV and InfiniGen at 16
+  bits keeping 20% of the words (`stage0.kv_standard_keep_ratio`, `KV_STANDARD_KEEP_RATIO`).
+- Our method rows of every technique use the whole Stage 0 KV plan (`kv_cache_plan.json`: bits and kept share);
+  rtn_kv, QuaRot KV and KVQuant forget with H2O's rule. rtn_kv's framework row used the bits-only plan before.
+- Backends run only the uncompressed row in Stage 3; every Stage 3 row records why it is not run there.
+
 ## 2026-10-13: Stage 2 share sweep
 
 Mohammad's asks in the Stage 2 pruning thread ("do a sweep i dont want only 30%", "4", and the answers after).

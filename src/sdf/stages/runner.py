@@ -179,6 +179,8 @@ def original_plan(m: Method, plans: Stage0Plans, s0, prune_ratio: float) -> Any:
         w, a = m.joint
         return JointPlan(uniform_plan(scores(), w or s0.uniform_bits, 0.0),
                          uniform_activation_plan(plans.num_layers, a or s0.act_uniform_bits))
+    if m.forgets:
+        return uniform_kv_plan(plans.num_layers, s0.baseline_bits, s0.kv_standard_keep_ratio)
     return uniform_kv_plan(plans.num_layers, s0.kv_uniform_bits)
 
 
@@ -293,14 +295,15 @@ def run_stage(
             return AutoModelForCausalLM.from_pretrained(cfg.model.name, torch_dtype=dtype).to(device)
     handle.factory = model_factory  # an FP16 cache miss builds the model like every row
 
-    use_llamacpp = stage in (1, 2) and cfg.eval.llamacpp_dir is not None  # weight, WxAy, pruning rows
+    # weight, WxAy, pruning rows; in Stage 3 only the uncompressed row (see _KV_NOT_ON_BACKENDS)
+    use_llamacpp = cfg.eval.llamacpp_dir is not None
     lc_key = [cfg.eval.llamacpp_dir, cfg.eval.llamacpp_convert, llamacpp.VERSION] if use_llamacpp else None
     # Serving backends run in a Python of their own (Linux only) on the model saved at the plan's bits; weight and
     # WxAy rows of Stage 1, pruning rows of Stage 2 (see be_on). name -> (module, its error for a plan it cannot
     # load, cache key part)
     serving = {name: (mod, err, [py, mod.VERSION]) for name, mod, err, py in (
         ("vllm", vllm_backend, vllm_backend.VLLMError, cfg.eval.vllm_python),
-        ("trtllm", trtllm_backend, trtllm_backend.TRTLLMError, cfg.eval.trtllm_python)) if stage in (1, 2) and py}
+        ("trtllm", trtllm_backend, trtllm_backend.TRTLLMError, cfg.eval.trtllm_python)) if py}
     calib = (f"{candidate['calib_dataset']}, {candidate['calib_samples']} x {cfg.calibration.seq_len} tokens")
     rep = stage_reporter(
         ctx, candidate, handle, plans.profile, ("stages", "stage0", "calibration", "eval", "model", "run"),
@@ -370,6 +373,9 @@ def run_stage(
                         except Exception as e:  # noqa: BLE001 - a missing program or file too, not only a failed run
                             log.warning("llama.cpp could not measure %s: %s", method.name, e)
                             info["llamacpp_error"] = str(e)
+                if kind_of(method) == "kv":
+                    for name in ["llamacpp"] * use_llamacpp + list(serving):
+                        info[f"{name}_error"] = _KV_NOT_ON_BACKENDS
                 for name, (mod, err, _) in serving.items() if be_on(method) else ():
                     if rotated:
                         info[f"{name}_error"] = _ROTATED
@@ -548,6 +554,9 @@ def _label_level(row, m: Method, level: float | None, plan: CompressionPlan | No
 
 _ROTATED = ("not measured: the model rotates inputs while it runs (QuaRot/SpinQuant), and a saved model file "
             "cannot hold that rotation")
+_KV_NOT_ON_BACKENDS = ("not run: this backend cannot forget words or give each layer its own key/value bits, and does not "
+                       "round keys and values this technique's way; backends run only rows they can run exactly "
+                       "(Mohammad, 2026-10-18)")
 _WEIGHTS_ONLY = ("16-bit: no kernel for the plan's activation bits here, so the weights run at the plan's bits and "
                  "the activations are not rounded")
 

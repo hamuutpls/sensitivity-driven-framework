@@ -166,8 +166,8 @@ class KVPlan(JsonFile):
         return cls(tuple(KVLayerPlan(**lp) for lp in d["layers"]), d["kind"])
 
 
-def uniform_kv_plan(num_layers: int, bits: int) -> KVPlan:
-    return KVPlan(tuple(KVLayerPlan(i, bits, bits, 1.0) for i in range(num_layers)), "uniform")
+def uniform_kv_plan(num_layers: int, bits: int, keep_ratio: float = 1.0) -> KVPlan:
+    return KVPlan(tuple(KVLayerPlan(i, bits, bits, keep_ratio) for i in range(num_layers)), "uniform")
 
 
 def _monotone(rise: list[float]) -> list[float]:

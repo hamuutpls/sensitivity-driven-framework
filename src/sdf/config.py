@@ -137,6 +137,7 @@ class Stage0Config:
     kv_cache: bool = True
     kv_bits_options: list[int] = field(default_factory=lambda: [2, 4, 8])  # tested per layer, ascending
     kv_uniform_bits: int = 4  # "original method": every key and value at this many bits, nothing evicted
+    kv_standard_keep_ratio: float = 0.2  # standard rows of H2O / SnapKV / InfiniGen: share of words kept, 16 bits
     kv_avg_bits: float | None = None  # plan's average bit budget; None = kv_uniform_bits (same size as original)
     kv_group_size: int = 64  # numbers sharing one scale (tokens for keys, channels for values)
     kv_calib_samples: int = 64  # passages for the KV measurement (each layer x key/value x bits is one pass)
@@ -173,6 +174,8 @@ class Stage0Config:
             raise ValueError(f"stage0.pruning_levels must be shares in (0, 1], got {self.pruning_levels}")
         if len({round(r * 100) for r in self.pruning_levels}) < len(set(self.pruning_levels)):  # rows named by %
             raise ValueError(f"stage0.pruning_levels must differ by at least 1%, got {self.pruning_levels}")
+        if not 0 < self.kv_standard_keep_ratio <= 1:
+            raise ValueError(f"stage0.kv_standard_keep_ratio must be a share in (0, 1], got {self.kv_standard_keep_ratio}")
         # the KV predictions look up the standard row's bits among the measured options (stage0/run.py predict_kv)
         if self.kv_uniform_bits not in self.kv_bits_options and self.kv_uniform_bits < self.baseline_bits:
             raise ValueError(f"stage0.kv_uniform_bits {self.kv_uniform_bits} must be one of kv_bits_options "

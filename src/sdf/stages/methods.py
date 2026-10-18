@@ -34,6 +34,7 @@ from sdf.stage0.planner import CompressionPlan, bits_only
 from sdf.stage0.prune_sweep import apply_plan
 from sdf.stage0.sensitivity import int_zero
 from sdf.stage0.sensitivity import find_decoder_layers
+from sdf.stages.kv_methods import LayerKV, calibrate_kvquant, kv_attention, kvquant_hooks
 from sdf.stages.pruning import low_rank_, structured_prune_, wanda_
 from sdf.stages.activation_methods import ACTIVATION_METHODS, _round_inputs
 from sdf.stages.bnb import WEIGHT_METHODS_BNB
@@ -82,6 +83,8 @@ class Method:
     # most a Stage 2 method removes from one layer; plans asking for more are capped (structured: 75%, Mohammad
     # 2026-10-13), and the row says so
     max_ratio: float | None = None
+    # a Stage 3 technique that forgets words: its standard row keeps stage0.kv_standard_keep_ratio of them at 16 bits
+    forgets: bool = False
 
 
 @dataclass(frozen=True)
@@ -135,22 +138,49 @@ def _rtn_activations(call: MethodCall) -> Iterator[dict[str, Any]]:
 
 
 @contextmanager
-def _rtn_kv(call: MethodCall) -> Iterator[dict[str, Any]]:
-    """Keys rounded per channel, values per token (as Stage 0 measured them), at each layer's planned bits.
-    Eviction is not applied here: rtn_kv runs on the bits-only plan; H2O / SnapKV carry out the token budget."""
-    plan: KVPlan = call.plan
-    s0 = call.cfg.stage0
+def _rtn_kv_hooks(model: nn.Module, plan: KVPlan, s0) -> Iterator[None]:
+    """Keys rounded per channel, values per token (as Stage 0 measured them), at each layer's planned bits."""
     names = tuple(s0.kv_module_names)
     with ExitStack() as stack:
-        for lp, layer in zip(plan.layers, find_decoder_layers(call.model)):
+        for lp, layer in zip(plan.layers, find_decoder_layers(model)):
             k, v = kv_projections(layer, names)
             if lp.key_bits < s0.baseline_bits:
                 stack.enter_context(quantize_output(k, lp.key_bits, s0.kv_group_size, per_channel=True))
             if lp.value_bits < s0.baseline_bits:
                 stack.enter_context(quantize_output(v, lp.value_bits, s0.kv_group_size, per_channel=False))
-        yield {}
+        yield
 
 
+def _kv_method(rounding: str, forget: str) -> Callable[[MethodCall], ContextManager[dict[str, Any]]]:
+    """apply() for a Stage 3 technique: keys and values rounded at each layer's planned bits (`rounding`: rtn,
+    quarot or kvquant), and each layer's planned share of words kept with the `forget` rule (h2o, snapkv,
+    infinigen). Every technique follows the whole Stage 0 plan, bits and shares (Mohammad, 2026-10-18); rounding
+    techniques forget with H2O's rule."""
+    @contextmanager
+    def apply(call: MethodCall) -> Iterator[dict[str, Any]]:
+        plan: KVPlan = call.plan
+        s0 = call.cfg.stage0
+        names, base = tuple(s0.kv_module_names), s0.baseline_bits
+        keys, values = [lp.key_bits for lp in plan.layers], [lp.value_bits for lp in plan.layers]
+        if rounding == "quarot" and plan.kind == "uniform":
+            keys = [call.candidate["quarot_k_bits"]] * len(keys)  # QUAROT_K_BITS: the standard row's key bits
+        specs = [LayerKV(kb if rounding == "quarot" and kb < base else 16, vb if rounding == "quarot" and vb < base
+                         else 16, forget if lp.keep_ratio < 1 else None, lp.keep_ratio)
+                 for lp, kb, vb in zip(plan.layers, keys, values)]
+        with ExitStack() as stack:
+            if rounding == "rtn":
+                stack.enter_context(_rtn_kv_hooks(call.model, plan, s0))
+            elif rounding == "kvquant":
+                layers = calibrate_kvquant(call.model, call.batches(), keys, values, names, base)
+                stack.enter_context(kvquant_hooks(call.model, layers, keys, values, names, base))
+            if any(sp != LayerKV() for sp in specs):  # else attention stays the model's own (SDPA)
+                stack.enter_context(kv_attention(call.model, specs))
+            yield {}
+    return apply
+
+
+_KV_NOTE = ("Simulated: keys and values are rounded in place and forgotten words are masked out of attention for "
+            "each word, so accuracy is real but memory is the plan's prediction and speed is not a smaller cache's.")
 _WEIGHT_PLANS = ("quant",)
 _PRUNE_PLANS = ("prune", "prune_same_size")
 
@@ -222,19 +252,29 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     # rank chosen so each layer keeps (1 - planned share) of its numbers; activation-aware SVD
     Method("low_rank", 2, "Low-rank (activation-aware SVD)", _PRUNE_PLANS, _calibrated(low_rank_),
            params=("gptq_groupsize",), calibrated=True, storage="free", library="in repo (torch)", version=2),
-    # Stage 3: KV cache
-    # baseline; same rounding as the Stage 0 KV measurement, no eviction
-    Method("rtn_kv", 3, "Round-to-nearest KV cache", ("kv_bits_only",), _rtn_kv, library="in repo (torch)"),
-    Method("quarot_kv", 3, "QuaRot KV", ("kv_bits_only",), params=("quarot_k_bits",),
-           library="in repo (torch Hadamard)"),  # rotated keys/values, then rounding
-    # pre-RoPE per-channel keys, dense-and-sparse outliers
-    Method("kvquant", 3, "KVQuant", ("kv_bits_only",), calibrated=True, library="in repo (research code only)"),
-    # keeps recent + heavy-hitter tokens; framework keeps each layer's planned share
-    Method("h2o", 3, "H2O", ("kv",), library="in repo (attention hook)"),
-    # picks tokens from an observation window at the end of the prompt
-    Method("snapkv", 3, "SnapKV", ("kv",), library="in repo (attention hook)"),
-    # offloads the cache to CPU and prefetches; latency results depend on PCIe
-    Method("infinigen", 3, "InfiniGen", ("kv",), library="research code only (custom offloading)"),
+    # Stage 3: KV cache (stages/kv_methods.py). Standard rows: rounding techniques at stage0.kv_uniform_bits keeping
+    # every word, forgetting techniques at 16 bits keeping stage0.kv_standard_keep_ratio (the papers' 20%).
+    # baseline; same rounding as the Stage 0 KV measurement
+    Method("rtn_kv", 3, "Round-to-nearest KV cache", ("kv",), _kv_method("rtn", "h2o"), library="in repo (torch)",
+           note=_KV_NOTE),
+    # keys after RoPE and values rotated by a Hadamard matrix, then rounded per token and head
+    Method("quarot_kv", 3, "QuaRot KV", ("kv",), _kv_method("quarot", "h2o"), params=("quarot_k_bits",),
+           library="in repo (torch Hadamard)", note=_KV_NOTE),
+    # pre-RoPE per-channel keys, per-token values, non-uniform levels, 1% outliers and the first word unrounded
+    Method("kvquant", 3, "KVQuant", ("kv",), _kv_method("kvquant", "h2o"), calibrated=True,
+           library="in repo (simplified port)", note=_KV_NOTE + " KVQuant: levels from plain k-means, not "
+           "sensitivity-weighted; the 1% unrounded outliers are not counted in the predicted memory."),
+    # keeps recent + heavy-hitter words
+    Method("h2o", 3, "H2O", ("kv",), _kv_method("rtn", "h2o"), forgets=True, library="in repo (attention hook)",
+           note=_KV_NOTE),
+    # keeps an observation window and the earlier words it attends to most
+    Method("snapkv", 3, "SnapKV", ("kv",), _kv_method("rtn", "snapkv"), forgets=True,
+           library="in repo (attention hook)", note=_KV_NOTE),
+    # guesses attention from 30% of the channels and fetches only the top words; the CPU offloading is not run
+    Method("infinigen", 3, "InfiniGen", ("kv",), _kv_method("rtn", "infinigen"), forgets=True,
+           library="in repo (simplified port, no CPU offloading)",
+           note=_KV_NOTE + " InfiniGen: channels picked from each text's own queries and keys, no offline skewing; "
+           "the full cache would sit in CPU memory, which is not run here."),
 ] + _fork_methods()}
 
 AFTER = "_after_"  # "<Stage 2 method>_after_<Stage 1 weight method>": the series path 0 -> 1 -> 2 -> 4

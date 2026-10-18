@@ -63,6 +63,7 @@ DOWNSTREAM_LIMIT = None  # questions per test (None = all; e.g. 500 for a quicke
 KV_CACHE = True  # False skips the KV cache measurement and plan
 KV_BITS_OPTIONS = [2, 4, 8]  # bit widths tried for each layer's keys and values (ascending)
 KV_UNIFORM_BITS = 4  # the standard method: every key and value at this many bits, every token kept
+KV_STANDARD_KEEP_RATIO = 0.2  # standard H2O / SnapKV / InfiniGen rows: share of past words kept (the papers' 20%)
 KV_AVG_BITS = None  # average bits the plan may spend; None = KV_UNIFORM_BITS (same size as the standard method)
 KV_GROUP_SIZE = 64  # numbers sharing one scale factor
 KV_CALIB_SAMPLES = 64  # passages for the KV measurement (one pass per layer x key/value x bit width);
@@ -164,6 +165,7 @@ def build_config():
         "stage0.kv_cache": KV_CACHE,
         "stage0.kv_bits_options": KV_BITS_OPTIONS,
         "stage0.kv_uniform_bits": KV_UNIFORM_BITS,
+        "stage0.kv_standard_keep_ratio": KV_STANDARD_KEEP_RATIO,
         "stage0.kv_avg_bits": KV_AVG_BITS,
         "stage0.kv_group_size": KV_GROUP_SIZE,
         "stage0.kv_calib_samples": KV_CALIB_SAMPLES,
