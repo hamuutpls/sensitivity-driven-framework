@@ -2,7 +2,7 @@
 
 Perplexity is measured with one forward pass per text window, so forgetting is simulated per word ("every word",
 Mohammad, 2026-10-18): each word attends only to the past words the technique would still hold at that point, under
-a budget of ceil(keep_ratio x window length) words per layer (the Stage 0 plan's share, or H2O's 20% in the
+a budget of ceil(keep_ratio x the words it can see) per layer (the Stage 0 plan's share, or H2O's 20% in the
 standard rows). A dropped word is dropped for a whole key/value head (shared by its group of query heads), since that
 is what frees memory. Rounding of cached keys and values is applied in place, as rtn_kv does; nothing is stored
 smaller, so memory comes from the plan's prediction and speed is not a compressed cache's speed.
@@ -78,56 +78,74 @@ def _causal(n: int, device: torch.device) -> torch.Tensor:
     return torch.ones(n, n, dtype=torch.bool, device=device).tril()
 
 
-def h2o_keep(scores: torch.Tensor, groups: int, budget: int) -> torch.Tensor:
-    """H2O: the cache holds `budget` words, half the most recent, half the "heavy hitters" with the most attention
+def budgets(keep_ratio: float, n: int, device: torch.device | None = None) -> torch.Tensor:
+    """Words each of n queries may keep: ceil(keep_ratio x the words it can see), as Stage 0 sized the plan's shares
+    (kv_cache._coverage; Mohammad, 2026-10-18). round: 0.7 * 10 is 7.000000000000001."""
+    return torch.tensor([max(1, math.ceil(round(keep_ratio * (i + 1), 9))) for i in range(n)], device=device)
+
+
+def _top_per_row(score: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+    """Bool mask of the k[i] highest entries in each row i of score (..., n, n)."""
+    kmax = int(k.max())
+    out = torch.zeros_like(score, dtype=torch.bool)
+    if kmax == 0:
+        return out
+    idx = score.topk(kmax, -1).indices
+    return out.scatter_(-1, idx, (torch.arange(kmax, device=k.device) < k[:, None]).expand_as(idx))
+
+
+def h2o_keep(scores: torch.Tensor, groups: int, keep_ratio: float) -> torch.Tensor:
+    """H2O: the cache holds `budgets` words, half the most recent, half the "heavy hitters" with the most attention
     so far. scores (batch, q_heads, n, n) are attention logits with the causal mask added. Returns keep
-    (batch, kv_heads, n, n): the keys each query may use. Evicts one word per new word, greedily, from the attention
-    each word actually got (masked), as in the paper's simulation."""
+    (batch, kv_heads, n, n): the keys each query may use. Evicts one word per new word once the cache is full,
+    greedily, from the attention each word actually got (masked), as in the paper's simulation."""
     b, _, n, _ = scores.shape
     keep = _causal(n, scores.device).expand(b, scores.shape[1] // groups, n, n).clone()
-    if budget >= n:
+    if keep_ratio >= 1:
         return keep
-    recent = max(budget // 2, 1)
-    acc = group_mean(scores[:, :, :budget].float().softmax(-1), groups).sum(2)  # nothing evicted before `budget`
+    budget = budgets(keep_ratio, n).tolist()
+    acc = torch.zeros(keep.shape[:3], device=scores.device)
     kept = torch.zeros_like(acc, dtype=torch.bool)
-    kept[..., :budget] = True
-    for i in range(budget, n):
+    for i in range(n):
         kept[..., i] = True
-        heavy = kept.clone()
-        heavy[..., i - recent + 1:] = False  # the recent words are never evicted
-        kept.scatter_(-1, acc.masked_fill(~heavy, math.inf).argmin(-1, keepdim=True), False)
+        if budget[i] < i + 1 and (i == 0 or budget[i] == budget[i - 1]):  # full: one in, one out
+            heavy = kept.clone()
+            heavy[..., i - max(budget[i] // 2, 1) + 1:] = False  # the recent half is never evicted
+            kept.scatter_(-1, acc.masked_fill(~heavy, math.inf).argmin(-1, keepdim=True), False)
         keep[:, :, i] = kept
         p = scores[:, :, i].float().masked_fill(~repeat_kv(kept, groups), -math.inf).softmax(-1)
         acc += group_mean(p, groups)
     return keep
 
 
-def snapkv_keep(scores: torch.Tensor, groups: int, budget: int, window: int = SNAPKV_WINDOW,
+def snapkv_keep(scores: torch.Tensor, groups: int, keep_ratio: float, window: int = SNAPKV_WINDOW,
                 kernel: int = SNAPKV_KERNEL) -> torch.Tensor:
     """SnapKV, with every word treated as the end of a prompt: keep the last `window` words, plus the earlier words
     the window's queries attend to most (summed over the window, max-pooled over neighbouring words)."""
     b, _, n, _ = scores.shape
-    causal = _causal(n, scores.device)
+    dev = scores.device
+    causal = _causal(n, dev)
     keep = causal.expand(b, scores.shape[1] // groups, n, n).clone()
-    if budget >= n:
+    if keep_ratio >= 1:
         return keep
-    w = min(window, budget)
+    budget = budgets(keep_ratio, n, dev)
+    w = budget.clamp(max=window)
     c = group_mean(scores.float().softmax(-1), groups).cumsum(2)
-    votes = c - F.pad(c, (0, 0, w, 0))[:, :, :n]  # row i: attention of queries i-w+1..i
-    i, j = torch.arange(n, device=scores.device)[:, None], torch.arange(n, device=scores.device)
-    in_window = (j > i - w) & causal
+    rows = torch.arange(n, device=dev)
+    votes = c - F.pad(c, (0, 0, 1, 0))[:, :, rows + 1 - w]  # row i: attention of queries i-w+1..i
+    in_window = (rows[None, :] > (rows - w)[:, None]) & causal
     votes = votes.masked_fill(in_window | ~causal, 0)  # as SnapKV, pool only the words before the window
     votes = F.max_pool1d(votes.reshape(-1, 1, n), kernel, 1, kernel // 2).view_as(votes)
-    sel = votes.masked_fill(in_window | ~causal, -math.inf).topk(budget - w, -1).indices
-    picked = torch.zeros_like(keep).scatter_(-1, sel, True) & causal  # rows < budget are overwritten below
-    keep[:, :, budget:] = (picked | in_window)[:, :, budget:]
+    picked = _top_per_row(votes.masked_fill(in_window | ~causal, -math.inf), budget - w) & causal
+    full = budget >= rows + 1  # rows that can still keep every word
+    keep[:, :, ~full] = (picked | in_window)[:, :, ~full]
     return keep
 
 
-def infinigen_keep(query: torch.Tensor, key: torch.Tensor, groups: int, budget: int,
+def infinigen_keep(query: torch.Tensor, key: torch.Tensor, groups: int, keep_ratio: float,
                    partial: float = INFINIGEN_PARTIAL) -> torch.Tensor:
     """InfiniGen: guess each query's attention from `partial` of the query/key channels (those with the largest
-    |q| x |k| over the words so far), and fetch the word itself plus the `budget` - 1 words with the highest guess.
+    |q| x |k| over the words so far), and fetch the word itself plus the budget - 1 words with the highest guess.
     shortcut: channels picked from this text's own q/k, not InfiniGen's offline SVD skewing and previous-layer
     speculation; upgrade if the guess quality, not the budget, turns out to decide the result."""
     b, hq, n, d = query.shape
@@ -140,10 +158,12 @@ def infinigen_keep(query: torch.Tensor, key: torch.Tensor, groups: int, budget: 
     eye = torch.eye(n, dtype=torch.bool, device=query.device)
     guess = group_mean((q * channels) @ k.float().mT, groups).masked_fill(~causal | eye, -math.inf)
     keep = causal.expand(b, hq // groups, n, n).clone()
-    if budget >= n:
+    if keep_ratio >= 1:
         return keep
-    picked = torch.zeros_like(keep).scatter_(-1, guess.topk(budget - 1, -1).indices, True) | eye
-    keep[:, :, budget:] = (picked & causal)[:, :, budget:]
+    budget = budgets(keep_ratio, n, query.device)
+    picked = (_top_per_row(guess, budget - 1) & causal) | eye
+    full = budget >= torch.arange(n, device=query.device) + 1
+    keep[:, :, ~full] = picked[:, :, ~full]
     return keep
 
 
@@ -166,10 +186,10 @@ def kv_attention_forward(module: nn.Module, query: torch.Tensor, key: torch.Tens
         scores = scores + attention_mask[..., :n_k]
     elif n_q == n_k:
         scores = scores.masked_fill(~_causal(n_q, scores.device), -math.inf)
-    budget = math.ceil(round(spec.keep_ratio * n_k, 9))  # round: 0.7 * 10 is 7.000000000000001
-    if spec.forget is not None and n_q == n_k and budget < n_k:
-        keep = (infinigen_keep(query, key, groups, budget) if spec.forget == "infinigen"
-                else {"h2o": h2o_keep, "snapkv": snapkv_keep}[spec.forget](scores, groups, budget))
+    if spec.forget is not None and n_q == n_k and spec.keep_ratio < 1:
+        r = spec.keep_ratio
+        keep = (infinigen_keep(query, key, groups, r) if spec.forget == "infinigen"
+                else {"h2o": h2o_keep, "snapkv": snapkv_keep}[spec.forget](scores, groups, r))
         scores = scores.masked_fill(~repeat_kv(keep, groups), -math.inf)
     probs = F.softmax(scores, dim=-1, dtype=torch.float32).to(query.dtype)
     out = (probs @ repeat_kv(value, groups)).transpose(1, 2).contiguous()

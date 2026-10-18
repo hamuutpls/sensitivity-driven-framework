@@ -14,7 +14,7 @@ from sdf.run import start_run
 from sdf.search_space import SEARCH_SPACE
 from sdf.stage0.kv_cache import KVLayerPlan, KVPlan, kv_projections, uniform_kv_plan
 from sdf.stage0.sensitivity import find_decoder_layers, round_to_nearest
-from sdf.stages.kv_methods import (LayerKV, SDF_KV, calibrate_kvquant, group_mean, h2o_keep,
+from sdf.stages.kv_methods import (LayerKV, SDF_KV, budgets, calibrate_kvquant, group_mean, h2o_keep,
                                    infinigen_keep, kmeans_1d, kv_attention, kv_attention_forward, kvquant_hooks,
                                    kvquant_round, quarot_round, repeat_kv, snap_to_levels, snapkv_keep)
 from sdf.stages.methods import METHODS, MethodCall
@@ -46,37 +46,44 @@ def test_group_mean_and_repeat_kv_shapes():
     assert repeat_kv(torch.zeros(1, 2, 3, 5), 2).shape == (1, 4, 3, 5)
 
 
-@pytest.mark.parametrize("budget", [4, 6])
-def test_h2o_keeps_budget_words_with_the_recent_half(budget):
-    keep = h2o_keep(_scores(), groups=2, budget=budget)
+def test_budgets_are_a_share_of_the_words_each_word_can_see():
+    assert budgets(0.5, 6).tolist() == [1, 1, 2, 2, 3, 3]
+    assert budgets(0.7, 10).tolist()[-1] == 7  # not 8 from float rounding
+    assert budgets(0.2, 512).tolist()[-1] == 103
+
+
+def _check_budgets(keep, r):
     n = keep.shape[-1]
-    assert keep.shape == (1, 2, n, n)
     assert not (keep & ~torch.ones(n, n, dtype=torch.bool).tril()).any()  # never a future word
-    counts = keep.sum(-1)
-    assert (counts[..., budget:] == budget).all()  # one in, one out
-    assert (counts[..., :budget] == torch.arange(1, budget + 1)).all()  # nothing dropped before the budget fills
-    for i in range(budget, n):
-        assert keep[..., i, i - budget // 2 + 1:i + 1].all()  # the recent half is always kept
+    assert keep[..., torch.arange(n), torch.arange(n)].all()  # every word sees itself
+    assert torch.equal(keep.sum(-1), budgets(r, n).expand_as(keep.sum(-1)))
+
+
+@pytest.mark.parametrize("r", [0.3, 0.5])
+def test_h2o_keeps_its_share_with_the_recent_half(r):
+    keep = h2o_keep(_scores(n=16), groups=2, keep_ratio=r)
+    assert keep.shape == (1, 2, 16, 16)
+    _check_budgets(keep, r)
+    for i, b in enumerate(budgets(r, 16).tolist()):
+        assert keep[..., i, i - max(b // 2, 1) + 1:i + 1].all()  # the recent half is always kept
 
 
 def test_h2o_keeps_a_heavy_hitter():
     s = _scores(n=16)
     s[..., 2] = torch.where(torch.isinf(s[..., 2]), s[..., 2], torch.full_like(s[..., 2], 20.0))  # all attend to 2
-    keep = h2o_keep(s, groups=2, budget=4)
+    keep = h2o_keep(s, groups=2, keep_ratio=0.3)
     assert keep[..., 3:, 2].all()
-    assert torch.equal(h2o_keep(s, 2, 16), torch.ones(16, 16, dtype=torch.bool).tril().expand(1, 2, 16, 16))
+    assert torch.equal(h2o_keep(s, 2, 1.0), torch.ones(16, 16, dtype=torch.bool).tril().expand(1, 2, 16, 16))
 
 
 def test_snapkv_keeps_the_window_and_the_most_voted_word():
     s = _scores(n=20)
     s[..., 5] = torch.where(torch.isinf(s[..., 5]), s[..., 5], torch.full_like(s[..., 5], 20.0))
-    keep = snapkv_keep(s, groups=2, budget=6, window=3, kernel=1)
-    counts = keep.sum(-1)
-    assert (counts[..., 6:] == 6).all()
+    keep = snapkv_keep(s, groups=2, keep_ratio=0.5, window=3, kernel=1)
+    _check_budgets(keep, 0.5)
     for i in range(6, 20):
         assert keep[..., i, i - 2:i + 1].all()  # observation window
         assert keep[..., i, 5].all()  # the word every query looks at
-    assert not (keep & ~torch.ones(20, 20, dtype=torch.bool).tril()).any()
 
 
 def test_snapkv_window_votes_do_not_spill_onto_earlier_words():
@@ -84,7 +91,7 @@ def test_snapkv_window_votes_do_not_spill_onto_earlier_words():
     s[..., 0] = torch.where(torch.isinf(s[..., 0]), s[..., 0], torch.zeros_like(s[..., 0]))  # word 0 mildly liked
     idx = torch.arange(30)
     s[..., idx, idx] = 10.0  # every query mostly looks at itself (inside the window)
-    keep = snapkv_keep(s, groups=2, budget=6, window=4, kernel=7)
+    keep = snapkv_keep(s, groups=2, keep_ratio=0.2, window=4, kernel=7)  # word 25: 6 kept, 4 in the window
     assert keep[..., 25, 0].all()  # not a word next to the window, whose pooled vote would come from the window
 
 
@@ -92,11 +99,10 @@ def test_infinigen_fetches_the_words_with_the_highest_guess():
     g = torch.Generator().manual_seed(1)
     q, k = torch.randn(1, 4, 16, 8, generator=g).abs() + 1, torch.randn(1, 2, 16, 8, generator=g)
     k[:, :, 4] = 10.0  # word 4 matches every (positive) query, whichever channels are used
-    keep = infinigen_keep(q, k, groups=2, budget=5)
-    counts = keep.sum(-1)
-    assert (counts[..., 5:] == 5).all()  # the word itself and the top 4 guesses
-    assert keep[..., 5:, 4].all() and keep[..., torch.arange(16), torch.arange(16)].all()
-    assert not (keep & ~torch.ones(16, 16, dtype=torch.bool).tril()).any()
+    keep = infinigen_keep(q, k, groups=2, keep_ratio=0.3)
+    _check_budgets(keep, 0.3)
+    rows = [i for i, b in enumerate(budgets(0.3, 16).tolist()) if b >= 2 and i > 4]
+    assert keep[..., rows, 4].all()
 
 
 def test_infinigen_is_causal():
@@ -105,7 +111,7 @@ def test_infinigen_is_causal():
     q2, k2 = q.clone(), k.clone()
     q2[:, :, 20:] *= 50  # later words change, earlier rows must not
     k2[:, :, 20:] *= 50
-    assert torch.equal(infinigen_keep(q, k, 2, 6)[..., :20, :], infinigen_keep(q2, k2, 2, 6)[..., :20, :])
+    assert torch.equal(infinigen_keep(q, k, 2, 0.3)[..., :20, :], infinigen_keep(q2, k2, 2, 0.3)[..., :20, :])
 
 
 def test_predict_kv_has_no_prediction_for_an_unmeasured_share(stage0_dir):
@@ -133,11 +139,9 @@ def test_kv_attention_forward_matches_eager_and_masks_forgotten_words():
     ref, _ = eager_attention_forward(_Attn(LayerKV()), q, k, v, mask, 0.3)
     out, _ = kv_attention_forward(_Attn(LayerKV()), q, k, v, mask, 0.3)
     assert torch.allclose(out, ref, atol=1e-6)
-    _, probs = kv_attention_forward(_Attn(LayerKV(forget="h2o", keep_ratio=0.7)), q, k, v, mask, 0.3)
-    assert ((probs[..., 7:, :] > 0).sum(-1) == 7).all()  # 0.7 x 10 words is 7, not 8 (float rounding)
     out, probs = kv_attention_forward(_Attn(LayerKV(forget="h2o", keep_ratio=0.4)), q, k, v, mask, 0.3)
-    assert torch.allclose(out[:, :4], ref[:, :4], atol=1e-6)  # nothing forgotten before the budget (4 words) fills
-    assert ((probs[..., 4:, :] > 0).sum(-1) == 4).all()
+    assert torch.allclose(out[:, :1], ref[:, :1], atol=1e-6)  # the first word has nothing to forget
+    assert torch.equal((probs > 0).sum(-1), budgets(0.4, 10).expand(1, 4, 10))
     out, _ = kv_attention_forward(_Attn(LayerKV(rotate_key_bits=4, rotate_value_bits=4)), q, k, v, mask, 0.3)
     assert not torch.allclose(out, ref) and (out - ref).abs().max() < 0.5
 
@@ -151,7 +155,7 @@ def test_kv_attention_switches_and_restores_the_model_attention(tiny_llama):
         assert torch.allclose(tiny_llama(input_ids=ids).logits, ref, atol=1e-5)
     with kv_attention(tiny_llama, [LayerKV(forget="snapkv", keep_ratio=0.5)] * 4):
         out = tiny_llama(input_ids=ids).logits
-    assert torch.allclose(out[:, :8], ref[:, :8], atol=1e-5) and not torch.allclose(out[:, 8:], ref[:, 8:])
+    assert torch.allclose(out[:, :1], ref[:, :1], atol=1e-5) and not torch.allclose(out[:, 1:], ref[:, 1:])
     assert tiny_llama.config._attn_implementation == old
     assert not any(hasattr(layer.self_attn, "sdf_kv") for layer in find_decoder_layers(tiny_llama))
     with pytest.raises(ValueError):
@@ -205,8 +209,7 @@ def test_standard_rows_paper_defaults(stage0_dir, small_cfg):
     for name in ("rtn_kv", "quarot_kv", "kvquant"):
         assert {(lp.key_bits, lp.keep_ratio) for lp in original_plan(METHODS[name], plans, s0, 0.3).layers} == \
             {(s0.kv_uniform_bits, 1.0)}
-    assert all(METHODS[m].plans == ("kv",) for m in KV_METHODS if m != "rtn_kv")  # the whole plan
-    assert METHODS["rtn_kv"].plans == ("kv_bits_only",)  # rounding alone; the whole plan would repeat h2o's row
+    assert all(METHODS[m].plans == ("kv",) for m in KV_METHODS)  # every technique follows the whole plan
 
 
 def test_quarot_standard_row_uses_quarot_k_bits(stage0_dir, tiny_llama, small_cfg, monkeypatch):

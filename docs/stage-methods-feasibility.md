@@ -55,7 +55,7 @@ Stage 1 weight method (`<pruning>_after_<quantization>`).
 
 | Method | Library | Windows + 5070 Ti | Colab | Plan |
 |---|---|---|---|---|
-| RTN (baseline) | none | yes | yes | **done** (`rtn_kv`; its Our method row follows the bits-only plan, to show rounding alone) |
+| RTN (baseline) | none | yes | yes | **done** (`rtn_kv`; its Our method row forgets with H2O's rule, so it matches H2O's) |
 | QuaRot KV | as QuaRot | | | in repo (`stages/kv_methods.py`): keys after RoPE and values rotated by a Hadamard matrix per head, rounded per token and head; standard row keys at `quarot_k_bits` |
 | KVQuant | research repo only | – | – | in repo, simplified port: pre-RoPE per-channel keys with calibrated ranges, per-token values, non-uniform levels from plain k-means, 1% outliers and the first word unrounded |
 | H2O | research repo only | – | – | in repo, attention function: per word, half recent words and half heavy hitters, one evicted per new word |
@@ -64,8 +64,9 @@ Stage 1 weight method (`<pruning>_after_<quantization>`).
 
 All Stage 3 rows are simulated on HF (accuracy real, memory predicted). Standard rows: rounding techniques at
 `kv_uniform_bits` keeping every word, forgetting techniques at 16 bits keeping `kv_standard_keep_ratio` (20%). Our
-method rows follow the whole KV plan (bits and kept share); QuaRot KV and KVQuant forget with H2O's rule. rtn_kv's
-Our method row uses the bits-only plan (with the whole plan it would repeat H2O's row). No backend
+method rows follow the whole KV plan (bits and kept share); rtn_kv, QuaRot KV and KVQuant forget with H2O's rule, so
+rtn_kv's Our method row is the same computation as H2O's (Mohammad's choice, 2026-10-18). A layer keeps its share of
+the words each word can see so far, as Stage 0 sized the plan. No backend
 can forget words or set per-layer KV bits, so llama.cpp, vLLM and TensorRT-LLM run only the uncompressed row and
 every Stage 3 row says why (Mohammad, 2026-10-18).
 

@@ -254,10 +254,10 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     # Stage 3: KV cache (stages/kv_methods.py). Standard rows: rounding techniques at stage0.kv_uniform_bits keeping
     # every word, forgetting techniques at 16 bits keeping stage0.kv_standard_keep_ratio (H2O's 20%; SnapKV and
     # InfiniGen set no share: SnapKV a fixed word count, InfiniGen an attention threshold).
-    # baseline; same rounding as the Stage 0 KV measurement. Its Our method row follows the bits-only plan, so it shows
-    # what rounding alone costs (with the full plan it would be the same computation as h2o's row)
-    Method("rtn_kv", 3, "Round-to-nearest KV cache", ("kv_bits_only",), _kv_method("rtn", "h2o"),
-           library="in repo (torch)", note=_KV_NOTE),
+    # baseline; same rounding as the Stage 0 KV measurement. Its Our method row follows the whole plan, so it is the
+    # same computation as h2o's Our method row (Mohammad, 2026-10-18: "Whole plan")
+    Method("rtn_kv", 3, "Round-to-nearest KV cache", ("kv",), _kv_method("rtn", "h2o"), library="in repo (torch)",
+           note=_KV_NOTE + " Its Our method row forgets with H2O's rule, so it matches H2O's Our method row."),
     # keys after RoPE and values rotated by a Hadamard matrix, then rounded per token and head
     Method("quarot_kv", 3, "QuaRot KV", ("kv",), _kv_method("quarot", "h2o"), params=("quarot_k_bits",),
            library="in repo (torch Hadamard)", note=_KV_NOTE),
