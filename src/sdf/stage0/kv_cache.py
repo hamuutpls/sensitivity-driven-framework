@@ -29,6 +29,9 @@ from torch import nn
 
 from sdf.stage0.sensitivity import _mean_loss, _ppl, find_decoder_layers, profiling, round_to_nearest
 from sdf.utils.cache import JsonFile
+from sdf.utils.logging import get_logger
+
+_log = get_logger(__name__)
 
 KINDS = ("key", "value")
 
@@ -271,6 +274,9 @@ def predict_kv(plan: KVPlan, profile: KVProfile, context_len: int, batch_size: i
             attn += 1.0
         else:  # a share Stage 0 did not measure (e.g. stage0.kv_standard_keep_ratio) has no prediction
             attn += cov[profile.keep_ratios.index(lp.keep_ratio)] if lp.keep_ratio in profile.keep_ratios else math.nan
+    if math.isnan(damage) or math.isnan(attn):
+        _log.warning("predict_kv: the plan uses a bit width or kept share Stage 0 did not measure, so its "
+                     "predicted perplexity rise or attention kept is NaN (no prediction)")
     return KVCost(memory_gb=sum(per_layer) / 1e3, avg_bits=bit_sum / kept_numbers,
                   kept_share=kept_numbers / all_numbers, ppl_rise=damage, attention_kept=attn / len(plan.layers),
                   per_layer_mb=tuple(per_layer))

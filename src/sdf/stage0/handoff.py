@@ -18,6 +18,7 @@ from sdf.stage0.activation import (
     predicted_rise,
     uniform_activation_plan,
 )
+from sdf.stage0.kv_cache import uniform_kv_plan
 from sdf.stage0.planner import CompressionPlan, PlanCost
 from sdf.stage0.sensitivity import SensitivityProfile, outlier_layers
 from sdf.utils.cache import atomic_write_text
@@ -259,9 +260,12 @@ def write_handoff(
             ("Words kept", "Share of earlier words this layer remembers; the rest are forgotten."),
         ])
         c_un, c_fw, c_bits = kpredict(kuni), kpredict(kplan), kpredict(kbits)
-        rows = [[f"Standard method (uniform {s0.kv_uniform_bits}-bit, nothing forgotten; H2O, SnapKV, InfiniGen: 16-bit, "
-                 f"{s0.kv_standard_keep_ratio:.0%} of words kept)", _mb(c_un.memory_gb),
-                 f"{c_un.avg_bits:.2f}", f"{c_un.ppl_rise:.4f}"],
+        c_forget = kpredict(uniform_kv_plan(len(kplan.layers), s0.baseline_bits, s0.kv_standard_keep_ratio))
+        rows = [[f"Standard method, rounding (uniform {s0.kv_uniform_bits}-bit, nothing forgotten)",
+                 _mb(c_un.memory_gb), f"{c_un.avg_bits:.2f}", f"{c_un.ppl_rise:.4f}"],
+                [f"Standard method, forgetting (H2O, SnapKV, InfiniGen: {s0.baseline_bits}-bit, "
+                 f"{s0.kv_standard_keep_ratio:.0%} of words kept)", _mb(c_forget.memory_gb),
+                 f"{c_forget.avg_bits:.2f}", f"{c_forget.ppl_rise:.4f}"],
                 ["Plan (bits + forgetting)", _mb(c_fw.memory_gb), f"{c_fw.avg_bits:.2f}", f"{c_fw.ppl_rise:.4f}"],
                 ["Plan, bits only", _mb(c_bits.memory_gb), f"{c_bits.avg_bits:.2f}", f"{c_bits.ppl_rise:.4f}"]]
         lines += [_table(["Version", f"Predicted memory ({s0.kv_context_len} words)", "Average bits",

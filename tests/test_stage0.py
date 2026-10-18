@@ -254,6 +254,10 @@ def test_run_stage0_end_to_end(tiny_llama, tokenizer, small_cfg, monkeypatch):
     for heading in ("## Original model", "## At a glance", "## Stage 1: quantization", "## Stage 2: pruning",
                     "## Stage 3: KV cache", "## Stage 4: evaluation", "## Search", "## Caveats"):
         assert heading in handoff, heading
+    kv_rows = handoff.split("## Stage 3: KV cache")[1].split("\n## ")[0]
+    forget = next(l for l in kv_rows.splitlines() if l.startswith("| Standard method, forgetting"))
+    assert "| 16.00 | 0.0000 |" in forget  # its own 16-bit plan's numbers, not the 4-bit rounding row's
+    assert "| Standard method, rounding (uniform 4-bit, nothing forgotten) |" in kv_rows
     tables = [b for b in handoff.split("\n\n") if b.startswith("| ")]
     notes = [b for b in handoff.split("**What each column means**")[1:]]
     assert len(notes) == len(tables) - 1  # all but the Original model table carry column notes

@@ -114,10 +114,14 @@ def test_infinigen_is_causal():
     assert torch.equal(infinigen_keep(q, k, 2, 0.3)[..., :20, :], infinigen_keep(q2, k2, 2, 0.3)[..., :20, :])
 
 
-def test_predict_kv_has_no_prediction_for_an_unmeasured_share(stage0_dir):
+def test_predict_kv_has_no_prediction_for_an_unmeasured_share(stage0_dir, caplog):
     from sdf.stage0.kv_cache import predict_kv
     prof = Stage0Plans.load(stage0_dir).kv_profile
-    cost = predict_kv(uniform_kv_plan(prof.num_layers, 16, 0.37), prof, 64, 1, 8, 32, 16)
+    with caplog.at_level("WARNING", logger="sdf"):
+        assert not math.isnan(predict_kv(uniform_kv_plan(prof.num_layers, 4), prof, 64, 1, 8, 32, 16).ppl_rise)
+        assert not caplog.records  # a measured plan is silent
+        cost = predict_kv(uniform_kv_plan(prof.num_layers, 16, 0.37), prof, 64, 1, 8, 32, 16)
+        assert "did not measure" in caplog.text  # a skipped prediction is logged
     assert math.isnan(cost.attention_kept) and cost.memory_gb > 0
     cost = predict_kv(uniform_kv_plan(prof.num_layers, 3, 1.0), prof, 64, 1, 8, 32, 16)  # 3 bits never measured
     assert math.isnan(cost.ppl_rise) and cost.avg_bits == 3
