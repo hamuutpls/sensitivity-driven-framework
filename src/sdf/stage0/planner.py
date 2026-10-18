@@ -126,6 +126,17 @@ def uniform_plan(scores: list[float], bits: int, prune_ratio: float) -> Compress
     return CompressionPlan(layers, "uniform", None, prune_ratio)
 
 
+def decoder_share_removed(plan: CompressionPlan, layer_numel: list[int]) -> float:
+    """Share of the decoder layers' Linear weights the plan prunes. Unlike PlanCost.sparsity it leaves out the
+    embeddings, output head and norms, which are never pruned (Mohammad, 2026-10-18)."""
+    if len(plan.layers) != len(layer_numel):
+        raise ValueError(f"layer counts differ: plan {len(plan.layers)}, sizes {len(layer_numel)}")
+    total = sum(layer_numel)
+    if total <= 0:
+        raise ValueError("layer sizes are empty")
+    return sum(lp.pruning_ratio * n for lp, n in zip(plan.layers, layer_numel)) / total
+
+
 def level_tag(ratio: float) -> str:
     """"030" for 0.3: the suffix of a pruning level's plan files and Stage 2 rows."""
     return f"{round(ratio * 100):03d}"
