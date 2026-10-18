@@ -46,6 +46,14 @@ def test_group_mean_and_repeat_kv_shapes():
     assert repeat_kv(torch.zeros(1, 2, 3, 5), 2).shape == (1, 4, 3, 5)
 
 
+def test_kv_methods_changed_since_their_first_cached_rows_have_a_new_version():
+    from sdf.stages.methods import METHODS
+    # rows cached at 439c84f / 90cd6a7 used the fixed-window budget, InfiniGen's look-ahead and SnapKV's pooling spill
+    assert {m: METHODS[m].version for m in ("quarot_kv", "kvquant", "h2o", "snapkv", "infinigen")} == \
+        dict.fromkeys(("quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"), 2)
+    assert METHODS["rtn_kv"].version == 1  # its standard row is unchanged
+
+
 def test_budgets_are_a_share_of_the_words_each_word_can_see():
     assert budgets(0.5, 6).tolist() == [1, 1, 2, 2, 3, 3]
     assert budgets(0.7, 10).tolist()[-1] == 7  # not 8 from float rounding

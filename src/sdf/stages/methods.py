@@ -77,6 +77,8 @@ class Method:
     unavailable: str = ""
     # shown on the method's rows: what is a simplified port of the fork's algorithm, and how its size is counted
     note: str = ""
+    # shown only on the method's Our method (framework) rows, after `note`
+    framework_note: str = ""
     # weights and activations quantized together (JointPlan): the standard row's (weight bits, activation bits),
     # None for the Stage 0 "original method" settings; None for a method that is not joint
     joint: tuple[int | None, int | None] | None = None
@@ -257,23 +259,24 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     # baseline; same rounding as the Stage 0 KV measurement. Its Our method row follows the whole plan, so it is the
     # same computation as h2o's Our method row (Mohammad, 2026-10-18: "Whole plan")
     Method("rtn_kv", 3, "Round-to-nearest KV cache", ("kv",), _kv_method("rtn", "h2o"), library="in repo (torch)",
-           note=_KV_NOTE + " Its Our method row forgets with H2O's rule, so it matches H2O's Our method row."),
+           note=_KV_NOTE, framework_note="This row forgets with H2O's rule, so it matches H2O's Our method row."),
     # keys after RoPE and values rotated by a Hadamard matrix, then rounded per token and head
+    # versions 2: each word keeps its share of the words it can see; fixes after the first review (2026-10-18)
     Method("quarot_kv", 3, "QuaRot KV", ("kv",), _kv_method("quarot", "h2o"), params=("quarot_k_bits",),
-           library="in repo (torch Hadamard)", note=_KV_NOTE),
+           library="in repo (torch Hadamard)", note=_KV_NOTE, version=2),
     # pre-RoPE per-channel keys, per-token values, non-uniform levels, 1% outliers and the first word unrounded
-    Method("kvquant", 3, "KVQuant", ("kv",), _kv_method("kvquant", "h2o"), calibrated=True,
+    Method("kvquant", 3, "KVQuant", ("kv",), _kv_method("kvquant", "h2o"), calibrated=True, version=2,
            library="in repo (simplified port)", note=_KV_NOTE + " KVQuant: levels from plain k-means, not "
            "sensitivity-weighted; the 1% unrounded outliers are not counted in the predicted memory."),
     # keeps recent + heavy-hitter words
     Method("h2o", 3, "H2O", ("kv",), _kv_method("rtn", "h2o"), forgets=True, library="in repo (attention function)",
-           note=_KV_NOTE),
+           note=_KV_NOTE, version=2),
     # keeps an observation window and the earlier words it attends to most
-    Method("snapkv", 3, "SnapKV", ("kv",), _kv_method("rtn", "snapkv"), forgets=True,
+    Method("snapkv", 3, "SnapKV", ("kv",), _kv_method("rtn", "snapkv"), forgets=True, version=2,
            library="in repo (attention function)", note=_KV_NOTE + " SnapKV: its paper keeps a fixed number of words; "
            "the standard row keeps H2O's 20% instead, and the choice is redone at every word."),
     # guesses attention from 30% of the channels and fetches only the top words; the CPU offloading is not run
-    Method("infinigen", 3, "InfiniGen", ("kv",), _kv_method("rtn", "infinigen"), forgets=True,
+    Method("infinigen", 3, "InfiniGen", ("kv",), _kv_method("rtn", "infinigen"), forgets=True, version=2,
            library="in repo (simplified port, no CPU offloading)",
            note=_KV_NOTE + " InfiniGen: its paper fetches the words above an attention threshold (a varying "
            "count); the standard row keeps H2O's 20% instead. Channels are picked from the words so far, without the "

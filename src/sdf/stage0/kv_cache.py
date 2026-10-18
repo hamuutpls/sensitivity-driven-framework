@@ -94,16 +94,21 @@ def eager_attention(model: nn.Module) -> Iterator[None]:
         cfg._attn_implementation = old
 
 
+def budgets(keep_ratio: float, n: int, device: torch.device | None = None) -> torch.Tensor:
+    """Words each of n queries keeps: ceil(keep_ratio x the words it can see), at least 1. Stage 0's coverage
+    and Stage 3's forgetting both use it (Mohammad, 2026-10-18). round: 0.7 * 10 is 7.000000000000001."""
+    return torch.tensor([max(1, math.ceil(round(keep_ratio * (i + 1), 9))) for i in range(n)], device=device)
+
+
 def _coverage(attn: torch.Tensor, keep_ratios: list[float]) -> list[float]:
     """attn (batch, heads, queries, keys). For the second half of the queries (so each sees enough past
     tokens), the share of attention on its top ceil(r * visible) keys, averaged over batch, heads, queries."""
     t = attn.shape[-1]
     q0 = t // 2
     cum = attn[..., q0:, :].float().sort(dim=-1, descending=True).values.cumsum(-1)
-    visible = torch.arange(q0, t, device=attn.device) + 1
     out = []
     for r in keep_ratios:
-        idx = (torch.ceil(r * visible) - 1).clamp(min=0).long().view(1, 1, -1, 1)
+        idx = (budgets(r, t, attn.device)[q0:] - 1).view(1, 1, -1, 1)
         out.append(cum.gather(-1, idx.expand(*cum.shape[:2], -1, 1)).mean().item())
     return out
 

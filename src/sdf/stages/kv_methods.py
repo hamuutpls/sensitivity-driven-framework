@@ -26,7 +26,7 @@ from torch import nn
 from transformers import AttentionInterface
 from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS, eager_mask
 
-from sdf.stage0.kv_cache import kv_projections
+from sdf.stage0.kv_cache import budgets, kv_projections
 from sdf.stage0.sensitivity import find_decoder_layers, round_to_nearest
 from sdf.stages.activation_methods import _orthogonal
 
@@ -76,12 +76,6 @@ def quarot_round(x: torch.Tensor, bits: int) -> torch.Tensor:
 
 def _causal(n: int, device: torch.device) -> torch.Tensor:
     return torch.ones(n, n, dtype=torch.bool, device=device).tril()
-
-
-def budgets(keep_ratio: float, n: int, device: torch.device | None = None) -> torch.Tensor:
-    """Words each of n queries may keep: ceil(keep_ratio x the words it can see), as Stage 0 sized the plan's shares
-    (kv_cache._coverage; Mohammad, 2026-10-18). round: 0.7 * 10 is 7.000000000000001."""
-    return torch.tensor([max(1, math.ceil(round(keep_ratio * (i + 1), 9))) for i in range(n)], device=device)
 
 
 def _top_per_row(score: torch.Tensor, k: torch.Tensor) -> torch.Tensor:

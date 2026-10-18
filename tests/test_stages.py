@@ -123,6 +123,9 @@ def test_run_stage_end_to_end(stage0_dir, tiny_llama, tokenizer, small_cfg, stag
             assert rows[f"{method}/{v}"]["metrics"]["predicted_kv_memory_gb"] < \
                 rows["baseline/fp16"]["metrics"]["predicted_kv_memory_gb"]
         assert rows[f"{method}/original"]["info"]["note"].startswith("Simulated")
+        # only rtn_kv's Our method row says it matches H2O's; its standard row does not
+        assert "matches H2O" not in rows[f"{method}/original"]["info"]["note"]
+        assert ("matches H2O" in rows[f"{method}/framework"]["info"]["note"]) == (method == "rtn_kv")
 
     # the original row is cached by config: a second run reuses it
     out2 = run_stage(ctx, stage, [method], cand, stage0_dir, **kwargs)

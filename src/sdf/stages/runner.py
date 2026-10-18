@@ -498,8 +498,8 @@ def run_stage(
                 plan, cap_note = _capped(m, framework_plan(m, plans, plan_key), caps, plans.profile.layer_numel)
                 _label_level(row, m, level, plan, plans.profile.layer_numel)
                 _require(m)
-                if m.note:
-                    row.info["note"] = m.note
+                if note := " ".join(n for n in (m.note, m.framework_note) if n):
+                    row.info["note"] = note
                 if m.fixed_bits:
                     raise ValueError(f"{m.label} cannot follow a per-layer bit plan: {m.fixed_bits}")
                 if cap_note:
