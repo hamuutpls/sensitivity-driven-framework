@@ -131,10 +131,7 @@ def decoder_share_removed(plan: CompressionPlan, layer_numel: list[int]) -> floa
     embeddings, output head and norms, which are never pruned (Mohammad, 2026-10-18)."""
     if len(plan.layers) != len(layer_numel):
         raise ValueError(f"layer counts differ: plan {len(plan.layers)}, sizes {len(layer_numel)}")
-    total = sum(layer_numel)
-    if total <= 0:
-        raise ValueError("layer sizes are empty")
-    return sum(lp.pruning_ratio * n for lp, n in zip(plan.layers, layer_numel)) / total
+    return sum(lp.pruning_ratio * n for lp, n in zip(plan.layers, layer_numel)) / sum(layer_numel)
 
 
 def level_tag(ratio: float) -> str:

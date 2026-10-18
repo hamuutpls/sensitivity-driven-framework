@@ -56,8 +56,6 @@ def test_decoder_share_removed_weights_each_layer_by_its_size():
     assert decoder_share_removed(uniform_plan([0.1, 0.2], 16, 0.0), [10, 30]) == 0.0
     with pytest.raises(ValueError, match="layer counts differ"):
         decoder_share_removed(plan, [100, 200])
-    with pytest.raises(ValueError, match="empty"):
-        decoder_share_removed(plan, [0, 0, 0])
 
 
 def test_structured_pruning_max_ratio_is_75_percent_and_series_methods_keep_it():
@@ -197,6 +195,7 @@ def test_series_rows_sweep_too_with_the_stage1_bits_and_the_cap(stage0_dir, tiny
     plans = [p for p in calls if p is not None]
     assert len(plans) == 6 and all(min(lp.bit_width for lp in p.layers) < 16 for p in plans)  # the Stage 1 bits
     assert all(max(lp.pruning_ratio for lp in p.layers) <= 0.6 for p in plans if p.layers[0].pruning_ratio)
+    assert rows["structured_prune_after_rtn_090/original"]["metrics"]["decoder_weights_removed"] == pytest.approx(0.6)
 
 
 def test_without_level_plans_stage2_runs_each_method_once(stage0_dir, tiny_llama, tokenizer, small_cfg, caplog):
@@ -210,6 +209,7 @@ def test_without_level_plans_stage2_runs_each_method_once(stage0_dir, tiny_llama
                          "unstructured_prune_same_size/framework"}
     assert all(r["status"] == "ok" for r in rows.values())
     assert "level" not in rows["unstructured_prune/original"]["info"].get("label", "")
+    assert all(0 < r["metrics"]["decoder_weights_removed"] < 1 for k, r in rows.items() if k != "baseline/fp16")
     assert "no pruning level plans" in caplog.text
 
 
