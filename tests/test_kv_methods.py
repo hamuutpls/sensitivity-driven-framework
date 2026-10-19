@@ -84,6 +84,15 @@ def test_h2o_keeps_a_heavy_hitter():
     assert torch.equal(h2o_keep(s, 2, 1.0), torch.ones(16, 16, dtype=torch.bool).tril().expand(1, 2, 16, 16))
 
 
+@pytest.mark.parametrize("r", [0.1, 0.2, 0.3, 0.5])
+def test_h2o_never_loses_the_first_word_the_model_leans_on(r):
+    # 0-3-4 run, 2026-10-19: word 0 (the attention sink) was evicted at word 1, where the budget is 1, and never
+    # came back; perplexity rose from 10.25 to 398
+    s = _scores(n=64)
+    s[..., 0] = torch.where(torch.isinf(s[..., 0]), s[..., 0], s[..., 0] + 6.0)
+    assert h2o_keep(s, groups=2, keep_ratio=r)[..., -1, 0].all()
+
+
 def test_snapkv_keeps_the_window_and_the_most_voted_word():
     s = _scores(n=20)
     s[..., 5] = torch.where(torch.isinf(s[..., 5]), s[..., 5], torch.full_like(s[..., 5], 20.0))
