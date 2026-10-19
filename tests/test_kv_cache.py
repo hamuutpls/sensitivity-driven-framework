@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from sdf.stage0.kv_cache import (KVProfile, _coverage, keep_ratio_for, plan_kv, predict_kv, profile_kv,
+from sdf.stage0.kv_cache import (KVProfile, _coverage, budgets, keep_ratio_for, plan_kv, predict_kv, profile_kv,
                                  uniform_kv_plan)
 
 
@@ -42,6 +42,16 @@ def test_coverage_uniform_attention():
     attn = (attn / attn.sum(-1, keepdim=True)).view(1, 1, t, t)
     cov = _coverage(attn, [0.5, 1.0])
     assert cov[1] == pytest.approx(1.0) and 0.5 <= cov[0] < 0.7  # uniform attention: top half ~ half
+
+
+def test_coverage_counts_the_same_words_as_stage3():
+    from fractions import Fraction
+    t = 200
+    attn = (torch.ones(t, t) / t).view(1, 1, t, t)  # equal attention: coverage = mean kept words / t
+    for r, frac in ((0.3, Fraction(3, 10)), (0.15, Fraction(3, 20))):
+        exact = [max(1, -(-frac * v // 1)) for v in range(t // 2 + 1, t + 1)]  # exact ceil, no float error
+        assert budgets(r, t)[t // 2:].tolist() == exact
+        assert _coverage(attn, [r])[0] == pytest.approx(sum(exact) / len(exact) / t, abs=1e-6)
 
 
 def test_profile_kv_on_tiny_llama(tiny_llama):

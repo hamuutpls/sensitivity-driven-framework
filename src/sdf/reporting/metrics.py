@@ -91,7 +91,7 @@ METRICS: dict[str, MetricSpec] = {
     "predicted_kv_ppl_rise": MetricSpec(
         "Predicted perplexity rise from cache rounding", "", "lower", "expected accuracy loss from the notes",
         "The measured rise in prediction error when each layer's notes are rounded as planned, added up over "
-        "layers. It is a prediction; Stage 3 measures the real value."),
+        "layers. It is a prediction; Stage 3 measures the real perplexity (with rounding and forgetting simulated)."),
     "kv_attention_kept": MetricSpec(
         "Attention on kept tokens", "", "higher", "share of the model's focus that survives forgetting",
         "When a layer forgets earlier words, this is the share of its attention that fell on the words it "

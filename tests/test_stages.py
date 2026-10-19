@@ -63,7 +63,8 @@ FORK_WEIGHT_METHODS = ("omniquant", "squeezellm", "spqr", "efficientqat", "aqlm"
                          + [(1, m) for m in ACTIVATION_METHODS_1 + FORK_WEIGHT_METHODS] + [
                                           (2, "unstructured_prune"), (2, "structured_prune"), (2, "low_rank"),
                                           (2, "unstructured_prune_after_gptq"), (2, "structured_prune_after_awq"),
-                                          (3, "rtn_kv")])
+                                          (3, "rtn_kv"), (3, "quarot_kv"), (3, "kvquant"), (3, "h2o"),
+                                          (3, "snapkv"), (3, "infinigen")])
 def test_run_stage_end_to_end(stage0_dir, tiny_llama, tokenizer, small_cfg, stage, method):
     ctx = start_run(small_cfg)
     cand = SEARCH_SPACE.make({"calib_samples": 16})
@@ -118,8 +119,13 @@ def test_run_stage_end_to_end(stage0_dir, tiny_llama, tokenizer, small_cfg, stag
         bits = "bits [4]" if "_after_" in method else "bits [16]"
         assert bits in rows[f"{method}/original"]["info"]["description"]
     if stage == 3:
-        assert rows["rtn_kv/framework"]["metrics"]["predicted_kv_memory_gb"] < \
-            rows["baseline/fp16"]["metrics"]["predicted_kv_memory_gb"]
+        for v in ("original", "framework"):
+            assert rows[f"{method}/{v}"]["metrics"]["predicted_kv_memory_gb"] < \
+                rows["baseline/fp16"]["metrics"]["predicted_kv_memory_gb"]
+        assert rows[f"{method}/original"]["info"]["note"].startswith("Simulated")
+        # only rtn_kv's Our method row says it matches H2O's; its standard row does not
+        assert "matches H2O" not in rows[f"{method}/original"]["info"]["note"]
+        assert ("matches H2O" in rows[f"{method}/framework"]["info"]["note"]) == (method == "rtn_kv")
 
     # the original row is cached by config: a second run reuses it
     out2 = run_stage(ctx, stage, [method], cand, stage0_dir, **kwargs)

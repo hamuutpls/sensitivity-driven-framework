@@ -29,6 +29,9 @@ from torch import nn
 
 from sdf.stage0.sensitivity import _mean_loss, _ppl, find_decoder_layers, profiling, round_to_nearest
 from sdf.utils.cache import JsonFile
+from sdf.utils.logging import get_logger
+
+_log = get_logger(__name__)
 
 KINDS = ("key", "value")
 
@@ -91,16 +94,21 @@ def eager_attention(model: nn.Module) -> Iterator[None]:
         cfg._attn_implementation = old
 
 
+def budgets(keep_ratio: float, n: int, device: torch.device | None = None) -> torch.Tensor:
+    """Words each of n queries keeps: ceil(keep_ratio x the words it can see), at least 1. Stage 0's coverage
+    and Stage 3's forgetting both use it (Mohammad, 2026-10-18). round: 0.7 * 10 is 7.000000000000001."""
+    return torch.tensor([max(1, math.ceil(round(keep_ratio * (i + 1), 9))) for i in range(n)], device=device)
+
+
 def _coverage(attn: torch.Tensor, keep_ratios: list[float]) -> list[float]:
     """attn (batch, heads, queries, keys). For the second half of the queries (so each sees enough past
     tokens), the share of attention on its top ceil(r * visible) keys, averaged over batch, heads, queries."""
     t = attn.shape[-1]
     q0 = t // 2
     cum = attn[..., q0:, :].float().sort(dim=-1, descending=True).values.cumsum(-1)
-    visible = torch.arange(q0, t, device=attn.device) + 1
     out = []
     for r in keep_ratios:
-        idx = (torch.ceil(r * visible) - 1).clamp(min=0).long().view(1, 1, -1, 1)
+        idx = (budgets(r, t, attn.device)[q0:] - 1).view(1, 1, -1, 1)
         out.append(cum.gather(-1, idx.expand(*cum.shape[:2], -1, 1)).mean().item())
     return out
 
@@ -166,8 +174,8 @@ class KVPlan(JsonFile):
         return cls(tuple(KVLayerPlan(**lp) for lp in d["layers"]), d["kind"])
 
 
-def uniform_kv_plan(num_layers: int, bits: int) -> KVPlan:
-    return KVPlan(tuple(KVLayerPlan(i, bits, bits, 1.0) for i in range(num_layers)), "uniform")
+def uniform_kv_plan(num_layers: int, bits: int, keep_ratio: float = 1.0) -> KVPlan:
+    return KVPlan(tuple(KVLayerPlan(i, bits, bits, keep_ratio) for i in range(num_layers)), "uniform")
 
 
 def _monotone(rise: list[float]) -> list[float]:
@@ -248,7 +256,11 @@ def predict_kv(plan: KVPlan, profile: KVProfile, context_len: int, batch_size: i
     """Cache size for `batch_size` sequences of `context_len` tokens. Rounded numbers carry one scale and
     zero point (`group_overhead_bits`) per `group_size` numbers; evicted tokens take no space."""
     def rise(rises: list[float], bits: int) -> float:
-        return 0.0 if bits >= baseline_bits else _monotone(rises)[profile.bits_options.index(bits)]
+        if bits >= baseline_bits:
+            return 0.0
+        if bits not in profile.bits_options:  # e.g. QUAROT_K_BITS = 3: never measured, so no prediction
+            return math.nan
+        return _monotone(rises)[profile.bits_options.index(bits)]
 
     per_layer, kept_numbers, all_numbers, bit_sum, damage, attn = [], 0.0, 0.0, 0.0, 0.0, 0.0
     for lp, kd, vd, kr, vr, cov in zip(plan.layers, profile.key_dims, profile.value_dims, profile.key_rise,
@@ -263,7 +275,13 @@ def predict_kv(plan: KVPlan, profile: KVProfile, context_len: int, batch_size: i
             all_numbers += context_len * batch_size * d
         per_layer.append(bits / 8 / 1e6)
         damage += rise(kr, lp.key_bits) + rise(vr, lp.value_bits)
-        attn += 1.0 if lp.keep_ratio >= 1.0 else cov[profile.keep_ratios.index(lp.keep_ratio)]
+        if lp.keep_ratio >= 1.0:
+            attn += 1.0
+        else:  # a share Stage 0 did not measure (e.g. stage0.kv_standard_keep_ratio) has no prediction
+            attn += cov[profile.keep_ratios.index(lp.keep_ratio)] if lp.keep_ratio in profile.keep_ratios else math.nan
+    if math.isnan(damage) or math.isnan(attn):
+        _log.warning("predict_kv: the plan uses a bit width or kept share Stage 0 did not measure, so its "
+                     "predicted perplexity rise or attention kept is NaN (no prediction)")
     return KVCost(memory_gb=sum(per_layer) / 1e3, avg_bits=bit_sum / kept_numbers,
                   kept_share=kept_numbers / all_numbers, ppl_rise=damage, attention_kept=attn / len(plan.layers),
                   per_layer_mb=tuple(per_layer))
