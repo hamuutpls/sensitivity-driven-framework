@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import time
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -30,6 +31,7 @@ from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
 
+VERSION = 1  # bump when a change to the chain or the measurement changes a point's numbers (the cache key)
 FAILED = 1e9  # objective and constraint value of a point that could not be built or measured
 
 
@@ -51,6 +53,8 @@ def evaluate(ctx: RunContext, point: dict[str, Any], max_windows: int | None = N
     """Build and measure the chained model of `point` on `max_windows` evaluation windows (None: cfg.eval's).
     Cached by point and settings, so a point two searchers try is built once. Returns {"metrics", "met",
     "shortfall", "dir"}, or {"error", "dir"} when the setting cannot be built or measured."""
+    from sdf.eval import vllm_backend
+    from sdf.stage0.run import fp16_key, setup
     from sdf.stages.methods import METHODS
 
     point = technique_space(ctx.cfg).validate(point)
@@ -59,6 +63,7 @@ def evaluate(ctx: RunContext, point: dict[str, Any], max_windows: int | None = N
     names = [point["stage1_method"], point["stage2_method"], point["stage3_method"]]
     key = {"point": point, "model": asdict(cfg.model), "eval": asdict(cfg.eval), "calibration": asdict(cfg.calibration),
            "stage0": asdict(cfg.stage0), "seed": cfg.run.seed, "data": asdict(cfg.data),
+           "hardware": fp16_key(ctx, setup(ctx)[0])["hardware"], "vllm": vllm_backend.VERSION, "search": VERSION,
            "versions": [_version(n, METHODS) for n in names]}
     tdir = ctx.run_dir / "search" / "points" / config_hash(key, length=10)
 
@@ -70,8 +75,18 @@ def evaluate(ctx: RunContext, point: dict[str, Any], max_windows: int | None = N
             log.exception("search point failed: %s", point)
             return {"error": f"{type(e).__name__}: {e}"}
 
-    result, _ = ctx.cache.get_or_compute("search_point", key, build)
-    return {**result, "dir": str(tdir)}
+    path = ctx.cache.path("search_point", key)
+    cached = path.exists()
+    if cached:
+        result = json.loads(path.read_text(encoding="utf-8"))["value"]
+    else:
+        result = build()
+        if "error" not in result and not result.get("errors") and "not_built" not in result:  # a failure may be passing (a crash, out of
+            atomic_write_text(path, json.dumps({"key": key, "value": result}, default=str))  # memory): retried
+    if "error" not in result:  # checked after the cache, so a changed limit applies to points already measured
+        check = ctx.cfg.requirement.check(result["metrics"])
+        result = {**result, "met": check.met is True, "shortfall": check.shortfall}
+    return {**result, "dir": str(tdir), "cached": cached}
 
 
 def _version(name: str, methods: dict) -> int:
@@ -86,9 +101,11 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
     from sdf.stage0.pruning_levels import layer_caps
     from sdf.stage0.run import run_stage0, setup
     from sdf.stages.methods import METHODS, series
-    from sdf.stages.runner import Stage0Plans, _capped, framework_plan, run_stage, stage1_row
+    from sdf.stages.runner import (Stage0Plans, _capped, _free_memory, framework_plan, plan_metrics, run_stage,
+                                   stage1_row)
 
     cfg = ctx.cfg
+    given = model_factory is not None
     if model_factory is None:
         device = setup(ctx)[0]
 
@@ -99,22 +116,31 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
                 cfg.model.name, torch_dtype=getattr(torch, cfg.model.dtype)).to(device)
     candidate = SEARCH_SPACE.make({p.name: point[p.name] for p in SEARCH_SPACE.params})
     kw = dict(tokenizer=tokenizer, text_loader=text_loader)
-    stage0_dir = run_stage0(ctx, candidate, model=model_factory(), **kw).outputs["report"].parent
+    stage0_dir = run_stage0(ctx, candidate, model=model_factory() if given else None, **kw).outputs["report"].parent
     plans = Stage0Plans.load(stage0_dir)
     first, plan_key = stage1_row(point["stage1_method"] + ("_joint" if point["stage1_plan"] == "joint" else ""))
     prune = METHODS[point["stage2_method"]]
     m = series(first, prune, plan_key)
-    plan, _ = _capped(m, framework_plan(m, plans, "prune"),
-                      lambda r: tuple(layer_caps(model_factory(), r)), plans.profile.layer_numel)
+    def caps(r: float) -> tuple[float, ...]:  # structured pruning only; the model is freed before vLLM starts
+        model = model_factory()
+        try:
+            return tuple(layer_caps(model, r))
+        finally:
+            del model
+            _free_memory()
+
+    plan, _ = _capped(m, framework_plan(m, plans, "prune"), caps, plans.profile.layer_numel)
+    size = plan_metrics(plan, plans, cfg, candidate, m.storage)
+    if cfg.requirement.check(size).met is False:  # the size follows from the plan: not worth building
+        return {"metrics": size, "errors": {}, "not_built": "over the limit, so not built"}
     out = run_stage(ctx, 3, [point["stage3_method"]], candidate, stage0_dir, only="framework", subdir="stage_3",
                     before={"framework": (replace(m, name=prune.name), plan)}, model_factory=model_factory, **kw)
     row = next(r for r in json.loads(out["json"].read_text())["rows"] if r["variant"] == "framework")
     if row["status"] != "ok":
         return {"error": row.get("error") or "the row failed"}
-    check = cfg.requirement.check(row["metrics"])
     metrics = {k: v for k, v in row["metrics"].items() if isinstance(v, (int, float))}
     errors = {k: v for k, v in row["info"].items() if k.endswith("_error")}  # e.g. a plan vLLM cannot load
-    return {"metrics": metrics, "met": check.met is True, "shortfall": check.shortfall, "errors": errors}
+    return {"metrics": metrics, "errors": errors}
 
 
 # ----------------------------------------------------------------------------------------------------- searchers
@@ -134,14 +160,17 @@ class Recorder:
 
     def __call__(self, point: dict[str, Any], windows: int | None = None) -> dict[str, Any]:
         windows = windows or self.full
+        t0 = time.perf_counter()
         r = evaluate(self.ctx, point, None if windows == self.full else windows, **self.kw)
         values = [r.get("metrics", {}).get(o) for o in self.objectives]
         ok = "error" not in r and all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
         t = {"searcher": self.searcher, "n": len(self.trials) + 1, "point": point, "windows": windows,
              "cost": windows / self.full, "full": windows == self.full, "ok": ok, "met": ok and r.get("met", False),
-             "values": values if ok else [FAILED] * len(values), "violation": violation(r) if ok else FAILED,
+             "values": values if ok else [FAILED] * len(values),
+             "violation": FAILED if "error" in r else violation(r),
              "metrics": r.get("metrics", {}), "dir": r["dir"],
-             "error": r.get("error") or (None if ok else "; ".join(f"{k}: {v}" for k, v in r.get("errors", {}).items())
+             "time_s": time.perf_counter() - t0, "cached": r["cached"],
+             "error": r.get("error") or r.get("not_built") or (None if ok else "; ".join(f"{k}: {v}" for k, v in r.get("errors", {}).items())
                                          or f"no {[o for o, v in zip(self.objectives, values) if v is None]}")}
         self.trials.append(t)
         log.info("search %s #%d (%d windows): %s -> %s", self.searcher, t["n"], windows,
@@ -276,6 +305,8 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     s = cfg.search
     if unknown := [n for n in s.searchers if n not in SEARCHERS]:
         raise ValueError(f"unknown searcher(s) {unknown}; known: {sorted(SEARCHERS)}")
+    if any(o.startswith("vllm_") for o in s.objectives) and not cfg.eval.vllm_python:
+        raise ValueError(f"the objectives {s.objectives} need vLLM: set eval.vllm_python (Colab), or every try fails")
     space = technique_space(cfg)
     _, handle, loader = setup(ctx, None, tokenizer, text_loader)
     val, held = eval_windows(loader(cfg.eval.dataset, "test"), handle.tokenizer, cfg.eval.seq_len, cfg.eval.max_windows)

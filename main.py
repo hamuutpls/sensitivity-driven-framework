@@ -15,8 +15,8 @@ MODE = "single"  # "single": one Stage 0 run with the settings in section 2
 #                  "stages": Stages 1-3 with the methods in section 7, on top of a Stage 0 plan
 #                  "search": find the settings (section 2 + a technique per stage) that meet the requirement in
 #                            section 8 with the lowest perplexity and latency; MOBO, MFBO and NSGA-III compared
-#                  "chain": Stages 0 -> 1 -> 2 -> 3 -> 4 in a row: each stage's best row (lowest validation perplexity;
-#                           Standard and Our method each their own) goes into the next stage; methods from section 7
+#                  "chain": Stages 0 -> 1 -> 2 -> 3 -> 4 in a row: every row on a side's memory vs perplexity trade-off
+#                           line (Standard and Our method each their own; Stage 1: WxAy rows) goes into the next stage
 
 MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 OUTPUT_ROOT = "thesis_compression/results"  # local folder, relative to where you run; results/<run_id>/stage_0/
@@ -139,8 +139,14 @@ QUAROT_K_BITS = 4  # 2 | 3 | 4 | 8: key bits for QuaRot KV (standard method)
 TARGET_MEMORY_GB = 1.0  # the model size (predicted from the plan) must be at most this; None = no limit
 SEARCHERS = ["mobo", "mfbo", "nsga3"]  # each gets the same budget and seed
 SEARCH_BUDGET = 50  # full evaluations per searcher
-SEARCH_OBJECTIVES = ["ppl_val", "vllm_decode_ms_per_token"]  # made as small as possible; vLLM needs eval.vllm_python (Colab)
-SEARCH_STAGE1 = ["rtn_with_rtn_act", "gptq_with_rtn_act"]  # WxAy techniques Stage 1 may pick
+SEARCH_OBJECTIVES = ["ppl_val", "vllm_decode_ms_per_token"]  # made as small as possible; vLLM needs VLLM_PYTHON
+VLLM_PYTHON = None  # the Python of the vLLM install (Linux/Colab only), e.g. "/content/vllm-venv/bin/python"
+# WxAy techniques Stage 1 may pick: every working weight technique with round-to-nearest or SmoothQuant activations
+# (Mohammad, 2026-10-19: "all the ones that work"; QuaRot/SpinQuant left out: vLLM cannot measure rotated models;
+# RPTQ: its Our method rows are skipped; AQLM, BiLLM, QTIP, ABQ-LLM do not work here)
+SEARCH_STAGE1 = [f"{w}_with_{a}" for w in ("rtn", "gptq", "awq", "omniquant", "squeezellm", "spqr", "efficientqat",
+                                           "quip", "quipsharp", "pbllm", "bitsandbytes")
+                 for a in ("rtn_act", "smoothquant")]
 SEARCH_STAGE2 = ["unstructured_prune", "structured_prune"]  # pruning techniques (low-rank cannot follow Stage 1)
 SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]  # KV-cache techniques
 
@@ -165,6 +171,7 @@ def build_config():
         "stages.stage2_after": STAGE2_AFTER,
         "stages.stage3_methods": STAGE3_METHODS,
         "requirement.target_memory_gb": TARGET_MEMORY_GB,
+        "eval.vllm_python": VLLM_PYTHON,
         "search.searchers": SEARCHERS,
         "search.budget": SEARCH_BUDGET,
         "search.objectives": SEARCH_OBJECTIVES,

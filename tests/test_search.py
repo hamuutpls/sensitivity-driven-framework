@@ -3,13 +3,14 @@
 import copy
 import json
 import random
+from pathlib import Path
 
 import openpyxl
 import pytest
 
 from sdf.eval import vllm_backend
 from sdf.run import start_run
-from sdf.search import (FAILED, Recorder, _decode, _sample, evaluate, hypervolume, pareto, run_mfbo, run_search,
+from sdf.search import (FAILED, Recorder, _decode, _rank_key, _sample, evaluate, hypervolume, pareto, run_mfbo, run_search,
                         technique_space, violation)
 from sdf.search_space import SEARCH_SPACE
 from conftest import fake_texts
@@ -80,7 +81,7 @@ def test_evaluate_builds_the_chained_model_and_caches_it(cfg, tiny_llama, tokeni
     assert next(x for x in rows if x["variant"] == "framework")["info"]["built_on"] == "structured_prune"
     # cached: the same point is not built again, a different one is
     again = evaluate(ctx, _point(cfg, stage2_method="structured_prune", stage3_method="h2o"), **kw)
-    assert again == r
+    assert again["cached"] and not r["cached"] and {**again, "cached": False} == r
     other = evaluate(ctx, _point(cfg, stage3_method="rtn_kv"), **kw)
     assert other["dir"] != r["dir"]
     # fewer windows (MFBO's rough rung) is its own entry
@@ -92,6 +93,10 @@ def test_a_tight_memory_limit_is_not_met_and_says_by_how_much(cfg, tiny_llama, t
     ctx = start_run(cfg.with_overrides({"requirement.target_memory_gb": 1e-9}))
     r = evaluate(ctx, _point(cfg), **_kw(tiny_llama, tokenizer))
     assert not r["met"] and r["shortfall"]["target_memory_gb"] > 0
+    # the size follows from the plan, so the model is not built: no Stage 3 report, no perplexity
+    assert r["not_built"] and "ppl_val" not in r["metrics"] and not (Path(r["dir"]) / "stage_3").exists()
+    t = Recorder(ctx, "x", 6, **_kw(tiny_llama, tokenizer))(_point(cfg))
+    assert not t["ok"] and 0 < t["violation"] < FAILED and "not built" in t["error"]
 
 
 def test_vllm_latency_is_measured_on_the_stage2_model(cfg, tiny_llama, tokenizer, monkeypatch):
@@ -121,6 +126,13 @@ def test_vllm_latency_is_measured_on_the_stage2_model(cfg, tiny_llama, tokenizer
     monkeypatch.setattr(vllm_backend, "measure", refuse)
     t = rec(_point(c, prune_ratio_aggressive=0.5))
     assert not t["ok"] and t["values"] == [FAILED, FAILED] and "3-bit GPTQ" in t["error"]
+    assert not rec(_point(c, prune_ratio_aggressive=0.5))["cached"]  # a failure is tried again, not cached
+
+
+def test_a_vllm_objective_without_vllm_stops_before_any_try(cfg):
+    c = cfg.with_overrides({"search.objectives": ["ppl_val", "vllm_decode_ms_per_token"]})
+    with pytest.raises(ValueError, match="eval.vllm_python"):
+        run_search(start_run(c))
 
 
 def test_mfbo_measures_the_best_on_more_windows(cfg, tiny_llama, tokenizer):
@@ -128,7 +140,8 @@ def test_mfbo_measures_the_best_on_more_windows(cfg, tiny_llama, tokenizer):
     run_mfbo(rec, technique_space(cfg), budget=2, seed=0, eta=2, rungs=2)
     rungs = [t["windows"] for t in rec.trials]
     assert rungs[:2] == [3, 3] and rungs[2] == 6  # 2 rough tries, the better one on all the windows
-    assert rec.trials[2]["point"] in [t["point"] for t in rec.trials[:2]]
+    rough = rec.trials[:2]
+    assert rec.trials[2]["point"] == min(rough, key=lambda t: _rank_key(t, rough))["point"]  # the better rough one
     assert rec.spent >= 2
 
 

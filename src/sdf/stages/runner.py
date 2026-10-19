@@ -740,6 +740,9 @@ def run_chain(ctx: RunContext, candidate: dict[str, Any], stage0_dir: str | Path
     cfg.eval for Stage 1 and 2 rows; Stage 3 rows run on Hugging Face only, as in the 0 -> 3 -> 4 path (backends
     cannot run the KV techniques)."""
     st = ctx.cfg.stages
+    if not any(WITH in n for n in st.stage1_methods):
+        raise ValueError(f"the chain picks WxAy Stage 1 rows; stages.stage1_methods {st.stage1_methods} has none "
+                         "(<weights>_with_<activations>)")
     out: dict[str, Path] = {}
 
     def run(prefix: str, *args: Any, **kw: Any) -> list[dict[str, Any]]:

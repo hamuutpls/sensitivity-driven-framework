@@ -133,10 +133,13 @@ def test_run_chain_follows_each_side_along_its_trade_off_line(tiny_llama, tokeni
 
 
 def test_run_chain_needs_a_wxay_row_and_stage3_needs_before_only_there(stage0_dir, tiny_llama, tokenizer, small_cfg):
+    kw = dict(model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
     cfg = small_cfg.with_overrides({"stages.stage1_methods": ["rtn", "rtn_act"]})
+    with pytest.raises(ValueError, match="has none"):  # before Stage 1 runs
+        run_chain(start_run(cfg), SEARCH_SPACE.make({"calib_samples": 16}), stage0_dir, **kw)
+    cfg = small_cfg.with_overrides({"stages.stage1_methods": ["qtip_with_rtn_act"]})  # listed, but its rows fail
     with pytest.raises(RuntimeError, match="no finished WxAy"):
-        run_chain(start_run(cfg), SEARCH_SPACE.make({"calib_samples": 16}), stage0_dir,
-                  model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
+        run_chain(start_run(cfg), SEARCH_SPACE.make({"calib_samples": 16}), stage0_dir, **kw)
     with pytest.raises(ValueError, match="before= for Stage 3"):
         run_stage(start_run(small_cfg), 2, ["unstructured_prune"], {}, stage0_dir, before={"original": None})
 
