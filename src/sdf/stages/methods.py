@@ -87,6 +87,10 @@ class Method:
     max_ratio: float | None = None
     # a Stage 3 technique that forgets words: its standard row keeps stage0.kv_standard_keep_ratio of them at 16 bits
     forgets: bool = False
+    # a Stage 2 method after a WxAy (joint) Stage 1 method: the activation plan key its Our method rows follow
+    # ("activations" or "joint_acts"); its plans are then JointPlan, the weight half carrying the pruning
+    act_plan: str = ""
+    joint_bits: tuple[int | None, int | None] | None = None  # and that method's standard (weight, activation) bits
 
 
 @dataclass(frozen=True)
@@ -325,29 +329,38 @@ def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
                   joint=(8, 8) if standard_w8a8 else (None, None))
 
 
-def series(quant: Method, prune: Method) -> Method:
-    """`prune` (Stage 2) applied to the model `quant` (Stage 1, weights) has just quantized. The quantization
-    follows the plan's bits, the pruning its ratios; both plans are the two halves of one combined plan."""
-    if (quant.stage, prune.stage) != (1, 2) or quant.plans != _WEIGHT_PLANS:
+def series(quant: Method, prune: Method, quant_plan: str = "quant") -> Method:
+    """`prune` (Stage 2) applied to the model `quant` (Stage 1, weights or WxAy) has just quantized. The quantization
+    follows the plan's bits, the pruning its ratios; both plans are the two halves of one combined plan. After a WxAy
+    method the plan is a JointPlan whose weight half carries the pruning, and the activations stay rounded while the
+    pruning calibrates and the model is measured. `quant_plan`: the Stage 1 weight plan key Our method rows follow
+    ("joint_weights" for a WxAy method's joint plan)."""
+    joint = quant.joint is not None
+    if (quant.stage, prune.stage) != (1, 2) or not (quant.plans == _WEIGHT_PLANS or joint):
         raise ValueError(f"{prune.name} (Stage {prune.stage}) cannot follow {quant.name} (Stage {quant.stage}): "
-                         "only a Stage 1 weight method can precede a Stage 2 method")
+                         "only a Stage 1 weight or WxAy method can precede a Stage 2 method")
 
     @contextmanager
     def apply(call: MethodCall) -> Iterator[dict[str, Any]]:
-        with quant.apply(replace(call, plan=bits_only(call.plan))) as first, prune.apply(call) as second:
+        weights = call.plan.weights if joint else call.plan
+        first_plan = JointPlan(bits_only(weights), call.plan.acts) if joint else bits_only(weights)
+        with quant.apply(replace(call, plan=first_plan)) as first, \
+                prune.apply(replace(call, plan=weights)) as second:
             yield {**first, **second}
 
     # low-rank rounds its own factors with round-to-nearest, replacing what the Stage 1 method did to the weights
     unavailable = quant.unavailable or (f"{prune.label} cannot follow a Stage 1 method: it rounds its factors with "
                                         "round-to-nearest, which replaces the Stage 1 rounding"
                                         if prune.name == "low_rank" else "")
+    act_plan = {"quant": "activations", "joint_weights": "joint_acts"}[quant_plan] if joint else ""
     return Method(prune.name + AFTER + quant.name, 2, f"{prune.label} after {quant.label}", prune.plans,
                   apply if quant.apply and prune.apply and not unavailable else None,
                   version=quant.version * 1000 + prune.version, params=tuple(dict.fromkeys(quant.params + prune.params)),
                   calibrated=quant.calibrated or prune.calibrated, library=prune.library, storage=prune.storage,
-                  quant_plans=quant.plans * len(prune.plans),  # every pruning plan follows the one bits plan
+                  quant_plans=(quant_plan,) * len(prune.plans),  # every pruning plan follows the one bits plan
                   note=quant.note, fixed_bits=quant.fixed_bits, unavailable=unavailable,
-                  max_ratio=prune.max_ratio)
+                  max_ratio=prune.max_ratio, act_plan=act_plan,
+                  joint_bits=quant.joint if joint else None)
 
 
 def methods_for(stage: int, names: list[str]) -> list[Method]:

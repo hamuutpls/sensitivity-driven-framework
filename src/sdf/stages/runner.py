@@ -39,7 +39,7 @@ from sdf.stage0.pruning_levels import layer_caps
 from sdf.stage0.run import (_cost_metrics, _kv_metrics, calib_batches, fp16_key, load_fp16, source_key,
                             setup, stage_reporter, weight_cost)
 from sdf.stage0.sensitivity import SensitivityProfile, find_decoder_layers, normalize
-from sdf.stages.methods import AFTER, METHODS, JointPlan, Method, MethodCall, methods_for, series
+from sdf.stages.methods import AFTER, WITH, JointPlan, Method, MethodCall, methods_for, series
 from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -174,6 +174,10 @@ def original_plan(m: Method, plans: Stage0Plans, s0, prune_ratio: float, quarot_
     scores = lambda: normalize(plans.profile.raw_scores, s0.normalization)  # noqa: E731
     if kind == "weights":
         return uniform_plan(scores(), s0.uniform_bits, 0.0)
+    if kind == "prune" and m.joint_bits is not None:  # after a WxAy method: its standard bits (W4A8 or W8A8)
+        w, a = m.joint_bits
+        return JointPlan(uniform_plan(scores(), w or s0.uniform_bits, prune_ratio),
+                         uniform_activation_plan(plans.num_layers, a or s0.act_uniform_bits))
     if kind == "prune":
         return uniform_plan(scores(), s0.uniform_bits if m.quant_plans else s0.baseline_bits, prune_ratio)
     if kind == "activations":
@@ -195,7 +199,9 @@ def _plan_keys(m: Method, plan_key: str) -> list[str]:
     activation plan of a joint method."""
     if m.joint is not None:  # each weight plan with the activation plan made with it
         return [plan_key, {"quant": "activations", "joint_weights": "joint_acts"}[plan_key]]
-    return [plan_key, m.quant_plans[m.plans.index(plan_key)]] if m.quant_plans else [plan_key]
+    if not m.quant_plans:
+        return [plan_key]
+    return [plan_key, m.quant_plans[m.plans.index(plan_key)]] + ([m.act_plan] if m.act_plan else [])
 
 
 def framework_plan(m: Method, plans: Stage0Plans, plan_key: str) -> Any:
@@ -203,6 +209,8 @@ def framework_plan(m: Method, plans: Stage0Plans, plan_key: str) -> Any:
     plan, *other = (plans.plans[k] for k in _plan_keys(m, plan_key))
     if m.joint is not None:
         return JointPlan(plan, other[0])
+    if m.act_plan:  # Stage 2 after a WxAy method: the Stage 1 bits and activation plan with this pruning
+        return JointPlan(combine_plans(other[0], plan), other[1])
     return combine_plans(other[0], plan) if other else plan
 
 
@@ -250,7 +258,9 @@ def _fp16_plan_metrics(stage: int, plans: Stage0Plans, cfg, candidate) -> dict[s
 
 def _describe(plan: Any) -> str:
     if isinstance(plan, JointPlan):
-        return f"weights and activations, layers per combination {plan.combos()}"
+        prune = sorted({lp.pruning_ratio for lp in plan.weights.layers})
+        return (f"weights and activations, layers per combination {plan.combos()}"
+                + (f", prune ratios {prune}" if prune != [0.0] else ""))
     if isinstance(plan, CompressionPlan):
         bits = sorted({lp.bit_width for lp in plan.layers})
         prune = sorted({lp.pruning_ratio for lp in plan.layers})
@@ -288,6 +298,7 @@ def run_stage(
     before: dict[str, tuple[Method, Any]] | None = None,
     subdir: str | None = None,
     used: dict[tuple[str, str], tuple[Method, Any, float | None]] | None = None,
+    only: str | None = None,
 ) -> dict[str, Path]:
     """Run one of Stages 1-3 with `method_names` (see sdf.stages.methods.METHODS). `model_factory` returns a
     fresh FP16 model on the right device (default: from_pretrained); tests pass a tiny model's deepcopy.
@@ -297,7 +308,8 @@ def run_stage(
     the rows keep the pruning method's name so Our method is compared with Standard. `before` (Stage 3): a
     (method, plan) built on the fresh model before the row's method, e.g. the best Stage 2 row. `subdir`: the
     report folder instead of stage_<N>/. `used`, when given, is filled with (row name, variant) -> (method, plan,
-    pruning level) of every row, so the next stage can rebuild a row exactly."""
+    pruning level) of every row, so the next stage can rebuild a row exactly. `only`: "original" or "framework" to
+    run only that side's rows (the chain follows each side's rows on its own)."""
     if stage not in TITLES:
         raise ValueError(f"run_stage runs Stages 1-3, not {stage}")
     if after and stage != 2 or before and stage != 3:
@@ -325,10 +337,17 @@ def run_stage(
         ("trtllm", trtllm_backend, trtllm_backend.TRTLLMError, cfg.eval.trtllm_python)) if py}
     calib = (f"{candidate['calib_dataset']}, {candidate['calib_samples']} x {cfg.calibration.seq_len} tokens")
     start = "the uncompressed model, for every row (stages are independent)"
-    if after:
-        start = (f"Standard rows: the best Standard Stage 1 row ({METHODS[after['original']].label}); Our method "
-                 f"rows: the best Our method Stage 1 row ({METHODS[after['framework']].label}); each then pruned")
-    if before:
+    side = {"original": "Standard", "framework": "Our method"}
+    if after and only:
+        start = f"{side[only]} rows only, each after the Stage 1 row {after[only]} ({stage1_row(after[only])[0].label})"
+    elif after:
+        start = (f"Standard rows: the best Standard Stage 1 row ({stage1_row(after['original'])[0].label}); Our "
+                 f"method rows: the best Our method Stage 1 row {after['framework']} "
+                 f"({stage1_row(after['framework'])[0].label}); each then pruned")
+    if before and only:
+        start = (f"{side[only]} rows only, each on the Stage 2 row {before[only][0].name} "
+                 f"({before[only][0].label})")
+    elif before:
         start = (f"Standard rows: the Stage 2 row {before['original'][0].name} ({before['original'][0].label}, "
                  f"Standard); Our method rows: the Stage 2 row {before['framework'][0].name} "
                  f"({before['framework'][0].label}, Our method); each then given this stage's method")
@@ -487,57 +506,59 @@ def run_stage(
         before it when `after` names different ones for Standard and Our method)."""
         if not after:
             return [(row, row[0]) for row in sweep(method, all_plans)]
-        std, ours = (replace(series(METHODS[after[v]], method), name=method.name) for v in ("original", "framework"))
+        std, ours = (replace(series(q, method, key), name=method.name)
+                     for q, key in (stage1_row(after.get(v) or after[only]) for v in ("original", "framework")))
         return [(row, theirs) for row, (theirs, _, _) in zip(sweep(std, all_plans), sweep(ours, all_plans))]
 
     for (m, plans, level), mf in (row for method in methods for row in pair(method)):
         simulated_any |= m.simulated or mf.simulated
         orig = original_plan(m, plans, s0, candidate["prune_ratio_aggressive"] if level is None else level,
                              candidate.get("quarot_k_bits"))
-        with rep.method(m.name, "original", description=f"{m.label}, standard settings: {_describe(orig)}",
-                        simulated=m.simulated) as row:
-            orig, cap_note = _capped(m, orig, caps, plans.profile.layer_numel)
-            row.info["description"] = f"{m.label}, standard settings: {_describe(orig)}"
-            _label_level(row, m, level, orig, plans.profile.layer_numel)
-            _require(m)
-            if note := "; ".join(n for n in (m.note, m.fixed_bits, cap_note) if n):
-                row.info["note"] = note
-            key = {"stage": stage, "method": m.name, "version": m.version, "plan": orig.to_dict(),
-                   "params": {p: candidate[p] for p in m.params}, **fp16_key(ctx, device),
-                   "downstream": [list(cfg.eval.downstream_tasks), cfg.eval.downstream_limit],
-                   "llamacpp": lc_key if lc_on(m) else None}
-            if be_on(m):  # absent when off, so cached rows from before stay valid
-                key.update({name: be_key for name, (_, _, be_key) in serving.items()})
-                if "gptq_groupsize" not in m.params:  # the serving export still uses it (e.g. bitsandbytes)
-                    key["export_group_size"] = candidate["gptq_groupsize"]
-            if after:  # the rows keep the pruning method's name; the Stage 1 method is in the key
-                key["after"] = after["original"]
-            if before:
-                first, first_plan = before["original"]
-                key["before"] = {"method": first.name, "label": first.label,  # the label names the Stage 1 method
-                                 "version": first.version, "plan": first_plan.to_dict(),
-                                 "params": {p: candidate[p] for p in first.params},
-                                 "settings": _setting_key(kind_of(first), s0)}
-            if settings := _setting_key(kind_of(m), s0):
-                key["settings"] = settings
-            if m.calibrated or before and before["original"][0].calibrated:
-                key["calibration"] = {"dataset": candidate["calib_dataset"], "samples": candidate["calib_samples"],
-                                      "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size,
-                                      **source_key(cfg, candidate["calib_dataset"])}
-            result, cached = ctx.cache.get_or_compute(f"stage{stage}_original", key,
-                                                      lambda: build_and_measure(m, orig, "original"))
-            if used is not None:
-                used[(m.name, "original")] = (m, orig, level)
-            _before_metrics(row, before, "original", plans, cfg, candidate)
-            row.metrics.update(plan_metrics(orig, plans, cfg, candidate, m.storage))
-            if stage == 2:
-                row.metrics["decoder_weights_removed"] = decoder_share_removed(orig, plans.profile.layer_numel)
-            row.metrics.update(result["metrics"])
-            row.info.update(result.get("info", {}), cached=cached)  # .get: rows cached before "info" existed
-            row.info.update(not_on_backends(m))
-            rep.add_raw(m.name, "original", result["raw"])
+        if only != "framework":
+            with rep.method(m.name, "original", description=f"{m.label}, standard settings: {_describe(orig)}",
+                            simulated=m.simulated) as row:
+                orig, cap_note = _capped(m, orig, caps, plans.profile.layer_numel)
+                row.info["description"] = f"{m.label}, standard settings: {_describe(orig)}"
+                _label_level(row, m, level, orig, plans.profile.layer_numel)
+                _require(m)
+                if note := "; ".join(n for n in (m.note, m.fixed_bits, cap_note) if n):
+                    row.info["note"] = note
+                key = {"stage": stage, "method": m.name, "version": m.version, "plan": orig.to_dict(),
+                       "params": {p: candidate[p] for p in m.params}, **fp16_key(ctx, device),
+                       "downstream": [list(cfg.eval.downstream_tasks), cfg.eval.downstream_limit],
+                       "llamacpp": lc_key if lc_on(m) else None}
+                if be_on(m):  # absent when off, so cached rows from before stay valid
+                    key.update({name: be_key for name, (_, _, be_key) in serving.items()})
+                    if "gptq_groupsize" not in m.params:  # the serving export still uses it (e.g. bitsandbytes)
+                        key["export_group_size"] = candidate["gptq_groupsize"]
+                if after:  # the rows keep the pruning method's name; the Stage 1 method is in the key
+                    key["after"] = after["original"]
+                if before:
+                    first, first_plan = before["original"]
+                    key["before"] = {"method": first.name, "label": first.label,  # the label names the Stage 1 method
+                                     "version": first.version, "plan": first_plan.to_dict(),
+                                     "params": {p: candidate[p] for p in first.params},
+                                     "settings": _setting_key(kind_of(first), s0)}
+                if settings := _setting_key(kind_of(m), s0):
+                    key["settings"] = settings
+                if m.calibrated or before and before["original"][0].calibrated:
+                    key["calibration"] = {"dataset": candidate["calib_dataset"], "samples": candidate["calib_samples"],
+                                          "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size,
+                                          **source_key(cfg, candidate["calib_dataset"])}
+                result, cached = ctx.cache.get_or_compute(f"stage{stage}_original", key,
+                                                          lambda: build_and_measure(m, orig, "original"))
+                if used is not None:
+                    used[(m.name, "original")] = (m, orig, level)
+                _before_metrics(row, before, "original", plans, cfg, candidate)
+                row.metrics.update(plan_metrics(orig, plans, cfg, candidate, m.storage))
+                if stage == 2:
+                    row.metrics["decoder_weights_removed"] = decoder_share_removed(_weights(orig), plans.profile.layer_numel)
+                row.metrics.update(result["metrics"])
+                row.info.update(result.get("info", {}), cached=cached)  # .get: rows cached before "info" existed
+                row.info.update(not_on_backends(m))
+                rep.add_raw(m.name, "original", result["raw"])
 
-        for plan_key in mf.plans:
+        for plan_key in mf.plans if only != "original" else ():
             suffix, *plain = _PLAN_ROWS.get(plan_key, ("",))
             info = {"compare_to": mf.name, "plan_file": plans.files[plan_key], "simulated": mf.simulated}
             if plain:
@@ -563,7 +584,8 @@ def run_stage(
                 _before_metrics(row, before, "framework", plans, cfg, candidate)
                 row.metrics.update(plan_metrics(plan, plans, cfg, candidate, mf.storage))
                 if stage == 2:
-                    row.metrics["decoder_weights_removed"] = decoder_share_removed(plan, plans.profile.layer_numel)
+                    row.metrics["decoder_weights_removed"] = decoder_share_removed(_weights(plan),
+                                                                                  plans.profile.layer_numel)
                 row.metrics.update(result["metrics"])
                 row.info.update(result["info"])
                 row.info.update(not_on_backends(mf))
@@ -590,8 +612,20 @@ def _before_metrics(row, before: dict[str, tuple[Method, Any]] | None, variant: 
     first, first_plan = before[variant]
     row.info["built_on"] = first.name
     row.metrics.update(plan_metrics(first_plan, plans, cfg, candidate, first.storage))
-    if isinstance(first_plan, CompressionPlan):
-        row.metrics["decoder_weights_removed"] = decoder_share_removed(first_plan, plans.profile.layer_numel)
+    if isinstance(first_plan, (CompressionPlan, JointPlan)):
+        row.metrics["decoder_weights_removed"] = decoder_share_removed(_weights(first_plan), plans.profile.layer_numel)
+
+
+def stage1_row(name: str) -> tuple[Method, str]:
+    """The Stage 1 method of a Stage 1 row name and the weight plan key the row follows (a WxAy method's "_joint"
+    row follows the joint plan)."""
+    joint = name.endswith(_PLAN_ROWS["joint_weights"][0])
+    (m,) = methods_for(1, [name.removesuffix(_PLAN_ROWS["joint_weights"][0]) if joint else name])
+    return m, "joint_weights" if joint else "quant"
+
+
+def _weights(plan: Any) -> CompressionPlan:
+    return plan.weights if isinstance(plan, JointPlan) else plan
 
 
 def _capped(m: Method, plan: Any, caps: Callable[[float], tuple[float, ...]],
@@ -600,6 +634,9 @@ def _capped(m: Method, plan: Any, caps: Callable[[float], tuple[float, ...]],
     share when lower), and the row's note when it was ("" if not). A same-size plan is rebuilt with the caps, so
     what a capped layer cannot take moves to the other unguarded layers and the total still matches the standard
     row while they can hold it (Mohammad, 2026-10-13)."""
+    if isinstance(plan, JointPlan) and m.act_plan:  # Stage 2 after a WxAy method: cap the weight half
+        weights, note = _capped(m, plan.weights, caps, layer_numel)
+        return replace(plan, weights=weights), note
     if m.max_ratio is None or not isinstance(plan, CompressionPlan):
         return plan, ""
     layer_cap = list(caps(m.max_ratio))
@@ -628,7 +665,7 @@ def _label_level(row, m: Method, level: float | None, plan: CompressionPlan | No
     row.info["kind_label"] = kind  # the plain name before this label replaces it
     row.info["label"] = f"{m.label}: {kind}, level {level:.0%}"
     if plan is not None:
-        row.info["label"] += f", {decoder_share_removed(plan, layer_numel):.1%} of the layer weights removed"
+        row.info["label"] += f", {decoder_share_removed(_weights(plan), layer_numel):.1%} of the layer weights removed"
 
 
 _ROTATED = ("not measured: the model rotates inputs while it runs (QuaRot/SpinQuant), and a saved model file "
@@ -666,59 +703,57 @@ def run_stages(ctx: RunContext, candidate: dict[str, Any], stage0_dir: str | Pat
     return outputs
 
 
-def best_rows(results_json: Path, variant: str, allowed: Callable[[str], bool],
-              level: Callable[[str], float | None] = lambda name: None) -> dict[float | None, str]:
-    """The `variant` row with the lowest validation perplexity among the finished rows whose name is `allowed`,
-    one per `level(name)` (Stage 2: per pruning share): level -> row name. Held-out perplexity is never used."""
-    best: dict[float | None, tuple[float, str]] = {}
-    for r in json.loads(Path(results_json).read_text())["rows"]:
-        ppl = r["metrics"].get("ppl_val")
-        if r["variant"] != variant or r["status"] != "ok" or not allowed(r["method"]) or not isinstance(
-                ppl, (int, float)) or not math.isfinite(ppl):
-            continue
-        lv = level(r["method"])
-        if lv not in best or ppl < best[lv][0]:
-            best[lv] = (ppl, r["method"])
-    return {lv: name for lv, (_, name) in best.items()}
+
+def trade_off_rows(rows: list[dict[str, Any]], memory: str = "predicted_weight_memory_gb") -> list[dict[str, Any]]:
+    """The finished rows on the best trade-off line between memory and validation perplexity: no other row is
+    both as small and as accurate and better in one (Mohammad, 2026-10-19: "the highest memory reduction and lowest
+    perplexity"). Held-out perplexity is never used to choose."""
+    ok = [r for r in rows if r["status"] == "ok" and all(
+        isinstance(r["metrics"].get(k), (int, float)) and math.isfinite(r["metrics"][k]) for k in ("ppl_val", memory))]
+    point = lambda r: (r["metrics"][memory], r["metrics"]["ppl_val"])  # noqa: E731
+    return [r for r in ok if not any(point(o) != point(r) and all(a <= b for a, b in zip(point(o), point(r)))
+                                     for o in ok)]
 
 
 def run_chain(ctx: RunContext, candidate: dict[str, Any], stage0_dir: str | Path, **kwargs: Any) -> dict[str, Path]:
-    """The sequential path 0 -> 1 -> 2 -> 3 -> 4 (Mohammad, 2026-10-19), Standard and Our method side by side:
-    Stage 1 runs cfg.stages.stage1_methods; the weight row with the lowest validation perplexity of each side
-    (Standard, Our method) goes into Stage 2, which prunes it with cfg.stages.stage2_methods; at each pruning share
-    the best row of each side (Our method: the "same amount removed" row) goes into Stage 3, which runs
-    cfg.stages.stage3_methods on it, one report per share in stage_3_after_<share>/. Stage 4 (evaluation) runs
-    inside every row as in the other modes: Hugging Face always, the backends set in cfg.eval for Stage 1 and 2 rows;
-    Stage 3 rows run on Hugging Face only, as in the 0 -> 3 -> 4 path (backends cannot run the KV techniques)."""
+    """The sequential path 0 -> 1 -> 2 -> 3 -> 4 (Mohammad, 2026-10-19), Standard and Our method each on their own:
+    Stage 1 runs cfg.stages.stage1_methods; every WxAy row of a side on its memory vs perplexity trade-off line
+    (trade_off_rows) is pruned by every cfg.stages.stage2_methods method at every share, in
+    stage_2_<side>_after_<row>/; every Stage 2 row of the side on the trade-off line (all shares and Stage 1 rows
+    together) gets every cfg.stages.stage3_methods method, in stage_3_<side>_after_<Stage 1 row>_<Stage 2 row>/.
+    Stage 4 (evaluation) runs inside every row as in the other modes: Hugging Face always, the backends set in
+    cfg.eval for Stage 1 and 2 rows; Stage 3 rows run on Hugging Face only, as in the 0 -> 3 -> 4 path (backends
+    cannot run the KV techniques)."""
     st = ctx.cfg.stages
     out: dict[str, Path] = {}
 
-    def keep(prefix: str, paths: dict[str, Path]) -> dict[str, Path]:
+    def run(prefix: str, *args: Any, **kw: Any) -> list[dict[str, Any]]:
+        paths = run_stage(ctx, *args, candidate, stage0_dir, **kw, **kwargs)
         out.update({f"{prefix}_{k}": p for k, p in paths.items()})
-        return paths
+        return json.loads(paths["json"].read_text())["rows"]
 
-    s1 = keep("stage_1", run_stage(ctx, 1, st.stage1_methods, candidate, stage0_dir, **kwargs))
-    weights = lambda name: name in METHODS and kind_of(METHODS[name]) == "weights"  # noqa: E731 - can go into pruning
-    first = {v: best_rows(s1["json"], v, weights).get(None) for v in ("original", "framework")}
-    if None in first.values():
-        raise RuntimeError(f"Stage 1 has no finished weight row for each side ({first}); the chain cannot go on")
-    log.info("chain: Stage 1 best rows: Standard %s, Our method %s", first["original"], first["framework"])
-    used: dict[tuple[str, str], tuple[Method, Any, float | None]] = {}
-    s2 = keep("stage_2", run_stage(ctx, 2, st.stage2_methods, candidate, stage0_dir, after=first, used=used,
-                                   **kwargs))
-    if not st.stage3_methods:
-        return out
-    level = lambda name: next(lv for (n, _), (_, _, lv) in used.items() if n == name)  # noqa: E731
-    second = {v: best_rows(s2["json"], v, lambda n: v == "original" or n.endswith("_same_size"), level)
-              for v in ("original", "framework")}
-    if missing := set(second["original"]) ^ set(second["framework"]):
-        log.warning("chain: no finished Stage 2 row on one side at share(s) %s; Stage 3 skips them", sorted(missing))
-    for lv in sorted(set(second["original"]) & set(second["framework"]), key=lambda x: -1 if x is None else x):
-        # named after the chosen row (e.g. "..._same_size"), so the report says which Stage 2 row it was built on
-        before = {v: (replace(used[(second[v][lv], v)][0], name=second[v][lv]), used[(second[v][lv], v)][1])
-                  for v in ("original", "framework")}
-        log.info("chain: Stage 3 at share %s on Standard %s, Our method %s", lv, second["original"][lv],
-                 second["framework"][lv])
-        sub = "stage_3_chain" if lv is None else f"stage_3_after_{level_tag(lv)}"
-        keep(sub, run_stage(ctx, 3, st.stage3_methods, candidate, stage0_dir, before=before, subdir=sub, **kwargs))
+    stage1 = run("stage_1", 1, st.stage1_methods)
+    for variant, side in (("original", "standard"), ("framework", "ours")):
+        first = trade_off_rows([r for r in stage1 if r["variant"] == variant and WITH in r["method"]])
+        if not first:
+            raise RuntimeError(f"Stage 1 has no finished WxAy {side} row (STAGE1_METHODS needs <weights>_with_<acts>); "
+                               "the chain cannot go on")
+        log.info("chain: %s Stage 1 rows going on: %s", side, [r["method"] for r in first])
+        second: list[tuple[str, dict[str, Any], tuple[Method, Any]]] = []  # (Stage 1 row, Stage 2 row, built as)
+        for r1 in first:
+            used: dict[tuple[str, str], tuple[Method, Any, float | None]] = {}
+            sub = f"stage_2_{side}_after_{r1['method']}"
+            for r2 in run(sub, 2, st.stage2_methods, after={variant: r1["method"]}, only=variant, used=used, subdir=sub):
+                if r2["variant"] == variant and r2["status"] == "ok":  # failed rows are never picked
+                    m, plan, _ = used[(r2["method"], variant)]
+                    second.append((r1["method"], r2, (replace(m, name=r2["method"]), plan)))
+        if not st.stage3_methods:
+            continue
+        line = trade_off_rows([r2 for _, r2, _ in second])
+        log.info("chain: %s Stage 2 rows going on: %s", side,
+                 [f"{a}/{r2['method']}" for a, r2, _ in second if r2 in line])
+        for r1_name, r2, built in second:
+            if r2 in line:
+                sub = f"stage_3_{side}_after_{r1_name}_{r2['method']}"
+                run(sub, 3, st.stage3_methods, before={variant: built}, only=variant, subdir=sub)
     return out

@@ -8,8 +8,7 @@ import pytest
 from sdf.run import start_run
 from sdf.search_space import SEARCH_SPACE
 from sdf.stage0.run import run_stage0
-from sdf.stages.methods import METHODS
-from sdf.stages.runner import best_rows, run_chain, run_stage
+from sdf.stages.runner import Stage0Plans, run_chain, run_stage, trade_off_rows
 from conftest import fake_texts
 
 
@@ -83,59 +82,89 @@ def test_after_and_before_belong_to_their_stage(stage0_dir, small_cfg):
         run_stage(start_run(small_cfg), 3, ["rtn_kv"], {}, stage0_dir, after={"original": "rtn", "framework": "rtn"})
 
 
-def test_best_rows_pick_the_lowest_validation_perplexity_per_level(tmp_path):
-    rows = [{"method": n, "variant": v, "status": st, "metrics": {"ppl_val": p, "ppl_heldout": 1.0}}
-            for n, v, st, p in [("a_030", "original", "ok", 12.0), ("b_030", "original", "ok", 11.0),
-                                ("c_030", "original", "failed", 1.0), ("d_030", "original", "ok", float("nan")),
-                                ("a_090", "original", "ok", 30.0), ("b_090", "framework", "ok", 5.0),
-                                ("e_090", "original", "ok", 2.0)]]
-    f = tmp_path / "results.json"
-    f.write_text(json.dumps({"rows": rows}))
-    level = lambda n: int(n[-3:]) / 100  # noqa: E731
-    assert best_rows(f, "original", lambda n: not n.startswith("e"), level) == {0.3: "b_030", 0.9: "a_090"}
-    assert best_rows(f, "framework", lambda n: True, level) == {0.9: "b_090"}
-    assert best_rows(f, "original", lambda n: False) == {}
+def test_trade_off_rows_keep_every_row_no_other_beats_on_memory_and_perplexity():
+    def row(name, mem, ppl, status="ok", variant="original"):
+        return {"method": name, "variant": variant, "status": status,
+                "metrics": {"predicted_weight_memory_gb": mem, "ppl_val": ppl, "ppl_heldout": 0.0}}
+    rows = [row("small", 0.5, 20.0), row("mid", 0.7, 12.0), row("big", 1.0, 10.5),
+            row("worse", 0.8, 13.0),  # mid is smaller and better
+            row("tie", 0.7, 12.0),  # the same point as mid: both stay
+            row("broken", 0.1, float("nan")), row("failed", 0.1, 1.0, "failed")]
+    assert [r["method"] for r in trade_off_rows(rows)] == ["small", "mid", "big", "tie"]
+    assert trade_off_rows([]) == []
 
 
-def test_run_chain_feeds_each_stage_the_best_row_of_the_one_before(tiny_llama, tokenizer, small_cfg):
-    cfg = small_cfg.with_overrides({"stage0.pruning_levels": [0.3, 0.5], "stage0.joint_plan": False,
-                                    "stages.stage1_methods": ["rtn", "gptq", "rtn_act"],
-                                    "stages.stage2_methods": ["unstructured_prune", "structured_prune", "low_rank"],
-                                    "stages.stage3_methods": ["rtn_kv", "h2o"]})
+def test_run_chain_follows_each_side_along_its_trade_off_line(tiny_llama, tokenizer, small_cfg):
+    cfg = small_cfg.with_overrides({"stage0.pruning_levels": [0.3, 0.5],
+                                    "stages.stage1_methods": ["rtn", "rtn_with_rtn_act", "gptq_with_rtn_act"],
+                                    "stages.stage2_methods": ["unstructured_prune", "low_rank"],
+                                    "stages.stage3_methods": ["rtn_kv"]})
     ctx = start_run(cfg)
     cand = SEARCH_SPACE.make({"calib_samples": 16})
     kw = dict(model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
     run_stage0(ctx, cand, model=copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
     out = run_chain(ctx, cand, ctx.run_dir / "stage_0", **kw)
 
-    s1 = _rows({"json": out["stage_1_json"]})
-    s2 = json.loads(out["stage_2_json"].read_text())
-    for v, label in (("original", "Standard"), ("framework", "Our method")):
-        # the best weight row by validation perplexity (rtn_act, activations only, cannot be picked)
-        best = min(("rtn", "gptq"), key=lambda n: s1[f"{n}/{v}"]["metrics"]["ppl_val"])
-        assert f"({METHODS[best].label})" in s2["conditions"]["starting point"].split(";")[0 if v == "original" else 1]
-    # low-rank cannot follow Stage 1: its rows fail and say so, they are never picked
-    s2rows = {f"{r['method']}/{r['variant']}": r for r in s2["rows"]}
-    assert s2rows["low_rank_030/original"]["status"] == "failed"
-    for tag in ("030", "050"):
-        s3 = json.loads(out[f"stage_3_after_{tag}_json"].read_text())
-        rows = {f"{r['method']}/{r['variant']}": r for r in s3["rows"]}
-        # the lowest validation perplexity at this share, on each side (Our method: a same-amount row)
-        for v, suffix in (("original", ""), ("framework", "_same_size")):
-            names = [f"{p}_{tag}{suffix}" for p in ("unstructured_prune", "structured_prune")]
-            best = min(names, key=lambda n: s2rows[f"{n}/{v}"]["metrics"]["ppl_val"])
-            assert rows[f"rtn_kv/{v}"]["info"]["built_on"] == best
-        # Our method goes on with the same amount removed as Standard
-        assert rows["h2o/framework"]["metrics"]["decoder_weights_removed"] == pytest.approx(
-            rows["h2o/original"]["metrics"]["decoder_weights_removed"], abs=0.02)
-        assert rows["h2o/framework"]["status"] == "ok"
-    assert set(out) >= {f"stage_3_after_{t}_report" for t in ("030", "050")}
+    s1 = json.loads(out["stage_1_json"].read_text())["rows"]
+    stage2 = {k.removesuffix("_json"): json.loads(p.read_text()) for k, p in out.items()
+              if k.startswith("stage_2_") and k.endswith("_json")}
+    stage3 = {k.removesuffix("_json"): json.loads(p.read_text()) for k, p in out.items()
+              if k.startswith("stage_3_") and k.endswith("_json")}
+    for variant, side in (("original", "standard"), ("framework", "ours")):
+        # Stage 1: exactly the WxAy rows on the line go on (rtn, weights only, never does)
+        wxay = [r for r in s1 if r["variant"] == variant and "_with_" in r["method"]]
+        expected = {f"stage_2_{side}_after_{r['method']}" for r in trade_off_rows(wxay)}
+        assert {k for k in stage2 if k.startswith(f"stage_2_{side}_")} == expected and expected
+        for k in expected:
+            rows = stage2[k]["rows"]
+            assert {r["variant"] for r in rows} == {"fp16", variant}  # only this side's rows
+            assert next(r for r in rows if r["method"] == "low_rank_030")["status"] == "failed"
+        # Stage 2: the rows on the line of all of this side's Stage 2 rows go on, one Stage 3 report each
+        all2 = [(k, r) for k in expected for r in stage2[k]["rows"] if r["variant"] == variant]
+        line = trade_off_rows([r for _, r in all2])
+        assert {k for k in stage3 if k.startswith(f"stage_3_{side}_")} == {
+            f"stage_3_{side}_after_{k.removeprefix(f'stage_2_{side}_after_')}_{r['method']}"
+            for k, r in all2 if r in line}
+        for k, rep in stage3.items():
+            if k.startswith(f"stage_3_{side}_"):
+                r3 = next(r for r in rep["rows"] if r["method"] == "rtn_kv")
+                assert r3["variant"] == variant and r3["status"] == "ok", r3.get("error")
+                assert k.endswith(r3["info"]["built_on"]) and r3["metrics"]["avg_activation_bits"] < 16
 
 
-def test_run_chain_needs_a_weight_row_and_stage3_needs_before_only_there(stage0_dir, tiny_llama, tokenizer, small_cfg):
-    cfg = small_cfg.with_overrides({"stages.stage1_methods": ["rtn_act"]})
-    with pytest.raises(RuntimeError, match="no finished weight row"):
+def test_run_chain_needs_a_wxay_row_and_stage3_needs_before_only_there(stage0_dir, tiny_llama, tokenizer, small_cfg):
+    cfg = small_cfg.with_overrides({"stages.stage1_methods": ["rtn", "rtn_act"]})
+    with pytest.raises(RuntimeError, match="no finished WxAy"):
         run_chain(start_run(cfg), SEARCH_SPACE.make({"calib_samples": 16}), stage0_dir,
                   model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
     with pytest.raises(ValueError, match="before= for Stage 3"):
         run_stage(start_run(small_cfg), 2, ["unstructured_prune"], {}, stage0_dir, before={"original": None})
+
+
+@pytest.mark.parametrize("ours", ["gptq_with_rtn_act", "gptq_with_rtn_act_joint"])
+def test_stage2_after_a_wxay_row_keeps_its_activation_bits(stage0_dir, tiny_llama, tokenizer, small_cfg, ours):
+    kw = dict(model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
+    used = {}
+    out = run_stage(start_run(small_cfg), 2, ["unstructured_prune", "low_rank"], SEARCH_SPACE.make({"calib_samples": 16}),
+                    stage0_dir, after={"original": "rtn_with_rtn_act_w8a8", "framework": ours}, used=used, **kw)
+    rows = _rows(out)
+    for k in ("unstructured_prune/original", "unstructured_prune/framework", "unstructured_prune_same_size/framework"):
+        assert rows[k]["status"] == "ok", rows[k].get("error")
+        assert rows[k]["metrics"]["avg_activation_bits"] < 16 and rows[k]["metrics"]["decoder_weights_removed"] > 0
+    assert rows["low_rank/original"]["status"] == "failed"  # still cannot follow Stage 1
+    std, std_plan, _ = used[("unstructured_prune", "original")]
+    assert {lp.bit_width for lp in std_plan.weights.layers} == {8} and std_plan.acts.avg_bits == 8  # W8A8 standard
+    _, plan, _ = used[("unstructured_prune_same_size", "framework")]
+    s0 = Stage0Plans.load(stage0_dir)
+    acts = s0.plans["joint_acts" if ours.endswith("_joint") else "activations"]
+    weights = s0.plans["joint_weights" if ours.endswith("_joint") else "quant"]
+    assert plan.acts == acts and [lp.bit_width for lp in plan.weights.layers] == [lp.bit_width for lp in weights.layers]
+    assert "after GPTQ + round-to-nearest activations" in rows["unstructured_prune/framework"]["info"]["description"]
+
+    # Stage 3 on such a row: the activations stay rounded under the KV method
+    before = {v: used[(n, v)][:2] for n, v in (("unstructured_prune", "original"),
+                                                ("unstructured_prune_same_size", "framework"))}
+    s3 = _rows(run_stage(start_run(small_cfg), 3, ["rtn_kv"], SEARCH_SPACE.make({"calib_samples": 16}), stage0_dir,
+                         before=before, subdir="stage_3_chain", **kw))
+    for v in ("original", "framework"):
+        assert s3[f"rtn_kv/{v}"]["status"] == "ok" and s3[f"rtn_kv/{v}"]["metrics"]["avg_activation_bits"] < 16
