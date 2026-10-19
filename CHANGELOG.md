@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-19: Sequential run of Stages 0 -> 1 -> 2 -> 3 -> 4 (MODE = "chain")
+
+Mohammad's ask: "start a thread that will run stages 0 1 2 3 4 sequentially", then "1. best 2. best 3. yes we should
+compare standard vs our framework".
+
+- `run_chain` (`src/sdf/stages/runner.py`, `MODE = "chain"` in main.py): Stage 1 runs `STAGE1_METHODS`; the
+  weight row with the lowest validation perplexity on each side (Standard, Our method) is pruned by every
+  `STAGE2_METHODS` method; at each pruning share the best Stage 2 row of each side (Our method: its "same amount
+  removed" row) gets every `STAGE3_METHODS` method, one report per share in `stage_3_after_<share>/`. Standard
+  always follows Standard and Our method follows Our method. Held-out perplexity is never used to choose.
+- `run_stage(after=...)`: Stage 2 rows after a different Stage 1 method for each side, keeping the pruning
+  method's name so the two sides are compared. `run_stage(before=...)`: Stage 3 rows built on a Stage 2 row, whose
+  predicted weight size and share removed are shown with the KV columns. Both join the cache key.
+- Activation-only and W8A8 Stage 1 rows are not picked (only weight rows can be pruned after); low-rank still cannot
+  follow Stage 1, so its chained rows fail and say so.
+
 ## 2026-10-18: Stage 3 KV-cache techniques
 
 Mohammad's asks in the KV cache (Stage 3) thread: all five techniques, rounding and forgetting, HF and backends,

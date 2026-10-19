@@ -13,6 +13,8 @@ MODE = "single"  # "single": one Stage 0 run with the settings in section 2
 #                  "prune_sweep": really prune at every level in section 6 and measure the error (standard vs framework, and the fair same-size test)
 #                  "threshold_sweep": build and measure the plan at every protection threshold and guard size in section 6
 #                  "stages": Stages 1-3 with the methods in section 7, on top of a Stage 0 plan
+#                  "chain": Stages 0 -> 1 -> 2 -> 3 -> 4 in a row: each stage's best row (lowest validation perplexity;
+#                           Standard and Our method each their own) goes into the next stage; methods from section 7
 
 MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 OUTPUT_ROOT = "thesis_compression/results"  # local folder, relative to where you run; results/<run_id>/stage_0/
@@ -232,8 +234,20 @@ def main():
         from sdf.reporting.master import write_master
 
         outputs.update(write_master(ctx.run_dir))
+    elif MODE == "chain":
+        from sdf.stage0.run import run_stage0
+        from sdf.stages.runner import run_chain
+
+        ctx = start_run(cfg)
+        outputs = {}
+        stage0_dir = cfg.stages.stage0_dir
+        if stage0_dir is None:
+            outputs = run_stage0(ctx, candidate, measure_fp16=MEASURE_FP16).outputs
+            stage0_dir = outputs["report"].parent
+        outputs.update(run_chain(ctx, candidate, stage0_dir, measure_fp16=MEASURE_FP16))
     else:
-        raise SystemExit(f"MODE must be 'single', 'sweep', 'compare_scores', 'prune_sweep', 'threshold_sweep' or 'stages', not {MODE!r}")
+        raise SystemExit("MODE must be 'single', 'sweep', 'compare_scores', 'prune_sweep', 'threshold_sweep', 'stages' "
+                         f"or 'chain', not {MODE!r}")
     for name, path in outputs.items():
         print(f"{name}: {path}")
 
