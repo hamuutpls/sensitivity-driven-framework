@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-19: Settings search under a memory limit (MODE = "search")
+
+Mohammad's asks: "make the framework dynamic and find the best settings that satisfy perplexity, memory, and
+latency"; then memory = model size below 1 GB, latency from vLLM on Colab, 50 tries per searcher, the project's
+search-space list plus a technique for each stage.
+
+- `src/sdf/search.py`: a point is the SEARCH_SPACE hyperparameters plus a Stage 1 WxAy technique (separate or joint
+  Stage 0 plan), a Stage 2 pruning technique (at the plan's prune_ratio_aggressive) and a Stage 3 KV technique.
+  `evaluate` builds the chained Our method model 0 -> 1 -> 2 -> 3 and measures it (cached per point).
+- Searchers, same budget and seed: MOBO (Optuna GPSampler, the requirement as a constraint), MFBO (successive halving
+  over the evaluation windows) and NSGA-III (pymoo). `pip install .[search]`.
+- Stage 3 rows built on a Stage 2 row now send that Stage 2 model to the backends (they cannot run the KV techniques),
+  so a search point gets vLLM latency; the row says so.
+- Outputs in `<run>/search/`: search_report.md, search_results.xlsx (Trials, Pareto, Searcher comparison, Best
+  configs), trade-off plots and hypervolume per searcher. Settings in main.py section 8.
+
 ## 2026-10-19: Sequential run of Stages 0 -> 1 -> 2 -> 3 -> 4 (MODE = "chain")
 
 Mohammad's ask: "start a thread that will run stages 0 1 2 3 4 sequentially", then "1. best 2. best 3. yes we should

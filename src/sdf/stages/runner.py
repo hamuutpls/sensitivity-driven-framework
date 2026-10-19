@@ -396,9 +396,44 @@ def run_stage(
     def not_on_backends(method: Method) -> dict[str, str]:
         """Why a Stage 3 row has no backend numbers; set on the row, not in the cached result (the reason
         depends on which backends this run has, which a KV row's cache key does not hold)."""
-        if kind_of(method) != "kv":
+        if kind_of(method) != "kv" or before:  # a chained row's backends measured its Stage 2 model
             return {}
         return {f"{name}_error": _KV_NOT_ON_BACKENDS for name in ["llamacpp"] * use_llamacpp + list(serving)}
+
+    def on_backends(model: nn.Module, method: Method, plan: Any, metrics: dict[str, Any], info: dict[str, str],
+                    val: torch.Tensor, held: torch.Tensor) -> None:
+        """llama.cpp and the serving backends on `model` (built with `method` and `plan`), into metrics and info."""
+        joint = isinstance(plan, JointPlan)
+        weights, acts = (plan.weights, plan.acts) if joint else (plan, None)
+        rotated = has_online_rotation(model)  # QuaRot/SpinQuant: no saved file can hold the rotation
+        if lc_on(method):
+            if rotated:
+                info["llamacpp_error"] = _ROTATED
+            else:  # a row keeps its HF numbers if llama.cpp fails, as with vLLM (Mohammad, 2026-10-13)
+                try:
+                    metrics.update(llamacpp.measure(model, handle.tokenizer, weights, val, held, cfg.eval,
+                                                    s0.baseline_bits))
+                    if joint:
+                        info["llamacpp_activations"] = _WEIGHTS_ONLY
+                except Exception as e:  # noqa: BLE001 - a missing program or file too, not only a failed run
+                    log.warning("llama.cpp could not measure %s: %s", method.name, e)
+                    info["llamacpp_error"] = str(e)
+        for name, (mod, err, _) in serving.items() if be_on(method) else ():
+            if rotated:
+                info[f"{name}_error"] = _ROTATED
+                continue
+            extra_args = ({"acts": acts, "act_group_size": cfg.stage0.act_group_size}
+                          if joint and getattr(mod, "ACTIVATIONS", False) else {})
+            try:
+                metrics.update(mod.measure(model, handle.tokenizer, weights, val, held, cfg.eval,
+                                           s0.baseline_bits, candidate["gptq_groupsize"], **extra_args))
+            except err as e:  # a plan the backend cannot load (e.g. 3-bit GPTQ in vLLM): keep the row,
+                log.warning("%s could not measure %s: %s", name, method.name, e)  # record why
+                info[f"{name}_error"] = str(e)
+                continue
+            if joint:
+                info[f"{name}_activations"] = (_rounded_by_backend(name, method, cfg.stage0.act_group_size)
+                                               if extra_args else _WEIGHTS_ONLY)
 
     def build_and_measure(method: Method, plan: Any, variant: str) -> dict[str, Any]:
         model = model_factory()
@@ -406,9 +441,13 @@ def run_stage(
         try:
             t0 = time.perf_counter()  # a chained row's build time includes the earlier stage's build
             with ExitStack() as stack:
+                prior: dict[str, Any] = {}
                 if before:
                     first, first_plan = before[variant]
                     stack.enter_context(first.apply(MethodCall(model, first_plan, candidate, cfg, batches)))
+                    if lc_on(first) or be_on(first):  # the backends cannot run the KV technique: they measure the
+                        on_backends(model, first, first_plan, prior, info, *windows())  # model it was built on
+                        info["backends"] = _BACKENDS_BEFORE
                 extra = stack.enter_context(method.apply(MethodCall(model, plan, candidate, cfg, batches)))
                 build_s = time.perf_counter() - t0
                 val, held = windows()
@@ -416,37 +455,8 @@ def run_stage(
                 metrics.update(tasks(model))
                 if kind_of(method) in ("weights", "joint"):
                     metrics["zero_weight_share"] = zero_weight_share(model)
-                joint = isinstance(plan, JointPlan)
-                weights, acts = (plan.weights, plan.acts) if joint else (plan, None)
-                rotated = has_online_rotation(model)  # QuaRot/SpinQuant: no saved file can hold the rotation
-                if lc_on(method):
-                    if rotated:
-                        info["llamacpp_error"] = _ROTATED
-                    else:  # a row keeps its HF numbers if llama.cpp fails, as with vLLM (Mohammad, 2026-10-13)
-                        try:
-                            metrics.update(llamacpp.measure(model, handle.tokenizer, weights, val, held, cfg.eval,
-                                                            s0.baseline_bits))
-                            if joint:
-                                info["llamacpp_activations"] = _WEIGHTS_ONLY
-                        except Exception as e:  # noqa: BLE001 - a missing program or file too, not only a failed run
-                            log.warning("llama.cpp could not measure %s: %s", method.name, e)
-                            info["llamacpp_error"] = str(e)
-                for name, (mod, err, _) in serving.items() if be_on(method) else ():
-                    if rotated:
-                        info[f"{name}_error"] = _ROTATED
-                        continue
-                    extra_args = ({"acts": acts, "act_group_size": cfg.stage0.act_group_size}
-                                  if joint and getattr(mod, "ACTIVATIONS", False) else {})
-                    try:
-                        metrics.update(mod.measure(model, handle.tokenizer, weights, val, held, cfg.eval,
-                                                   s0.baseline_bits, candidate["gptq_groupsize"], **extra_args))
-                    except err as e:  # a plan the backend cannot load (e.g. 3-bit GPTQ in vLLM): keep the row,
-                        log.warning("%s could not measure %s: %s", name, method.name, e)  # record why
-                        info[f"{name}_error"] = str(e)
-                        continue
-                    if joint:
-                        info[f"{name}_activations"] = (_rounded_by_backend(name, method, cfg.stage0.act_group_size)
-                                                       if extra_args else _WEIGHTS_ONLY)
+                on_backends(model, method, plan, metrics, info, val, held)
+                metrics.update(prior)
         finally:
             del model
             _free_memory()
@@ -535,6 +545,9 @@ def run_stage(
                     key["after"] = after["original"]
                 if before:
                     first, first_plan = before["original"]
+                    if lc_on(first) or be_on(first):  # the backends measure the Stage 2 model under the KV row
+                        key["before_backends"] = {"llamacpp": lc_key if lc_on(first) else None,
+                                                  **({n: k for n, (_, _, k) in serving.items()} if be_on(first) else {})}
                     key["before"] = {"method": first.name, "label": first.label,  # the label names the Stage 1 method
                                      "version": first.version, "plan": first_plan.to_dict(),
                                      "params": {p: candidate[p] for p in first.params},
@@ -673,6 +686,8 @@ _ROTATED = ("not measured: the model rotates inputs while it runs (QuaRot/SpinQu
 _KV_NOT_ON_BACKENDS = ("not run: this backend cannot forget words or give each layer its own key/value bits, and does not "
                        "round keys and values this technique's way; backends run only rows they can run exactly "
                        "(Mohammad, 2026-10-18)")
+_BACKENDS_BEFORE = ("the backend columns are the Stage 2 model this row was built on: the backends cannot run the "
+                    "KV technique, so they measured the model before it")
 _WEIGHTS_ONLY = ("16-bit: no kernel for the plan's activation bits here, so the weights run at the plan's bits and "
                  "the activations are not rounded")
 
