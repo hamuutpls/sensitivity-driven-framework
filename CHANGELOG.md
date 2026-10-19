@@ -18,6 +18,18 @@ on Colab; then "do what you recommend" for the four build details.
 - `transformers>=4.56` (Stage 3's attention function needs `AttentionInterface` and `masking_utils`).
 - Backends run only the uncompressed row in Stage 3; every Stage 3 row records why it is not run there.
 
+## 2026-10-18: Stage 2 records the share of the decoder layers' weights removed
+
+Mohammad's answer in the Stage 2 pruning thread ("yes", then "both your picks": a new column, the old one kept).
+
+- Every Stage 2 row has a new metric, `decoder_weights_removed`: the share of the decoder layers' Linear weights the
+  row's plan prunes (0.3 for a row that removes 30%). It matches the share in the row label and is listed in the
+  Stage 2 results, report and spreadsheet next to `sparsity`. The uncompressed row has 0.
+- `sparsity` is unchanged: it still divides by all of the model's parameters, including the embeddings, output head
+  and norms that are never pruned, so it reads lower (about 0.264 for 30% in TinyLlama). Stage 0 and Stages 1 and 3
+  are unchanged.
+- New `planner.decoder_share_removed(plan, layer_numel)`, also used for the row label.
+
 ## 2026-10-13: Stage 2 share sweep
 
 Mohammad's asks in the Stage 2 pruning thread ("do a sweep i dont want only 30%", "4", and the answers after).
