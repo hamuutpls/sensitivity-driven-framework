@@ -8,6 +8,7 @@ import pytest
 from sdf.run import start_run
 from sdf.search_space import SEARCH_SPACE
 from sdf.stage0.run import run_stage0
+from sdf.stages.methods import METHODS
 from sdf.stages.runner import best_rows, run_chain, run_stage
 from conftest import fake_texts
 
@@ -39,7 +40,7 @@ def test_stage2_after_a_different_stage1_method_per_side(stage0_dir, tiny_llama,
     for k in ("unstructured_prune/framework", "unstructured_prune_same_size/framework"):
         assert "after GPTQ" in rows[k]["info"]["description"]
         assert "vs_original_abs" in rows[k]["deltas"]["ppl_val"]
-    assert "rtn" in json.loads(out["json"].read_text())["conditions"]["starting point"]
+    assert "(Round-to-nearest)" in json.loads(out["json"].read_text())["conditions"]["starting point"]
     m, plan, level = used[("unstructured_prune_same_size", "framework")]
     assert m.name == "unstructured_prune" and "GPTQ" in m.label and level is None
     assert min(lp.bit_width for lp in plan.layers) < 16 and max(lp.pruning_ratio for lp in plan.layers) > 0
@@ -99,7 +100,7 @@ def test_best_rows_pick_the_lowest_validation_perplexity_per_level(tmp_path):
 def test_run_chain_feeds_each_stage_the_best_row_of_the_one_before(tiny_llama, tokenizer, small_cfg):
     cfg = small_cfg.with_overrides({"stage0.pruning_levels": [0.3, 0.5], "stage0.joint_plan": False,
                                     "stages.stage1_methods": ["rtn", "gptq", "rtn_act"],
-                                    "stages.stage2_methods": ["unstructured_prune", "low_rank"],
+                                    "stages.stage2_methods": ["unstructured_prune", "structured_prune", "low_rank"],
                                     "stages.stage3_methods": ["rtn_kv", "h2o"]})
     ctx = start_run(cfg)
     cand = SEARCH_SPACE.make({"calib_samples": 16})
@@ -112,16 +113,29 @@ def test_run_chain_feeds_each_stage_the_best_row_of_the_one_before(tiny_llama, t
     for v, label in (("original", "Standard"), ("framework", "Our method")):
         # the best weight row by validation perplexity (rtn_act, activations only, cannot be picked)
         best = min(("rtn", "gptq"), key=lambda n: s1[f"{n}/{v}"]["metrics"]["ppl_val"])
-        assert f"({best})" in s2["conditions"]["starting point"].split(";")[0 if v == "original" else 1]
+        assert f"({METHODS[best].label})" in s2["conditions"]["starting point"].split(";")[0 if v == "original" else 1]
     # low-rank cannot follow Stage 1: its rows fail and say so, they are never picked
     s2rows = {f"{r['method']}/{r['variant']}": r for r in s2["rows"]}
     assert s2rows["low_rank_030/original"]["status"] == "failed"
     for tag in ("030", "050"):
         s3 = json.loads(out[f"stage_3_after_{tag}_json"].read_text())
         rows = {f"{r['method']}/{r['variant']}": r for r in s3["rows"]}
-        assert rows["rtn_kv/original"]["info"]["built_on"] == f"unstructured_prune_{tag}"
+        # the lowest validation perplexity at this share, on each side (Our method: a same-amount row)
+        for v, suffix in (("original", ""), ("framework", "_same_size")):
+            names = [f"{p}_{tag}{suffix}" for p in ("unstructured_prune", "structured_prune")]
+            best = min(names, key=lambda n: s2rows[f"{n}/{v}"]["metrics"]["ppl_val"])
+            assert rows[f"rtn_kv/{v}"]["info"]["built_on"] == best
         # Our method goes on with the same amount removed as Standard
         assert rows["h2o/framework"]["metrics"]["decoder_weights_removed"] == pytest.approx(
             rows["h2o/original"]["metrics"]["decoder_weights_removed"], abs=0.02)
         assert rows["h2o/framework"]["status"] == "ok"
     assert set(out) >= {f"stage_3_after_{t}_report" for t in ("030", "050")}
+
+
+def test_run_chain_needs_a_weight_row_and_stage3_needs_before_only_there(stage0_dir, tiny_llama, tokenizer, small_cfg):
+    cfg = small_cfg.with_overrides({"stages.stage1_methods": ["rtn_act"]})
+    with pytest.raises(RuntimeError, match="no finished weight row"):
+        run_chain(start_run(cfg), SEARCH_SPACE.make({"calib_samples": 16}), stage0_dir,
+                  model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
+    with pytest.raises(ValueError, match="before= for Stage 3"):
+        run_stage(start_run(small_cfg), 2, ["unstructured_prune"], {}, stage0_dir, before={"original": None})

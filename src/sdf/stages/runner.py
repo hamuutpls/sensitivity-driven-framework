@@ -326,11 +326,12 @@ def run_stage(
     calib = (f"{candidate['calib_dataset']}, {candidate['calib_samples']} x {cfg.calibration.seq_len} tokens")
     start = "the uncompressed model, for every row (stages are independent)"
     if after:
-        start = (f"Standard rows: the best Standard Stage 1 row ({after['original']}); Our method rows: the best Our "
-                 f"method Stage 1 row ({after['framework']}); each then pruned")
+        start = (f"Standard rows: the best Standard Stage 1 row ({METHODS[after['original']].label}); Our method "
+                 f"rows: the best Our method Stage 1 row ({METHODS[after['framework']].label}); each then pruned")
     if before:
-        start = (f"Standard rows: the Stage 2 row {before['original'][0].name} (Standard); Our method rows: the "
-                 f"Stage 2 row {before['framework'][0].name} (Our method); each then given this stage's method")
+        start = (f"Standard rows: the Stage 2 row {before['original'][0].name} ({before['original'][0].label}, "
+                 f"Standard); Our method rows: the Stage 2 row {before['framework'][0].name} "
+                 f"({before['framework'][0].label}, Our method); each then given this stage's method")
     rep = stage_reporter(
         ctx, candidate, handle, plans.profile, ("stages", "stage0", "calibration", "eval", "model", "run"),
         stage=stage, title=TITLES[stage], subdir=subdir,
@@ -432,7 +433,7 @@ def run_stage(
             _free_memory()
         metrics.update(extra)
         metrics["build_time_s"] = build_s
-        if method.simulated and stage in (1, 2):
+        if (method.simulated and stage in (1, 2)) or (before and before[variant][0].simulated):
             metrics.pop("model_size_gb", None)  # still FP16 in memory; predicted_weight_memory_gb is the size
         return {"metrics": metrics, "raw": raw, "info": info}
 
@@ -490,7 +491,7 @@ def run_stage(
         return [(row, theirs) for row, (theirs, _, _) in zip(sweep(std, all_plans), sweep(ours, all_plans))]
 
     for (m, plans, level), mf in (row for method in methods for row in pair(method)):
-        simulated_any |= m.simulated
+        simulated_any |= m.simulated or mf.simulated
         orig = original_plan(m, plans, s0, candidate["prune_ratio_aggressive"] if level is None else level,
                              candidate.get("quarot_k_bits"))
         with rep.method(m.name, "original", description=f"{m.label}, standard settings: {_describe(orig)}",
@@ -513,8 +514,10 @@ def run_stage(
                 key["after"] = after["original"]
             if before:
                 first, first_plan = before["original"]
-                key["before"] = {"method": first.name, "version": first.version, "plan": first_plan.to_dict(),
-                                 "params": {p: candidate[p] for p in first.params}}
+                key["before"] = {"method": first.name, "label": first.label,  # the label names the Stage 1 method
+                                 "version": first.version, "plan": first_plan.to_dict(),
+                                 "params": {p: candidate[p] for p in first.params},
+                                 "settings": _setting_key(kind_of(first), s0)}
             if settings := _setting_key(kind_of(m), s0):
                 key["settings"] = settings
             if m.calibrated or before and before["original"][0].calibrated:
@@ -684,7 +687,9 @@ def run_chain(ctx: RunContext, candidate: dict[str, Any], stage0_dir: str | Path
     Stage 1 runs cfg.stages.stage1_methods; the weight row with the lowest validation perplexity of each side
     (Standard, Our method) goes into Stage 2, which prunes it with cfg.stages.stage2_methods; at each pruning share
     the best row of each side (Our method: the "same amount removed" row) goes into Stage 3, which runs
-    cfg.stages.stage3_methods on it, one report per share in stage_3_after_<share>/."""
+    cfg.stages.stage3_methods on it, one report per share in stage_3_after_<share>/. Stage 4 (evaluation) runs
+    inside every row as in the other modes: Hugging Face always, the backends set in cfg.eval for Stage 1 and 2 rows;
+    Stage 3 rows run on Hugging Face only, as in the 0 -> 3 -> 4 path (backends cannot run the KV techniques)."""
     st = ctx.cfg.stages
     out: dict[str, Path] = {}
 
@@ -709,7 +714,9 @@ def run_chain(ctx: RunContext, candidate: dict[str, Any], stage0_dir: str | Path
     if missing := set(second["original"]) ^ set(second["framework"]):
         log.warning("chain: no finished Stage 2 row on one side at share(s) %s; Stage 3 skips them", sorted(missing))
     for lv in sorted(set(second["original"]) & set(second["framework"]), key=lambda x: -1 if x is None else x):
-        before = {v: used[(second[v][lv], v)][:2] for v in ("original", "framework")}
+        # named after the chosen row (e.g. "..._same_size"), so the report says which Stage 2 row it was built on
+        before = {v: (replace(used[(second[v][lv], v)][0], name=second[v][lv]), used[(second[v][lv], v)][1])
+                  for v in ("original", "framework")}
         log.info("chain: Stage 3 at share %s on Standard %s, Our method %s", lv, second["original"][lv],
                  second["framework"][lv])
         sub = "stage_3_chain" if lv is None else f"stage_3_after_{level_tag(lv)}"

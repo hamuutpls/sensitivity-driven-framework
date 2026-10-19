@@ -10,6 +10,8 @@ compare standard vs our framework".
   `STAGE2_METHODS` method; at each pruning share the best Stage 2 row of each side (Our method: its "same amount
   removed" row) gets every `STAGE3_METHODS` method, one report per share in `stage_3_after_<share>/`. Standard
   always follows Standard and Our method follows Our method. Held-out perplexity is never used to choose.
+- Stage 4 (evaluation) runs inside every row, as in the other modes: Hugging Face always, the backends for Stage 1
+  and 2 rows; Stage 3 rows run on Hugging Face only, as in 0 -> 3 -> 4.
 - `run_stage(after=...)`: Stage 2 rows after a different Stage 1 method for each side, keeping the pruning
   method's name so the two sides are compared. `run_stage(before=...)`: Stage 3 rows built on a Stage 2 row, whose
   predicted weight size and share removed are shown with the KV columns. Both join the cache key.
