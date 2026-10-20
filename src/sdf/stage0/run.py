@@ -697,11 +697,11 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
 
     # sanity checks
     if len(plan.protected_layers) == n:
-        rep.anomalies.append("Every layer is protected: the plan compresses nothing beyond 8-bit. "
-                             "Lower sensitive_threshold.")
+        rep.anomalies.append("Every layer is protected: the plan compresses nothing beyond "
+                             f"{rep.config['stage0']['protected_bits']}-bit. Lower sensitive_threshold.")
     elif not plan.protected_layers:
-        rep.anomalies.append("No layer is protected: the plan is uniform 4-bit plus pruning. "
-                             "Raise sensitive_threshold.")
+        rep.anomalies.append(f"No layer is protected: the plan is uniform {rep.config['stage0']['compressed_bits']}"
+                             "-bit plus pruning. Raise sensitive_threshold.")
     if len(set(profile.raw_scores)) == 1:
         rep.anomalies.append("All raw sensitivity scores are identical; the profile carries no signal.")
     if fw_cost.weight_memory_gb >= baseline_cost(profile, baseline_bits).weight_memory_gb:
@@ -722,6 +722,7 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
     s0 = rep.config["stage0"]
     hp = rep.config["hyperparams"]
     n, n_prot = len(plan.layers), len(plan.protected_layers)
+    rank, t = s0["normalization"] == "rank", hp["sensitive_threshold"]
     rep.plain_intro = (
         "Compressing a language model is like shrinking a photo: done carefully, you save a lot of space and "
         "barely notice the difference; done carelessly, the picture turns to mush. The catch is that not every "
@@ -731,14 +732,18 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         f"1. **Measure.** The model reads {hp['calib_samples']} short passages of ordinary text "
         f"({hp['calib_dataset']}) and tries to predict each next word. " + _MEASURE_PLAIN[profile.method]
         + f" This is done for each of the {n} layers.\n"
-        f"2. **Rank.** The {n} raw scores are put in order and turned into a 0-to-1 scale: the least "
-        "sensitive layer gets 0, the most sensitive gets 1, and the rest are spaced evenly between by their "
-        "position in the order. Using the order rather than the raw values stops one unusual layer from "
-        "squashing all the others together.\n"
-        f"3. **Choose.** Every layer at or above the threshold ({hp['sensitive_threshold']:.2f}) is "
-        f"**protected**; the rest are **compressed**. A threshold of {hp['sensitive_threshold']:.2f} "
-        f"protects roughly the most sensitive {1 - hp['sensitive_threshold']:.0%} of layers.\n"
-        f"4. **Allocate.** Protected layers keep {s0['protected_bits']} bits per number and lose nothing. "
+        + (f"2. **Rank.** The {n} raw scores are put in order and turned into a 0-to-1 scale: the least "
+           "sensitive layer gets 0, the most sensitive gets 1, and the rest are spaced evenly between by their "
+           "position in the order. Using the order rather than the raw values stops one unusual layer from "
+           "squashing all the others together.\n" if rank else
+           f"2. **Scale.** The {n} raw scores are turned into a 0-to-1 scale: the least sensitive layer gets 0, "
+           "the most sensitive gets 1, and the rest are placed in proportion to their raw scores, so one unusual "
+           "layer can squash all the others together.\n")
+        + f"3. **Choose.** Every layer at or above the threshold ({t:.2f}) is "
+        f"**protected**; the rest are **compressed**. "
+        + (f"A threshold of {t:.2f} protects roughly the most sensitive {1 - t:.0%} of layers.\n" if rank else
+           f"Here that protects {n_prot} of the {n} layers.\n")
+        + f"4. **Allocate.** Protected layers keep {s0['protected_bits']} bits per number and lose nothing. "
         f"Compressed layers get {s0['compressed_bits']} bits per number and have "
         f"{hp['prune_ratio_aggressive']:.0%} of their numbers removed.\n\n"
         "The idea being tested is simple: spend the memory where damage hurts most. Whether it works is "
@@ -754,8 +759,10 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         "Protected layer": f"A sensitive layer that the plan keeps at {s0['protected_bits']} bits and does not "
                            "trim.",
         "Pruning": "Deleting the numbers that matter least, like cutting unimportant words from an essay.",
-        "Threshold": f"The cut-off for protecting a layer. With {hp['sensitive_threshold']:.2f}, roughly the "
-                     f"most sensitive {1 - hp['sensitive_threshold']:.0%} of layers are protected.",
+        "Threshold": (f"The cut-off for protecting a layer. With {t:.2f}, roughly the most sensitive "
+                      f"{1 - t:.0%} of layers are protected." if rank else
+                      f"The cut-off for protecting a layer: layers at or above {t:.2f} on the 0-to-1 scale are "
+                      "protected."),
         "Calibration text": "A small sample of ordinary text used only to measure sensitivity. It is kept "
                             "separate from the text used to test accuracy.",
     })

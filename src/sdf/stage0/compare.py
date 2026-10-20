@@ -30,7 +30,6 @@ PLAIN_NAME = {
     "movement": "movement",
 }
 DIRECT = ("layer_removal", "layer_quant")  # measured damage, the yardsticks the estimates are checked against
-TOP_K = 5
 
 
 def compare_scores(ctx: RunContext, candidate: dict[str, Any], scores: tuple[str, ...] = SCORES, model=None,
@@ -53,14 +52,14 @@ def compare_scores(ctx: RunContext, candidate: dict[str, Any], scores: tuple[str
     protected = {s: protected_at(r, t) for s, r in ranks.items()}
     names = list(profiles)
     result = {
-        "candidate": candidate, "threshold": t, "scores": names,
+        "candidate": candidate, "threshold": t, "scores": names, "guard_top_k": cfg.stage0.guard_top_k,
         "agreement": {a: {b: _spearman(profiles[a].raw_scores, profiles[b].raw_scores) for b in names} for a in names},
         "overlap": {a: {b: len(protected[a] & protected[b]) for b in names} for a in names},
         "protected": {s: sorted(p) for s, p in protected.items()},
         "outliers": {s: outlier_layers(p.raw_scores) for s, p in profiles.items()},
         "time_s": {s: p.cost.get("wall_clock_s") for s, p in profiles.items()},
         "peak_memory_gb": {s: p.cost.get("peak_memory_gb") for s, p in profiles.items()},
-        "top": {s: sorted(range(p.num_layers), key=lambda i: p.raw_scores[i], reverse=True)[:TOP_K]
+        "top": {s: sorted(range(p.num_layers), key=lambda i: p.raw_scores[i], reverse=True)[:cfg.stage0.guard_top_k]
                 for s, p in profiles.items()},
         "failures": failures,
         "baseline_ppl": next((p.meta["baseline_ppl"] for p in profiles.values() if "baseline_ppl" in p.meta), None),
@@ -92,17 +91,17 @@ def _f(v: Any) -> str:
 
 def _report(res: dict[str, Any], cand: dict[str, Any]) -> str:
     names, t = res["scores"], res["threshold"]
-    n = len(res["per_layer"])
-    k = len(next(iter(res["protected"].values())))
+    n, k = len(res["per_layer"]), res["guard_top_k"]
     label = lambda s: PLAIN_NAME.get(s, s)  # noqa: E731
     L = ["# Stage 0: comparing ways to measure layer sensitivity", ""]
     pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1:]]
     L += ["## Summary", "",
           f"The same model and text ({cand['calib_dataset']}, {cand['calib_samples']} passages) were scored "
-          f"{len(names)} ways. At threshold {t} each way protects {k} of {n} layers. "
+          f"{len(names)} ways. At threshold {t} "
+          + ", ".join(f"*{label(s)}* protects {len(p)}" for s, p in res["protected"].items()) + f" of {n} layers. "
           + " ".join(f"*{label(a)}* and *{label(b)}* rank the layers with agreement "
-                     f"{res['agreement'][a][b]:.2f} (1 = same order) and pick {res['overlap'][a][b]} of the same "
-                     f"{k} layers to protect." for a, b in pairs), ""]
+                     f"{res['agreement'][a][b]:.2f} (1 = same order) and share {res['overlap'][a][b]} of their "
+                     "protected layers." for a, b in pairs), ""]
     direct = [d for d in DIRECT if d in names]
     if direct:
         guard = set(res["top"].get("layer_removal", []))
@@ -110,21 +109,21 @@ def _report(res: dict[str, Any], cand: dict[str, Any]) -> str:
               "The two ablation ways measure damage directly, so they are the yardsticks; the others are "
               "estimates from gradients and should rank the layers the same way to be trusted.", "",
               "| Way | " + " | ".join(f"Agreement with *{label(d)}*" for d in direct)
-              + f" | Top {TOP_K} layers | Same as never-pruned set | Time (s) | Peak GPU memory (GB) |",
+              + f" | Top {k} layers | Same as never-pruned set | Time (s) | Peak GPU memory (GB) |",
               "|---|" + "---|" * (len(direct) + 4)]
         for s in names:
             tm, pk = res["time_s"].get(s), res["peak_memory_gb"].get(s)
             L.append(f"| {label(s)} | " + " | ".join(f"{res['agreement'][s][d]:.2f}" for d in direct)
                      + f" | {', '.join(map(str, res['top'][s]))} | "
-                     + (f"{len(guard & set(res['top'][s]))} of {TOP_K}" if guard else "–")
+                     + (f"{len(guard & set(res['top'][s]))} of {k}" if guard else "–")
                      + " | " + (f"{tm:.1f}" if tm is not None else "–")
                      + " | " + (f"{pk:.2f}" if pk is not None else "–") + " |")
         L += ["", "**What each column means**", "",
               "- **Way**: how layer sensitivity was measured (see *The ways compared* below).",
               f"- **Agreement with ...**: how alike the two rankings of the {n} layers are (Spearman rank "
               "correlation): 1 = same order, 0 = no relation, negative = roughly opposite.",
-              f"- **Top {TOP_K} layers**: the {TOP_K} layers this way rates most sensitive, most sensitive first.",
-              f"- **Same as never-pruned set**: how many of those {TOP_K} are also among the {TOP_K} layers whose "
+              f"- **Top {k} layers**: the {k} layers this way rates most sensitive, most sensitive first.",
+              f"- **Same as never-pruned set**: how many of those {k} are also among the {k} layers whose "
               "removal hurts most (the layers no plan prunes).",
               "- **Time**: seconds to score every layer once. **Peak GPU memory**: the most graphics-card memory "
               "it needed.", ""]
