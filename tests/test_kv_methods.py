@@ -49,9 +49,10 @@ def test_group_mean_and_repeat_kv_shapes():
 def test_kv_methods_changed_since_their_first_cached_rows_have_a_new_version():
     from sdf.stages.methods import METHODS
     # rows cached at 439c84f / 90cd6a7 used the fixed-window budget, InfiniGen's look-ahead and SnapKV's pooling spill
-    assert {m: METHODS[m].version for m in ("quarot_kv", "kvquant", "h2o", "snapkv", "infinigen")} == \
-        dict.fromkeys(("quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"), 2)
+    assert {m: METHODS[m].version for m in ("quarot_kv", "kvquant", "snapkv", "infinigen")} == \
+        dict.fromkeys(("quarot_kv", "kvquant", "snapkv", "infinigen"), 2)
     assert METHODS["rtn_kv"].version == 1  # its standard row is unchanged
+    assert METHODS["h2o"].version == 3  # 2026-10-20: fixed cache; its standard row forgets, so it is redone
 
 
 def test_budgets_are_a_share_of_the_words_each_word_can_see():
@@ -60,20 +61,25 @@ def test_budgets_are_a_share_of_the_words_each_word_can_see():
     assert budgets(0.2, 512).tolist()[-1] == 103
 
 
-def _check_budgets(keep, r):
+def _check_budgets(keep, r, fixed=False):
     n = keep.shape[-1]
     assert not (keep & ~torch.ones(n, n, dtype=torch.bool).tril()).any()  # never a future word
     assert keep[..., torch.arange(n), torch.arange(n)].all()  # every word sees itself
-    assert torch.equal(keep.sum(-1), budgets(r, n).expand_as(keep.sum(-1)))
+    want = budgets(r, n)
+    if fixed:  # H2O: a cache of ceil(r * n) words, filled before anything is forgotten
+        want = (torch.arange(n) + 1).clamp(max=int(want[-1]))
+    assert torch.equal(keep.sum(-1), want.expand_as(keep.sum(-1)))
 
 
 @pytest.mark.parametrize("r", [0.3, 0.5])
 def test_h2o_keeps_its_share_with_the_recent_half(r):
     keep = h2o_keep(_scores(n=16), groups=2, keep_ratio=r)
     assert keep.shape == (1, 2, 16, 16)
-    _check_budgets(keep, r)
-    for i, b in enumerate(budgets(r, 16).tolist()):
-        assert keep[..., i, i - max(b // 2, 1) + 1:i + 1].all()  # the recent half is always kept
+    _check_budgets(keep, r, fixed=True)
+    size = int(budgets(r, 16)[-1])
+    assert keep[..., size - 1, :size].all()  # nothing is forgotten until the cache is full
+    for i in range(16):
+        assert keep[..., i, i - max(min(i + 1, size) // 2, 1) + 1:i + 1].all()  # the recent half is always kept
 
 
 def test_h2o_keeps_a_heavy_hitter():
@@ -162,7 +168,7 @@ def test_kv_attention_forward_matches_eager_and_masks_forgotten_words():
     assert torch.allclose(out, ref, atol=1e-6)
     out, probs = kv_attention_forward(_Attn(LayerKV(forget="h2o", keep_ratio=0.4)), q, k, v, mask, 0.3)
     assert torch.allclose(out[:, :1], ref[:, :1], atol=1e-6)  # the first word has nothing to forget
-    assert torch.equal((probs > 0).sum(-1), budgets(0.4, 10).expand(1, 4, 10))
+    assert torch.equal((probs > 0).sum(-1), (torch.arange(10) + 1).clamp(max=4).expand(1, 4, 10))  # cache of 4
     out, _ = kv_attention_forward(_Attn(LayerKV(rotate_key_bits=4, rotate_value_bits=4)), q, k, v, mask, 0.3)
     assert not torch.allclose(out, ref) and (out - ref).abs().max() < 0.5
 

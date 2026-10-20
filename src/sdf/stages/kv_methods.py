@@ -89,15 +89,18 @@ def _top_per_row(score: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
 
 
 def h2o_keep(scores: torch.Tensor, groups: int, keep_ratio: float) -> torch.Tensor:
-    """H2O: the cache holds `budgets` words, half the most recent, half the "heavy hitters" with the most attention
-    so far. scores (batch, q_heads, n, n) are attention logits with the causal mask added. Returns keep
-    (batch, kv_heads, n, n): the keys each query may use. Evicts one word per new word once the cache is full,
-    greedily, from the attention each word actually got (masked), as in the paper's simulation."""
+    """H2O: a fixed cache of ceil(keep_ratio x n) words, half the most recent, half the "heavy hitters" with the
+    most attention so far. Nothing is forgotten until the cache is full, so the first words (and the attention sink)
+    stay unless they lose out (Mohammad, 2026-10-20: "A", the paper's fixed cache). scores (batch, q_heads, n, n)
+    are attention logits with the causal mask added. Returns keep (batch, kv_heads, n, n): the keys each query may
+    use. Evicts one word per new word once the cache is full, greedily, from the attention each word actually got
+    (masked), as in the paper's simulation."""
     b, _, n, _ = scores.shape
     keep = _causal(n, scores.device).expand(b, scores.shape[1] // groups, n, n).clone()
     if keep_ratio >= 1:
         return keep
-    budget = budgets(keep_ratio, n).tolist()
+    size = int(budgets(keep_ratio, n)[-1])
+    budget = [min(i + 1, size) for i in range(n)]
     acc = torch.zeros(keep.shape[:3], device=scores.device)
     kept = torch.zeros_like(acc, dtype=torch.bool)
     for i in range(n):
