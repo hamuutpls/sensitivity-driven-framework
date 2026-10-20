@@ -21,6 +21,7 @@ dependencies = [
 dev = ["pytest>=8"]
 downstream = ["lm-eval>=0.4"]  # eval.downstream_tasks
 figures = ["matplotlib>=3.7"]  # Stage 0 joint curve figures
+search = ["optuna>=5", "pymoo>=0.6"]  # MODE "search": MOBO (Optuna) and NSGA-III (pymoo)
 
 [project.scripts]
 sdf-stage0 = "sdf.cli:stage0_main"

@@ -13,6 +13,10 @@ MODE = "single"  # "single": one Stage 0 run with the settings in section 2
 #                  "prune_sweep": really prune at every level in section 6 and measure the error (standard vs framework, and the fair same-size test)
 #                  "threshold_sweep": build and measure the plan at every protection threshold and guard size in section 6
 #                  "stages": Stages 1-3 with the methods in section 7, on top of a Stage 0 plan
+#                  "search": find the settings (section 2 + a technique per stage) that meet the requirement in
+#                            section 8 with the lowest perplexity and latency; MOBO, MFBO and NSGA-III compared
+#                  "chain": Stages 0 -> 1 -> 2 -> 3 -> 4 in a row: every row on a side's memory vs perplexity trade-off
+#                           line (Standard and Our method each their own; Stage 1: WxAy rows) goes into the next stage
 
 MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 OUTPUT_ROOT = "thesis_compression/results"  # local folder, relative to where you run; results/<run_id>/stage_0/
@@ -129,6 +133,27 @@ QUAROT_K_BITS = 4  # 2 | 3 | 4 | 8: key bits for QuaRot KV (standard method)
 
 
 # =====================================================================================================
+# 8. Settings search (MODE = "search"; Mohammad, 2026-10-19). Each try builds one chained model 0 -> 1 -> 2 -> 3
+#    (Our method) from section 2's parameters and one technique per stage, and measures it. Stage 1 always follows
+#    the joint weight x activation plan (Mohammad, 2026-10-20: "the goal is joint planning").
+# =====================================================================================================
+TARGET_MEMORY_GB = 1.1  # the model size (predicted from the plan) must be at most this (Mohammad, 2026-10-20: 1 GB + 10%)
+SEARCHERS = ["mobo", "mfbo", "nsga3"]  # each gets the same budget and seed
+SEARCH_BUDGET = 100  # full tries per searcher (MFBO's rough tries count by their share of the windows, so it builds
+# more models); a try over the limit is not built and not counted
+SEARCH_OBJECTIVES = ["ppl_val", "vllm_decode_ms_per_token"]  # made as small as possible; vLLM needs VLLM_PYTHON
+VLLM_PYTHON = None  # the Python of the vLLM install (Linux/Colab only), e.g. "/content/vllm-venv/bin/python"
+# WxAy techniques Stage 1 may pick: every working weight technique with round-to-nearest or SmoothQuant activations
+# (Mohammad, 2026-10-19: "all the ones that work"; QuaRot/SpinQuant left out: vLLM cannot measure rotated models;
+# RPTQ: its Our method rows are skipped; AQLM, BiLLM, QTIP, ABQ-LLM do not work here)
+SEARCH_STAGE1 = [f"{w}_with_{a}" for w in ("rtn", "gptq", "awq", "omniquant", "squeezellm", "spqr", "efficientqat",
+                                           "quip", "quipsharp", "pbllm", "bitsandbytes")
+                 for a in ("rtn_act", "smoothquant")]
+SEARCH_STAGE2 = ["unstructured_prune", "structured_prune"]  # pruning techniques (low-rank cannot follow Stage 1)
+SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]  # KV-cache techniques
+
+
+# =====================================================================================================
 def build_config():
     from sdf.config import FrameworkConfig
 
@@ -147,6 +172,14 @@ def build_config():
         "stages.stage2_methods": STAGE2_METHODS,
         "stages.stage2_after": STAGE2_AFTER,
         "stages.stage3_methods": STAGE3_METHODS,
+        "requirement.target_memory_gb": TARGET_MEMORY_GB,
+        "eval.vllm_python": VLLM_PYTHON,
+        "search.searchers": SEARCHERS,
+        "search.budget": SEARCH_BUDGET,
+        "search.objectives": SEARCH_OBJECTIVES,
+        "search.stage1_methods": SEARCH_STAGE1,
+        "search.stage2_methods": SEARCH_STAGE2,
+        "search.stage3_methods": SEARCH_STAGE3,
         "stage0.score": SENSITIVITY_SCORE,
         "stage0.normalization": NORMALIZATION,
         "stage0.protected_bits": PROTECTED_BITS,
@@ -232,8 +265,24 @@ def main():
         from sdf.reporting.master import write_master
 
         outputs.update(write_master(ctx.run_dir))
+    elif MODE == "search":
+        from sdf.search import run_search
+
+        outputs = run_search(start_run(cfg))
+    elif MODE == "chain":
+        from sdf.stage0.run import run_stage0
+        from sdf.stages.runner import run_chain
+
+        ctx = start_run(cfg)
+        outputs = {}
+        stage0_dir = cfg.stages.stage0_dir
+        if stage0_dir is None:
+            outputs = run_stage0(ctx, candidate, measure_fp16=MEASURE_FP16).outputs
+            stage0_dir = outputs["report"].parent
+        outputs.update(run_chain(ctx, candidate, stage0_dir, measure_fp16=MEASURE_FP16))
     else:
-        raise SystemExit(f"MODE must be 'single', 'sweep', 'compare_scores', 'prune_sweep', 'threshold_sweep' or 'stages', not {MODE!r}")
+        raise SystemExit("MODE must be 'single', 'sweep', 'compare_scores', 'prune_sweep', 'threshold_sweep', 'stages', "
+                         f"'chain' or 'search', not {MODE!r}")
     for name, path in outputs.items():
         print(f"{name}: {path}")
 

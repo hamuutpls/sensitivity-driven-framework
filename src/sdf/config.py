@@ -197,6 +197,27 @@ class StagesConfig:
 
 
 @dataclass
+class SearchConfig:
+    """The settings search (sdf.search): which techniques each stage may pick, the objectives, and the budget. The
+    requirement (FrameworkConfig.requirement) is the limit a setting must meet, e.g. target_memory_gb=1.1."""
+
+    searchers: list[str] = field(default_factory=lambda: ["mobo", "mfbo", "nsga3"])
+    budget: int = 100  # full tries per searcher: models built and measured on all the windows (MFBO's rougher ones
+    # count by their share of the windows, so it builds more models; Mohammad 2026-10-20: "its ok to build 438
+    # models"); a point over the limit, a failure before building and a searcher's repeat of its own try from the cache cost nothing
+    max_tries_per_budget: int = 20  # a searcher stops after budget x this many tries even if too few were built
+    # techniques each stage may pick: WxAy rows ("<weights>_with_<acts>") for Stage 1, pruning and KV methods after
+    stage1_methods: list[str] = field(default_factory=lambda: ["rtn_with_rtn_act", "gptq_with_rtn_act"])
+    stage2_methods: list[str] = field(default_factory=lambda: ["unstructured_prune", "structured_prune"])
+    stage3_methods: list[str] = field(default_factory=lambda: ["rtn_kv"])
+    # the two numbers to make small, and the metric the memory limit is checked against
+    # (Mohammad, 2026-10-19: memory is the model size; latency from vLLM, so eval.vllm_python must be set)
+    objectives: list[str] = field(default_factory=lambda: ["ppl_val", "vllm_decode_ms_per_token"])
+    memory_metric: str = "predicted_weight_memory_gb"
+    mfbo_eta: int = 3  # successive halving: keep the best 1/eta at each rung, with eta times the windows
+
+
+@dataclass
 class FrameworkConfig:
     run: RunConfig = field(default_factory=RunConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -205,6 +226,7 @@ class FrameworkConfig:
     eval: EvalConfig = field(default_factory=EvalConfig)
     stage0: Stage0Config = field(default_factory=Stage0Config)
     stages: StagesConfig = field(default_factory=StagesConfig)
+    search: SearchConfig = field(default_factory=SearchConfig)
     requirement: DeploymentRequirement = field(default_factory=DeploymentRequirement)
     # Default hyperparameters for single (non-search) runs; keys are SEARCH_SPACE names.
     hyperparams: dict[str, Any] = field(default_factory=dict)
