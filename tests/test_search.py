@@ -8,12 +8,13 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from sdf.stages import runner
+from sdf import search
 from sdf.eval import vllm_backend
 from sdf.run import start_run
-from sdf.search import (FAILED, Recorder, _decode, _rank_key, _sample, evaluate, hypervolume, pareto, run_mfbo, run_nsga3,
-                        run_search, technique_space, violation)
+from sdf.search import (FAILED, Recorder, _decode, _rank_key, _sample, evaluate, hypervolume, pareto, run_mfbo, run_mobo,
+                        run_nsga3, run_search, technique_space, violation)
 from sdf.search_space import SEARCH_SPACE
+from sdf.stages import runner
 from sdf.stages.runner import stage1_row
 from conftest import fake_texts
 
@@ -192,3 +193,71 @@ def test_nsga3_keeps_asking_while_tries_are_not_built_and_stops_at_the_cap(cfg):
     rec = _AllOverTheLimit(cfg)
     run_nsga3(rec, technique_space(cfg), budget=2, seed=0, pop_size=4)
     assert len(rec.trials) == 6 and rec.spent == 0  # budget x 3 tries, none built
+
+
+def _fake_evaluate(over=lambda p: p["sensitive_threshold"] > 0.3, crash=lambda p: False):
+    """evaluate() without building: a point is over the limit by `over`, crashes by `crash` (before building, or
+    while building when it returns "building"), else measured from its settings (lower threshold, lower perplexity)."""
+    def fake(ctx, point, max_windows=None, **kw):
+        base = {"dir": "d", "cached": False}
+        if c := crash(point):
+            return {**base, "error": "RuntimeError: boom", **({"attempted": True} if c == "building" else {})}
+        size = 0.5 + point["sensitive_threshold"]
+        if over(point):
+            return {**base, "metrics": {"predicted_weight_memory_gb": size}, "errors": {},
+                    "not_built": "over the limit, so not built", "met": False,
+                    "shortfall": {"target_memory_gb": size - 0.8}}
+        return {**base, "metrics": {"ppl_val": 10 + point["sensitive_threshold"] + (max_windows or 0) / 100,
+                                    "decode_ms_per_token_mean": 1 + point["prune_ratio_aggressive"],
+                                    "predicted_weight_memory_gb": size}, "errors": {}, "met": True, "shortfall": {}}
+    return fake
+
+
+def test_only_models_built_for_this_searcher_use_up_the_budget(cfg, monkeypatch):
+    crash = {128: "before", 64: "building"}
+    monkeypatch.setattr(search, "evaluate", _fake_evaluate(crash=lambda p: crash.get(p["calib_samples"])))
+    rec = Recorder(start_run(cfg), "x", 6)
+    built = _point(cfg, sensitive_threshold=0.2)
+    assert rec(built)["cost"] == 1 and rec(built, 3)["cost"] == 0.5
+    assert rec(built)["cost"] == 0 and rec(built)["built"]  # this searcher already has it on all windows
+    assert rec(_point(cfg, sensitive_threshold=0.8))["cost"] == 0  # over the limit
+    t = rec(_point(cfg, sensitive_threshold=0.2, calib_samples=128))
+    assert t["cost"] == 0 and not t["built"] and not t["over_limit"]  # a crash before building builds nothing
+    t = rec(_point(cfg, sensitive_threshold=0.2, calib_samples=64))
+    assert t["cost"] == 1 and t["built"] and not t["ok"]  # a model was built, then measuring it failed
+    assert rec.spent == 2.5
+
+
+def test_mfbo_never_gives_more_windows_to_a_point_that_was_not_built(cfg, monkeypatch):
+    monkeypatch.setattr(search, "evaluate", _fake_evaluate())
+    rec = Recorder(start_run(cfg), "mfbo", 9)
+    run_mfbo(rec, technique_space(cfg), budget=3, seed=0, eta=3, rungs=3)
+    for t in rec.trials:
+        if t["windows"] > 2:  # promoted: measured and fine on the rung below
+            below = [o for o in rec.trials[: t["n"] - 1] if o["point"] == t["point"] and o["windows"] < t["windows"]]
+            assert below and all(o["ok"] for o in below)
+    assert any(t["windows"] == 9 for t in rec.trials) and rec.spent >= 3
+
+
+def test_mobo_learns_from_points_over_the_limit(cfg, monkeypatch):
+    from optuna.trial import TrialState
+
+    monkeypatch.setattr(search, "evaluate", _fake_evaluate())
+    rec = Recorder(start_run(cfg.with_overrides({"search.max_tries_per_budget": 4})), "mobo", 6)
+    study = run_mobo(rec, technique_space(cfg), budget=12, seed=0)
+    over = [t for t in rec.trials if t["over_limit"]]
+    done = study.get_trials(states=(TrialState.COMPLETE,))
+    assert over and len(done) == len(rec.trials)  # every point over the limit taught the model, none failed
+    assert all((fz.constraints["requirement"] > 0) == t["over_limit"] for fz, t in zip(done, rec.trials))
+    # after the 10 random start-up tries the model keeps to the part under the limit (75% of the space is over it)
+    late = rec.trials[10:]
+    assert sum(t["over_limit"] for t in late) / len(late) < 0.25  # 0.62 when they were told as failed
+
+
+def test_check_uses_the_search_memory_metric_and_held_out_ppl_is_never_an_objective(cfg, monkeypatch):
+    m = {"model_size_gb": 2.2, "predicted_weight_memory_gb": 0.9}  # a simulated method's 16-bit size vs the plan
+    assert search.check_requirement(cfg, m).met and not cfg.requirement.check(m).met
+    monkeypatch.setattr(search, "_build_and_measure", lambda *a: {"metrics": {**m, "ppl_val": 10.0}, "errors": {}})
+    assert evaluate(start_run(cfg), _point(cfg))["met"]  # after the build too
+    with pytest.raises(ValueError, match="ppl_heldout"):
+        run_search(start_run(cfg.with_overrides({"search.objectives": ["ppl_heldout", "ppl_val"]})))

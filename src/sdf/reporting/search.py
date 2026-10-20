@@ -26,7 +26,7 @@ _SHOWN = ("ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "vllm_decode_m
 
 
 def compare_searchers(trials: list[dict[str, Any]], objectives: list[str]) -> list[dict[str, Any]]:
-    """Per searcher: evaluations, cost, share meeting the requirement, its best first objective and the cost at
+    """Per searcher: tries, models built (and how many on all the windows), cost, share meeting the requirement, its best first objective and the cost at
     which it first found it, hypervolume (one reference point for all: 10% past the worst met value), and its share
     of the combined trade-off line."""
     met = [t["values"] for t in trials if t["full"] and t["met"]]
@@ -40,6 +40,8 @@ def compare_searchers(trials: list[dict[str, Any]], objectives: list[str]) -> li
         mine = {json.dumps(t["point"], sort_keys=True) for t in full_met}
         out.append({
             "Search method": SEARCHER_NAMES.get(name, name), "Tries": len(ts),
+            "Models built": sum(1 for t in ts if t["cost"] > 0),
+            "Of those, on all evaluation windows": sum(1 for t in ts if t["cost"] > 0 and t["full"]),
             "Cost, in full tries": round(sum(t["cost"] for t in ts), 3),
             "Time, minutes": round(sum(t.get("time_s", 0.0) for t in ts) / 60, 1),
             "Share of tries under the limit (higher is better)": len([t for t in ts if t["met"]]) / len(ts),
@@ -133,8 +135,11 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         "the lowest " + " and the lowest ".join(label(o).lower() for o in s.objectives) + ". Speed comes from vLLM, "
         "which runs the model up to Stage 2 (it cannot run the Stage 3 techniques); unstructured pruning keeps the "
         "removed numbers as zeros, so it does not make vLLM faster. Three search methods each had the same budget of "
-        f"{s.budget} built models: a setting whose plan is already over the limit is not built and does not count: " + "; ".join(SEARCHER_NAMES[n] for n in s.searchers
-                                                                    if n in SEARCHER_NAMES) + ".", "",
+        f"{s.budget} full tries, where a full try is one model measured on all the evaluation windows. MFBO's rough "
+        "tries use fewer windows and count by that share, so it builds more models for the same budget (see Models "
+        "built below). A setting whose plan is already over the limit is not built and does not count, nor does one "
+        "that failed before building or a repeat of the method's own try. The methods: "
+        + "; ".join(SEARCHER_NAMES[n] for n in s.searchers if n in SEARCHER_NAMES) + ".", "",
         "## What it means", "",
         f"{len(front)} setting(s) are on the best trade-off line: none of them can get better on one goal without "
         "getting worse on another, so each is a fair choice depending on what matters more. They are listed below, "
@@ -161,8 +166,9 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         "- Techniques allowed: Stage 1 " + ", ".join(setting_value("stage1_method", m) for m in s.stage1_methods)
         + "; Stage 2 " + ", ".join(setting_value("stage2_method", m) for m in s.stage2_methods)
         + "; Stage 3 " + ", ".join(setting_value("stage3_method", m) for m in s.stage3_methods) + ".",
-        f"- Tries over the limit, so not built: {sum(1 for t in trials if t['cost'] == 0)} of {len(trials)}.",
-        f"- Tries that failed (could not be built or measured): {sum(1 for t in trials if not t['ok'])} of "
+        f"- Tries over the limit, so not built: {sum(1 for t in trials if t.get('over_limit'))} of {len(trials)}.",
+        f"- Tries that failed (could not be built or measured): "
+        f"{sum(1 for t in trials if not t['ok'] and not t.get('over_limit'))} of "
         f"{len(trials)}; the reasons are in the Trials sheet of search_results.xlsx.", "",
     ]
     outputs["search_report"] = d / "search_report.md"
@@ -172,7 +178,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
 
 def _req(cfg) -> str:
     r = cfg.requirement
-    parts = [f"{label(m)} at most {v}" for m, v in (("predicted_weight_memory_gb", r.target_memory_gb),
+    parts = [f"{label(m)} at most {v}" for m, v in ((cfg.search.memory_metric, r.target_memory_gb),
                                                      ("ppl_val", r.target_ppl),
                                                      ("decode_ms_per_token_mean", r.target_latency_ms),
                                                      ("predicted_kv_memory_gb", r.kv_budget_gb)) if v is not None]

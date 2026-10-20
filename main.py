@@ -139,7 +139,8 @@ QUAROT_K_BITS = 4  # 2 | 3 | 4 | 8: key bits for QuaRot KV (standard method)
 # =====================================================================================================
 TARGET_MEMORY_GB = 1.1  # the model size (predicted from the plan) must be at most this (Mohammad, 2026-10-20: 1 GB + 10%)
 SEARCHERS = ["mobo", "mfbo", "nsga3"]  # each gets the same budget and seed
-SEARCH_BUDGET = 100  # built models per searcher; a try over the limit is not built and not counted
+SEARCH_BUDGET = 100  # full tries per searcher (MFBO's rough tries count by their share of the windows, so it builds
+# more models); a try over the limit is not built and not counted
 SEARCH_OBJECTIVES = ["ppl_val", "vllm_decode_ms_per_token"]  # made as small as possible; vLLM needs VLLM_PYTHON
 VLLM_PYTHON = None  # the Python of the vLLM install (Linux/Colab only), e.g. "/content/vllm-venv/bin/python"
 # WxAy techniques Stage 1 may pick: every working weight technique with round-to-nearest or SmoothQuant activations

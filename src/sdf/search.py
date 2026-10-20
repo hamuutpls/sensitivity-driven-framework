@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from sdf.config import FrameworkConfig, config_hash
+from sdf.requirements import RequirementCheck
 from sdf.run import RunContext
 from sdf.search_space import SEARCH_SPACE, Param, SearchSpace
 from sdf.utils.cache import atomic_write_text
@@ -82,9 +83,16 @@ def evaluate(ctx: RunContext, point: dict[str, Any], max_windows: int | None = N
         if "error" not in result and not result.get("errors") and "not_built" not in result:  # a failure may be passing (a crash, out of
             atomic_write_text(path, json.dumps({"key": key, "value": result}, default=str))  # memory): retried
     if "error" not in result:  # checked after the cache, so a changed limit applies to points already measured
-        check = ctx.cfg.requirement.check(result["metrics"])
+        check = check_requirement(ctx.cfg, result["metrics"])
         result = {**result, "met": check.met is True, "shortfall": check.shortfall}
     return {**result, "dir": str(tdir), "cached": cached}
+
+
+def check_requirement(cfg: FrameworkConfig, metrics: dict[str, Any]) -> RequirementCheck:
+    """The requirement checked with the memory limit on cfg.search.memory_metric, before and after the build alike
+    (the requirement on its own prefers model_size_gb, which a simulated method fills with the 16-bit size). Without
+    that metric it falls back to predicted_weight_memory_gb."""
+    return cfg.requirement.check({**metrics, "model_size_gb": metrics.get(cfg.search.memory_metric)})
 
 
 def _version(name: str, methods: dict) -> int:
@@ -129,13 +137,17 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
 
     plan, _ = _capped(m, framework_plan(m, plans, "prune"), caps, plans.profile.layer_numel)
     size = plan_metrics(plan, plans, cfg, candidate, m.storage)
-    if cfg.requirement.check(size).met is False:  # the size follows from the plan: not worth building
+    if check_requirement(cfg, size).met is False:  # the size follows from the plan: not worth building
         return {"metrics": size, "errors": {}, "not_built": "over the limit, so not built"}
-    out = run_stage(ctx, 3, [point["stage3_method"]], candidate, stage0_dir, only="framework", subdir="stage_3",
-                    before={"framework": (replace(m, name=prune.name), plan)}, model_factory=model_factory, **kw)
+    try:  # from here a model is built, so a failure still used up a try ("attempted")
+        out = run_stage(ctx, 3, [point["stage3_method"]], candidate, stage0_dir, only="framework", subdir="stage_3",
+                        before={"framework": (replace(m, name=prune.name), plan)}, model_factory=model_factory, **kw)
+    except Exception as e:  # noqa: BLE001 - as in evaluate()
+        log.exception("search point failed while building: %s", point)
+        return {"error": f"{type(e).__name__}: {e}", "attempted": True}
     row = next(r for r in json.loads(out["json"].read_text())["rows"] if r["variant"] == "framework")
     if row["status"] != "ok":
-        return {"error": row.get("error") or "the row failed"}
+        return {"error": row.get("error") or "the row failed", "attempted": True}
     metrics = {k: v for k, v in row["metrics"].items() if isinstance(v, (int, float))}
     errors = {k: v for k, v in row["info"].items() if k.endswith("_error")}  # e.g. a plan vLLM cannot load
     return {"metrics": metrics, "errors": errors}
@@ -144,26 +156,28 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
 # ----------------------------------------------------------------------------------------------------- searchers
 
 class Recorder:
-    """Every evaluation a searcher asks for, in order, with its cost: its share of the full evaluation windows, or 0
-    for a point the plan puts over the limit (not built). Only built models use up the budget."""
+    """Every evaluation a searcher asks for, in order, with its cost: its share of the full evaluation windows for a
+    model built for this searcher (even if measuring it then failed), else 0 (a point the plan puts over the limit, a
+    crash before building, or a point this searcher already tried on as many windows). Only built models use up the
+    budget."""
 
     def __init__(self, ctx: RunContext, searcher: str, full_windows: int, **kw: Any):
         self.ctx, self.searcher, self.full, self.kw = ctx, searcher, full_windows, kw
         self.trials: list[dict[str, Any]] = []
         s = ctx.cfg.search
-        self.objectives, self.memory = s.objectives, s.memory_metric
-        self.tries_per_budget = s.max_tries_per_budget  # stops a search whose points are almost all over the limit
+        self.objectives = s.objectives
+        self.tries_per_budget = s.max_tries_per_budget  # stops a search whose points are almost all not built
 
     @property
     def spent(self) -> float:
         return sum(t["cost"] for t in self.trials)
 
     def more(self, budget: float) -> bool:
-        """True while the budget of built models is not used up and fewer than budget x max_tries_per_budget tries
+        """True while the budget (full tries of built models) is not used up and fewer than budget x max_tries_per_budget tries
         were made."""
         cap = self.tries_per_budget * budget
         if len(self.trials) >= cap and self.spent < budget:
-            log.warning("search %s stopped after %d tries: only %.1f of %s built models (the rest were over the limit)",
+            log.warning("search %s stopped after %d tries: only %.1f of %s full tries built (the rest were not built)",
                         self.searcher, len(self.trials), self.spent, budget)
         return self.spent < budget and len(self.trials) < cap
 
@@ -172,9 +186,13 @@ class Recorder:
         t0 = time.perf_counter()
         r = evaluate(self.ctx, point, None if windows == self.full else windows, **self.kw)
         values = [r.get("metrics", {}).get(o) for o in self.objectives]
+        built = "not_built" not in r and ("error" not in r or r.get("attempted", False))
+        repeat = any(t["point"] == point and t["windows"] == windows and t["built"] for t in self.trials)
         ok = "error" not in r and all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
         t = {"searcher": self.searcher, "n": len(self.trials) + 1, "point": point, "windows": windows,
-             "cost": 0.0 if "not_built" in r else windows / self.full, "full": windows == self.full, "ok": ok, "met": ok and r.get("met", False),
+             "cost": windows / self.full if built and not repeat else 0.0, "built": built,
+             "over_limit": "not_built" in r,
+             "full": windows == self.full, "ok": ok, "met": ok and r.get("met", False),
              "values": values if ok else [FAILED] * len(values),
              "violation": FAILED if "error" in r else violation(r),
              "metrics": r.get("metrics", {}), "dir": r["dir"],
@@ -207,9 +225,12 @@ def _decode(space: SearchSpace, x) -> dict[str, Any]:
     return out
 
 
-def run_mobo(rec: Recorder, space: SearchSpace, budget: int, seed: int) -> None:
+def run_mobo(rec: Recorder, space: SearchSpace, budget: int, seed: int):
     """Multi-objective Bayesian optimisation: Optuna's Gaussian-process sampler, with the requirement as a
-    constraint (a point that misses it is never on the answer, but still teaches the model)."""
+    constraint. GPSampler learns only from completed trials, so a point over the limit (not built, no values) is
+    completed with the worst values built so far and its shortfall as the constraint: the sampler learns where the
+    limit is. Before the first built model there are no such values, so those points wait and are told then.
+    A crash is told as failed. Returns the study."""
     import optuna
     from optuna.distributions import CategoricalDistribution, FloatDistribution
     from optuna.trial import TrialState
@@ -219,14 +240,24 @@ def run_mobo(rec: Recorder, space: SearchSpace, budget: int, seed: int) -> None:
              for p in space.params}
     study = optuna.create_study(directions=["minimize"] * len(rec.objectives),
                                 sampler=optuna.samplers.GPSampler(seed=seed))
+    waiting, worst = [], None
     while rec.more(budget):
         trial = study.ask(dists)
         t = rec(dict(trial.params))
-        trial.set_constraint("requirement", t["violation"])  # optuna >= 5
         if t["ok"]:
+            trial.set_constraint("requirement", t["violation"])  # optuna >= 5
             study.tell(trial, t["values"])
+            worst = [max(a, b) for a, b in zip(worst or t["values"], t["values"])]
+        elif t["over_limit"]:
+            trial.set_constraint("requirement", t["violation"])
+            waiting.append(trial)
         else:
             study.tell(trial, state=TrialState.FAIL)
+        if worst:
+            for w in waiting:
+                study.tell(w, worst)
+            waiting = []
+    return study
 
 
 def run_nsga3(rec: Recorder, space: SearchSpace, budget: int, seed: int, pop_size: int = 10) -> None:
@@ -255,7 +286,8 @@ def run_nsga3(rec: Recorder, space: SearchSpace, budget: int, seed: int, pop_siz
 def run_mfbo(rec: Recorder, space: SearchSpace, budget: int, seed: int, eta: int = 3, rungs: int = 3) -> None:
     """Multi-fidelity: successive halving. Each bracket measures eta^(rungs-1) random points on 1/eta^(rungs-1)
     of the evaluation windows, keeps the best 1/eta (requirement met first, then the non-dominated rank, then the
-    first objective) on eta times the windows, and so on up to the full windows."""
+    first objective) on eta times the windows, and so on up to the full windows. Points not built or not measured
+    are never promoted."""
     rng = random.Random(seed)
     windows = [max(2, rec.full // eta ** (rungs - 1 - r)) for r in range(rungs)]
     while rec.more(budget):
@@ -266,6 +298,9 @@ def run_mfbo(rec: Recorder, space: SearchSpace, budget: int, seed: int, eta: int
                 if not rec.more(budget):
                     return
                 ts.append(rec(p, w))
+            ts = [t for t in ts if t["ok"]]  # a point not built or not measured is not worth more windows
+            if not ts:
+                break
             keep = max(1, len(ts) // eta)
             points = [t["point"] for t in sorted(ts, key=lambda t: _rank_key(t, ts))[:keep]]
 
@@ -314,6 +349,8 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     s = cfg.search
     if unknown := [n for n in s.searchers if n not in SEARCHERS]:
         raise ValueError(f"unknown searcher(s) {unknown}; known: {sorted(SEARCHERS)}")
+    if "ppl_heldout" in s.objectives:
+        raise ValueError("ppl_heldout is measured to check the choice, never optimised: use ppl_val")
     if any(o.startswith("vllm_") for o in s.objectives) and not cfg.eval.vllm_python:
         raise ValueError(f"the objectives {s.objectives} need vLLM: set eval.vllm_python (Colab), or every try fails")
     space = technique_space(cfg)
