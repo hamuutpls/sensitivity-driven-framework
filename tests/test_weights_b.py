@@ -68,6 +68,18 @@ def test_aqlm_rows_use_one_codebook_per_book_and_more_books_fit_better():
     assert errs[1] < errs[0]
 
 
+def test_aqlm_computes_no_input_hessians_and_gives_the_same_weights(tiny_llama, monkeypatch):
+    with_hessians = copy.deepcopy(tiny_llama)
+    wb._apply(with_hessians, mixed_plan(), BATCHES, 8, "AQLM", lambda w, H, bits: wb.aqlm_quantize_(w, bits))
+
+    def unused(*args):
+        raise AssertionError("AQLM does not use input Hessians")
+
+    monkeypatch.setattr(wb, "input_hessians", unused)
+    out = run(wb.aqlm_, tiny_llama, mixed_plan(), baseline_bits=8)
+    assert all(torch.equal(p, with_hessians.state_dict()[n]) for n, p in out.state_dict().items())
+
+
 def test_e8p_codebook_and_residual_stages():
     C = wb._e8p("cpu")
     assert len(torch.unique(C, dim=0)) == 2 ** 16
