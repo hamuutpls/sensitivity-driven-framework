@@ -87,6 +87,9 @@ class Method:
     max_ratio: float | None = None
     # a Stage 3 technique that forgets words: its standard row keeps stage0.kv_standard_keep_ratio of them at 16 bits
     forgets: bool = False
+    # what the method stores per rounded layer besides its bits, in bits (planner.predict_cost `overhead`);
+    # None: one scale and zero per gptq_groupsize weights
+    overhead: Callable[[int, int, int], float] | None = None
 
 
 @dataclass(frozen=True)
@@ -198,7 +201,25 @@ def _transformed_activations(fn: Callable, extra: Callable[[MethodCall], dict[st
 
 
 _SIMPLIFIED = "simplified port of the fork: "
-_SIZE_NOTE = "size column is the plan's nominal bits; codebooks, outliers and scale overhead are not counted"
+_SIZE_NOTE = ("size column: the plan's bits plus what the method stores besides them (SqueezeLLM, SpQR, AQLM, QuIP# "
+              "and bitsandbytes: their codebooks, outliers and scales, outlier shares assumed at 0.45% and about 1%; "
+              "the others: one scale and zero per gptq_groupsize weights)")
+_LINEARS = 7  # shortcut: the Linears of a Llama decoder layer (q, k, v, o, gate, up, down); count them for other models
+# Extra bits a method stores for one rounded decoder layer of `numel` weights in Linears with `rows` outputs in all,
+# besides `b` bits per weight. Fp16 numbers are 16 bits, an outlier's position a 32-bit index.
+SIZE_OVERHEAD: dict[str, Callable[[int, int, int], float]] = {
+    # a 2**b-entry fp16 codebook per output row; 0.45% outliers (the paper's share) kept as value + index
+    "squeezellm": lambda b, numel, rows: rows * 2 ** b * 16 + 0.0045 * numel * (16 + 32),
+    # 3-bit scale and zero per 16 weights; an fp16 scale and zero for each of them per 16 rows x 16 weights;
+    # outliers counted at about 1% (assumed: SpQR's share depends on its threshold) as value + index
+    "spqr": lambda b, numel, rows: numel * (2 * 3 / 16 + 2 * 2 * 16 / (16 * 16) + 0.01 * (16 + 32)),
+    # b codebooks of 256 fp16 codewords of 8 numbers per Linear; one fp16 scale per output row
+    "aqlm": lambda b, numel, rows: _LINEARS * b * 256 * 8 * 16 + rows * 16,
+    # the E8 lattice codebook is fixed, not stored; one scale per Linear
+    "quipsharp": lambda b, numel, rows: _LINEARS * 16,
+    # NF4: an fp32 absmax per 64 weights; int8: an fp32 absmax per output row
+    "bitsandbytes": lambda b, numel, rows: numel * 32 / 64 if b == 4 else rows * 32,
+}
 _UNAVAILABLE = {
     "qtip": "QTIP (trellis-coded quantization with a bitshift trellis and tail-biting Viterbi) is a CUDA pipeline that "
             "writes its own packed checkpoint; it is not ported to this simulated, per-layer-bit setting",
@@ -221,7 +242,8 @@ def _fork_methods() -> list[Method]:
                 name, 1, label, _WEIGHT_PLANS, _calibrated(fn), params=params, calibrated=name != "bitsandbytes",
                 library=library, note=f"{_SIMPLIFIED}{simplified}; {_SIZE_NOTE}" if simplified else _SIZE_NOTE,
                 fixed_bits="" if takes_bits else "it binarizes every layer the same way (about 1 bit), so its "
-                "standard row runs at its own width and the plan-following row is not possible"))
+                "standard row runs at its own width and the plan-following row is not possible",
+                overhead=SIZE_OVERHEAD.get(name)))
     out += [Method(name, 1, label, _WEIGHT_PLANS, library=reason, unavailable=reason)
             for name, label, reason in (("qtip", "QTIP", _UNAVAILABLE["qtip"]), ("abqllm", "ABQ-LLM", _UNAVAILABLE["abqllm"]))]
     for name, (fn, label, library, simplified) in ACTIVATION_METHODS.items():
@@ -239,7 +261,7 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     Method("gptq", 1, "GPTQ", _WEIGHT_PLANS, _calibrated(gptq_), params=("gptq_groupsize",), calibrated=True,
            library="in repo (torch)", version=2),
     Method("awq", 1, "AWQ", _WEIGHT_PLANS, _calibrated(awq_), params=("gptq_groupsize",), calibrated=True,
-           library="in repo (torch); autoawq is deprecated", version=2),  # activation-aware channel scaling, then RTN
+           library="in repo (torch); autoawq is deprecated", version=3),  # activation-aware channel scaling, then RTN; 3: o_proj unscaled under GQA
     # Stage 1: quantization, activations
     Method("rtn_act", 1, "Round-to-nearest activations", ("activations",), _rtn_activations,
            library="in repo (torch)"),  # baseline; same rounding as the Stage 0 activation measurement
@@ -324,7 +346,7 @@ def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
                   version=weights.version,
                   params=tuple(dict.fromkeys(weights.params + (("smoothquant_alpha",) if acts == "smoothquant" else ()))),
                   calibrated=True, library=weights.library, note=weights.note,
-                  fixed_bits=weights.fixed_bits, unavailable=weights.unavailable,
+                  fixed_bits=weights.fixed_bits, unavailable=weights.unavailable, overhead=weights.overhead,
                   joint=(8, 8) if standard_w8a8 else (None, None))
 
 
@@ -350,7 +372,7 @@ def series(quant: Method, prune: Method) -> Method:
                   calibrated=quant.calibrated or prune.calibrated, library=prune.library, storage=prune.storage,
                   quant_plans=quant.plans * len(prune.plans),  # every pruning plan follows the one bits plan
                   note=quant.note, fixed_bits=quant.fixed_bits, unavailable=unavailable,
-                  max_ratio=prune.max_ratio)
+                  max_ratio=prune.max_ratio, overhead=quant.overhead)
 
 
 def methods_for(stage: int, names: list[str]) -> list[Method]:

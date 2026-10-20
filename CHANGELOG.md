@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-20: audit fixes the final test waits for (ponytail audit 2026-10-20, findings 19, 23, 24)
+
+- Joint plan budget (19): the joint weight-and-activation plan gets the separate activation plan's real average
+  activation bits in every mode, not only when that plan comes from the weight plan. A measured plan that spends less
+  than `act_avg_bits` no longer leaves the joint plan more bits than the plan it is compared with.
+- Size per method (23): the predicted size counts what SqueezeLLM, SpQR, AQLM, QuIP# and bitsandbytes store besides
+  their bits (codebooks, outliers, their own scales) instead of one scale and zero per `gptq_groupsize` weights.
+  Assumed outlier shares: SqueezeLLM 0.45% (the paper's), SpQR about 1%; an outlier is a 16-bit value and a 32-bit
+  index. AQLM's codebooks are counted for a Llama layer's 7 Linears. Only size columns change; nothing is re-measured.
+- AWQ under grouped-query attention (24): o_proj is rounded plainly, as the reference implementation does when its
+  scale cannot be folded into v_proj (TinyLlama: 4 key/value heads for 32 query heads). AWQ is version 3, so its
+  cached standard rows are redone.
+
 ## 2026-10-20: H2O keeps a fixed cache (fix)
 
 The 0-3-4 run of 2026-10-19 gave perplexity about 398 for every row that forgets with H2O's rule (rtn_kv, QuaRot KV
