@@ -105,7 +105,9 @@ def test_the_notebook_does_not_use_google_drive():
     assert "ROOT = results_root()" in code
     last = "".join(cells[-1]["source"])  # packed in a finally, so a failed run is packed too
     assert "try:\n    main.main()\nfinally:\n    print(pack_results(ROOT)" in last
-    assert last.index("drop_old_archive()") < last.index("main.main()")  # a killed run leaves no old archive
+    assert "\ndrop_old_archive()" in last  # called at the start of a line, not just named in a comment
+    assert last.index("\ndrop_old_archive()") < last.index("main.main()")  # a killed run leaves no old archive
+    assert "from sdf.utils.colab import drop_old_archive, pack_results, results_root" in "".join(cells[2]["source"])
 
 
 def test_results_root_is_d_thesis_on_the_pc_and_colab_disk_elsewhere(tmp_path):
