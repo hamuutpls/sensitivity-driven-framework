@@ -270,7 +270,10 @@ METHODS: dict[str, Method] = {m.name: m for m in [
            "sensitivity-weighted; the 1% unrounded outliers are not counted in the predicted memory."),
     # keeps recent + heavy-hitter words
     Method("h2o", 3, "H2O", ("kv",), _kv_method("rtn", "h2o"), forgets=True, library="in repo (attention function)",
-           note=_KV_NOTE, version=2),
+           note=_KV_NOTE + " H2O: a fixed cache of ceil(share x window) words per layer, filled first, then half "
+           "recent and half heavy hitters; scores are averaged over the query heads sharing a key/value head. At the "
+           "same share it keeps more words on average than SnapKV and InfiniGen, which keep a share of the words "
+           "seen so far.", version=3),  # 3: fixed cache, filled before anything is forgotten (keeps the first word)
     # keeps an observation window and the earlier words it attends to most
     Method("snapkv", 3, "SnapKV", ("kv",), _kv_method("rtn", "snapkv"), forgets=True, version=2,
            library="in repo (attention function)", note=_KV_NOTE + " SnapKV: its paper keeps a fixed number of words; "
