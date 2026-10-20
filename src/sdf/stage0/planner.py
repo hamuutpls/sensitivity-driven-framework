@@ -245,9 +245,11 @@ def predict_cost(
         kept = numel * (1.0 - lp.pruning_ratio)
         stored = numel if sparse_storage == "dense" and lp.pruning_ratio < 1.0 else kept
         bits = stored * lp.bit_width
-        if lp.bit_width < baseline_bits and overhead is not None:
+        if lp.bit_width >= baseline_bits or lp.pruning_ratio >= 1.0:
+            pass  # nothing rounded, or a fully removed layer, which is stored as nothing in every mode
+        elif overhead is not None:
             bits += overhead(lp.bit_width, stored, rows)
-        elif lp.bit_width < baseline_bits:
+        else:
             groups = rows if group_size == PER_CHANNEL else numel / group_size
             bits += groups * (stored / numel) * group_overhead_bits
         if sparse_storage == "bitmask" and 0.0 < lp.pruning_ratio < 1.0:
