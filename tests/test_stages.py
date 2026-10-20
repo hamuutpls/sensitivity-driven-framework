@@ -103,7 +103,9 @@ def test_run_stage_end_to_end(stage0_dir, tiny_llama, tokenizer, small_cfg, stag
     if stage in (1, 2) and method not in ACTIVATION_METHODS_1 and not spec.fixed_bits:
         assert "model_size_gb" not in rows[f"{method}/framework"]["metrics"]  # simulated: FP16 in memory
     if stage == 1 and method not in ACTIVATION_METHODS_1:
-        assert rows[f"{method}/original"]["metrics"]["avg_bits_per_weight"] < 16
+        # AQLM stores 256-codeword codebooks per Linear: on this 32-wide toy model they outweigh the weights
+        # (on TinyLlama they add under 0.05 bits per weight, test_audit_fixes_first.py)
+        assert rows[f"{method}/original"]["metrics"]["avg_bits_per_weight"] < (16 if method != "aqlm" else 200)
         # Stage 1 removes nothing, in any row; the zero share is reported next to the FP16 row's
         assert all(r["metrics"].get("sparsity", 0) == 0 for r in rows.values() if r["status"] == "ok")
         assert "zero_weight_share" in rows["baseline/fp16"]["metrics"]
