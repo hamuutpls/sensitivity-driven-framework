@@ -11,8 +11,8 @@ import pytest
 from sdf.stages import runner
 from sdf.eval import vllm_backend
 from sdf.run import start_run
-from sdf.search import (FAILED, Recorder, _decode, _rank_key, _sample, evaluate, hypervolume, pareto, run_mfbo, run_search,
-                        technique_space, violation)
+from sdf.search import (FAILED, Recorder, _decode, _rank_key, _sample, evaluate, hypervolume, pareto, run_mfbo, run_nsga3,
+                        run_search, technique_space, violation)
 from sdf.search_space import SEARCH_SPACE
 from sdf.stages.runner import stage1_row
 from conftest import fake_texts
@@ -172,3 +172,23 @@ def test_run_search_compares_the_searchers_and_writes_the_report(cfg, tiny_llama
     text = out["search_report"].read_text()
     assert "Best trade-off settings" in text and "Search methods compared" in text and "at most 1.0" in text
     assert out["search_hypervolume"].exists()
+
+
+class _AllOverTheLimit(Recorder):
+    """A Recorder whose every point is over the limit (not built, cost 0), without building anything."""
+
+    def __init__(self, cfg):
+        self.searcher, self.full, self.trials = "nsga3", 6, []
+        self.objectives, self.tries_per_budget = cfg.search.objectives, 3
+
+    def __call__(self, point, windows=None):
+        t = {"cost": 0.0, "ok": False, "met": False, "values": [FAILED] * len(self.objectives), "violation": 1.0,
+             "point": point}
+        self.trials.append(t)
+        return t
+
+
+def test_nsga3_keeps_asking_while_tries_are_not_built_and_stops_at_the_cap(cfg):
+    rec = _AllOverTheLimit(cfg)
+    run_nsga3(rec, technique_space(cfg), budget=2, seed=0, pop_size=4)
+    assert len(rec.trials) == 6 and rec.spent == 0  # budget x 3 tries, none built
