@@ -38,7 +38,8 @@ def test_deltas_wins_failures_and_outputs(tmp_path):
     wb = load_workbook(outputs["xlsx"])
     assert wb.sheetnames == ["Summary", "Config", "Per-layer", "Raw", "Charts"]
     assert wb["Summary"].max_row == 5
-    assert len(wb["Summary"].conditional_formatting) > 0
+    header = [c.value for c in wb["Summary"][1]]
+    assert wb["Summary"].cell(4, header.index("ppl_val Δ vs original") + 1).fill.fgColor.rgb == "00C6EFCE"  # green
     assert wb["Charts"]._charts
     md = outputs["report"].read_text()
     assert "## Key findings" in md and "awq/framework failed" in md

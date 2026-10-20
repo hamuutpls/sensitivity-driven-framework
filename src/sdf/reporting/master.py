@@ -11,8 +11,6 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook
-from openpyxl.formatting.rule import CellIsRule
-from openpyxl.utils import get_column_letter
 
 from sdf.reporting.excel import GREEN, RED, _cell as _xl_cell, _header, save_workbook
 from sdf.reporting.markdown import _column_notes, _table, original_model_lines, requirement_cell
@@ -40,7 +38,7 @@ def _rows(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for r in st["rows"]:
             rows.append({"stage": st["stage"], "row": f"{r['method']}/{r['variant']}", "status": r["status"],
                          "metrics": r["metrics"], "deltas": r.get("deltas", {}), "requirement": r.get("requirement", {}),
-                         "error": r.get("error")})
+                         "error": r.get("error"), "verdict": r.get("verdict", {})})
     return rows
 
 
@@ -69,11 +67,13 @@ def _workbook(stages, rows, cols, path: Path) -> None:
         pct = r["deltas"].get("ppl_val", {}).get("vs_original_pct")
         ws.append([r["stage"], r["row"], r["status"]] + [_xl_cell(r["metrics"].get(c)) for c in cols]
                   + [pct, requirement_cell(r["requirement"])])
-    # Win/loss vs the standard method: lower perplexity is better, so a negative change is a win.
-    col = get_column_letter(len(headers) - 1)
-    rng = f"{col}2:{col}{len(rows) + 1}"
-    ws.conditional_formatting.add(rng, CellIsRule(operator="lessThan", formula=["0"], fill=GREEN))
-    ws.conditional_formatting.add(rng, CellIsRule(operator="greaterThan", formula=["0"], fill=RED))
+    # Green / red where the stage's verdict counts perplexity a win / loss; a tie stays plain.
+    col = len(headers) - 1
+    for i, r in enumerate(rows, start=2):
+        v = r["verdict"]
+        fill = GREEN if "ppl_val" in v.get("wins", []) else RED if "ppl_val" in v.get("losses", []) else None
+        if fill:
+            ws.cell(row=i, column=col).fill = fill
 
     notes = wb.create_sheet("Columns")
     notes.append(["Column", "Better", "Meaning"])
