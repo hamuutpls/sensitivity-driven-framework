@@ -36,12 +36,10 @@ FAILED = 1e9  # objective and constraint value of a point that could not be buil
 
 
 def technique_space(cfg: FrameworkConfig) -> SearchSpace:
-    """SEARCH_SPACE plus the technique of each stage and which Stage 0 weight/activation plan Stage 1 follows
-    ("separate" plans or the "joint" one)."""
+    """SEARCH_SPACE plus the technique of each stage. Stage 1 always follows the joint weight x activation plan."""
     s = cfg.search
     return SearchSpace(list(SEARCH_SPACE.params) + [
         Param("stage1_method", 1, s.stage1_methods[0], choices=tuple(s.stage1_methods)),
-        Param("stage1_plan", 1, "separate", choices=("separate", "joint")),
         Param("stage2_method", 2, s.stage2_methods[0], choices=tuple(s.stage2_methods)),
         Param("stage3_method", 3, s.stage3_methods[0], choices=tuple(s.stage3_methods)),
     ])
@@ -58,7 +56,7 @@ def evaluate(ctx: RunContext, point: dict[str, Any], max_windows: int | None = N
     from sdf.stages.methods import METHODS
 
     point = technique_space(ctx.cfg).validate(point)
-    cfg = ctx.cfg.with_overrides({"stage0.pruning_levels": [], "stage0.joint_plan": point["stage1_plan"] == "joint",
+    cfg = ctx.cfg.with_overrides({"stage0.pruning_levels": [], "stage0.joint_plan": True,
                                   **({"eval.max_windows": max_windows} if max_windows else {})})
     names = [point["stage1_method"], point["stage2_method"], point["stage3_method"]]
     key = {"point": point, "model": asdict(cfg.model), "eval": asdict(cfg.eval), "calibration": asdict(cfg.calibration),
@@ -118,7 +116,7 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
     kw = dict(tokenizer=tokenizer, text_loader=text_loader)
     stage0_dir = run_stage0(ctx, candidate, model=model_factory() if given else None, **kw).outputs["report"].parent
     plans = Stage0Plans.load(stage0_dir)
-    first, plan_key = stage1_row(point["stage1_method"] + ("_joint" if point["stage1_plan"] == "joint" else ""))
+    first, plan_key = stage1_row(point["stage1_method"] + "_joint")
     prune = METHODS[point["stage2_method"]]
     m = series(first, prune, plan_key)
     def caps(r: float) -> tuple[float, ...]:  # structured pruning only; the model is freed before vLLM starts
@@ -146,17 +144,28 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
 # ----------------------------------------------------------------------------------------------------- searchers
 
 class Recorder:
-    """Every evaluation a searcher asks for, in order, with its cost (its share of the full evaluation windows)."""
+    """Every evaluation a searcher asks for, in order, with its cost: its share of the full evaluation windows, or 0
+    for a point the plan puts over the limit (not built). Only built models use up the budget."""
 
     def __init__(self, ctx: RunContext, searcher: str, full_windows: int, **kw: Any):
         self.ctx, self.searcher, self.full, self.kw = ctx, searcher, full_windows, kw
         self.trials: list[dict[str, Any]] = []
         s = ctx.cfg.search
         self.objectives, self.memory = s.objectives, s.memory_metric
+        self.tries_per_budget = s.max_tries_per_budget  # stops a search whose points are almost all over the limit
 
     @property
     def spent(self) -> float:
         return sum(t["cost"] for t in self.trials)
+
+    def more(self, budget: float) -> bool:
+        """True while the budget of built models is not used up and fewer than budget x max_tries_per_budget tries
+        were made."""
+        cap = self.tries_per_budget * budget
+        if len(self.trials) >= cap and self.spent < budget:
+            log.warning("search %s stopped after %d tries: only %.1f of %s built models (the rest were over the limit)",
+                        self.searcher, len(self.trials), self.spent, budget)
+        return self.spent < budget and len(self.trials) < cap
 
     def __call__(self, point: dict[str, Any], windows: int | None = None) -> dict[str, Any]:
         windows = windows or self.full
@@ -165,7 +174,7 @@ class Recorder:
         values = [r.get("metrics", {}).get(o) for o in self.objectives]
         ok = "error" not in r and all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
         t = {"searcher": self.searcher, "n": len(self.trials) + 1, "point": point, "windows": windows,
-             "cost": windows / self.full, "full": windows == self.full, "ok": ok, "met": ok and r.get("met", False),
+             "cost": 0.0 if "not_built" in r else windows / self.full, "full": windows == self.full, "ok": ok, "met": ok and r.get("met", False),
              "values": values if ok else [FAILED] * len(values),
              "violation": FAILED if "error" in r else violation(r),
              "metrics": r.get("metrics", {}), "dir": r["dir"],
@@ -210,7 +219,7 @@ def run_mobo(rec: Recorder, space: SearchSpace, budget: int, seed: int) -> None:
              for p in space.params}
     study = optuna.create_study(directions=["minimize"] * len(rec.objectives),
                                 sampler=optuna.samplers.GPSampler(seed=seed))
-    while rec.spent < budget:
+    while rec.more(budget):
         trial = study.ask(dists)
         t = rec(dict(trial.params))
         trial.set_constraint("requirement", t["violation"])  # optuna >= 5
@@ -234,7 +243,7 @@ def run_nsga3(rec: Recorder, space: SearchSpace, budget: int, seed: int, pop_siz
     ref_dirs = get_reference_directions("das-dennis", k, n_partitions=pop_size - 1 if k == 2 else 4)
     algo = NSGA3(ref_dirs=ref_dirs, pop_size=pop_size)
     algo.setup(problem, termination=("n_eval", budget), seed=seed)
-    while rec.spent < budget:
+    while rec.more(budget):
         pop = algo.ask()
         pop = pop[: max(1, min(len(pop), int(math.ceil(budget - rec.spent))))]
         ts = [rec(_decode(space, x)) for x in pop.get("X")]
@@ -249,12 +258,12 @@ def run_mfbo(rec: Recorder, space: SearchSpace, budget: int, seed: int, eta: int
     first objective) on eta times the windows, and so on up to the full windows."""
     rng = random.Random(seed)
     windows = [max(2, rec.full // eta ** (rungs - 1 - r)) for r in range(rungs)]
-    while rec.spent < budget:
+    while rec.more(budget):
         points = [_sample(space, rng) for _ in range(eta ** (rungs - 1))]
         for w in windows:
             ts = []
             for p in points:
-                if rec.spent >= budget:
+                if not rec.more(budget):
                     return
                 ts.append(rec(p, w))
             keep = max(1, len(ts) // eta)

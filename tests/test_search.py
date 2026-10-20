@@ -8,11 +8,13 @@ from pathlib import Path
 import openpyxl
 import pytest
 
+from sdf.stages import runner
 from sdf.eval import vllm_backend
 from sdf.run import start_run
 from sdf.search import (FAILED, Recorder, _decode, _rank_key, _sample, evaluate, hypervolume, pareto, run_mfbo, run_search,
                         technique_space, violation)
 from sdf.search_space import SEARCH_SPACE
+from sdf.stages.runner import stage1_row
 from conftest import fake_texts
 
 HF = ["ppl_val", "decode_ms_per_token_mean"]  # no vLLM in tests
@@ -38,7 +40,7 @@ def test_technique_space_adds_a_technique_per_stage(cfg):
     space = technique_space(cfg)
     assert [p.name for p in space.params][: len(SEARCH_SPACE.params)] == [p.name for p in SEARCH_SPACE.params]
     p = _point(cfg)
-    assert p["stage2_method"] == "unstructured_prune" and p["stage1_plan"] == "separate"
+    assert p["stage2_method"] == "unstructured_prune" and "stage1_plan" not in p  # Stage 1 always follows the joint plan
     with pytest.raises(ValueError, match="stage3_method"):
         space.validate({**p, "stage3_method": "gptq"})
     rng = random.Random(0)
@@ -89,14 +91,25 @@ def test_evaluate_builds_the_chained_model_and_caches_it(cfg, tiny_llama, tokeni
     assert rough["dir"] != r["dir"] and rough["metrics"]["ppl_val"] != m["ppl_val"]
 
 
-def test_a_tight_memory_limit_is_not_met_and_says_by_how_much(cfg, tiny_llama, tokenizer):
+def test_a_tight_memory_limit_is_not_met_and_says_by_how_much(cfg, tiny_llama, tokenizer, monkeypatch):
+    rows = []
+    monkeypatch.setattr(runner, "stage1_row", lambda name: rows.append(name) or stage1_row(name))
     ctx = start_run(cfg.with_overrides({"requirement.target_memory_gb": 1e-9}))
     r = evaluate(ctx, _point(cfg), **_kw(tiny_llama, tokenizer))
+    assert rows[-1] == "rtn_with_rtn_act_joint"  # the built model follows the joint weight x activation plan
     assert not r["met"] and r["shortfall"]["target_memory_gb"] > 0
     # the size follows from the plan, so the model is not built: no Stage 3 report, no perplexity
     assert r["not_built"] and "ppl_val" not in r["metrics"] and not (Path(r["dir"]) / "stage_3").exists()
     t = Recorder(ctx, "x", 6, **_kw(tiny_llama, tokenizer))(_point(cfg))
     assert not t["ok"] and 0 < t["violation"] < FAILED and "not built" in t["error"]
+    assert t["cost"] == 0  # only built models use up the budget
+
+
+def test_tries_over_the_limit_do_not_use_up_the_budget_but_are_capped(cfg, tiny_llama, tokenizer):
+    c = cfg.with_overrides({"requirement.target_memory_gb": 1e-9, "search.max_tries_per_budget": 3})
+    rec = Recorder(start_run(c), "mfbo", 6, **_kw(tiny_llama, tokenizer))
+    run_mfbo(rec, technique_space(c), budget=1, seed=0, eta=2, rungs=2)
+    assert len(rec.trials) == 3 and rec.spent == 0  # nothing built, so it stops at budget x 3 tries
 
 
 def test_vllm_latency_is_measured_on_the_stage2_model(cfg, tiny_llama, tokenizer, monkeypatch):

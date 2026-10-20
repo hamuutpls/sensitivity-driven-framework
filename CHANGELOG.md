@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-20: Settings search: 1.1 GB, 100 built models, joint plan
+
+Mohammad's answers (2026-10-20): "over 1 gb +10% is fine. do 100 tries. and only the built models count as tries";
+"the goal is joint planning".
+
+- main.py: TARGET_MEMORY_GB 1.1, SEARCH_BUDGET 100.
+- A try whose plan is over the limit is not built and costs nothing; the budget counts built models.
+  `search.max_tries_per_budget` (20) stops a searcher after budget x 20 tries if too few can be built.
+- Stage 1 always follows the joint weight x activation plan; the `stage1_plan` search setting is removed.
+- The report says unstructured pruning gives no vLLM speed-up and counts the tries that were not built.
+
 ## 2026-10-19: Settings search under a memory limit (MODE = "search")
 
 Mohammad's asks: "make the framework dynamic and find the best settings that satisfy perplexity, memory, and

@@ -60,12 +60,12 @@ SETTING_NAMES = {"sensitive_threshold": "Protection threshold", "prune_ratio_agg
                  "calib_dataset": "Calibration text", "calib_samples": "Calibration passages",
                  "gptq_groupsize": "Group size", "smoothquant_alpha": "SmoothQuant strength",
                  "quarot_k_bits": "QuaRot key bits", "stage1_method": "Stage 1 quantization",
-                 "stage1_plan": "Stage 1 plan", "stage2_method": "Stage 2 pruning",
+                 "stage2_method": "Stage 2 pruning",
                  "stage3_method": "Stage 3 KV-cache (memory of earlier words) technique"}
 
 
 def setting_value(name: str, value: Any) -> str:
-    """A setting in words: techniques by their label, the Stage 1 plan as 'separate' or 'joint' plans."""
+    """A setting in words: techniques by their label, numbers rounded."""
     from sdf.stages.methods import METHODS
     from sdf.stages.runner import stage1_row
 
@@ -73,9 +73,6 @@ def setting_value(name: str, value: Any) -> str:
         return stage1_row(value)[0].label
     if name in ("stage2_method", "stage3_method"):
         return METHODS[value].label
-    if name == "stage1_plan":
-        return {"separate": "weight and activation plans made separately",
-                "joint": "weight and activation plans made together"}[value]
     return _fmt(value)
 
 
@@ -128,13 +125,15 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         "# Settings search", "",
         "## What this shows", "",
         "The framework tried many settings and built each one as a chained model: the Stage 0 plan (which layers are "
-        "sensitive), then Stage 1 (weights and activations stored with fewer bits), then Stage 2 (pruning: removing "
+        "sensitive), then Stage 1 (weights and activations stored with fewer bits, following the joint weight and activation "
+        "plan), then Stage 2 (pruning: removing "
         "numbers), then Stage 3 (compressing the KV cache, the model's memory of earlier words). A setting is the "
         "technique of each stage plus the numbers that tune them (protection threshold, pruning share, calibration "
         f"text and so on). Only settings that meet the limit count ({_req(cfg)}). Among those the search looks for "
         "the lowest " + " and the lowest ".join(label(o).lower() for o in s.objectives) + ". Speed comes from vLLM, "
-        "which runs the model up to Stage 2 (it cannot run the Stage 3 techniques). Three search methods each had "
-        f"the same budget of {s.budget} full tries: " + "; ".join(SEARCHER_NAMES[n] for n in s.searchers
+        "which runs the model up to Stage 2 (it cannot run the Stage 3 techniques); unstructured pruning keeps the "
+        "removed numbers as zeros, so it does not make vLLM faster. Three search methods each had the same budget of "
+        f"{s.budget} built models: a setting whose plan is already over the limit is not built and does not count: " + "; ".join(SEARCHER_NAMES[n] for n in s.searchers
                                                                     if n in SEARCHER_NAMES) + ".", "",
         "## What it means", "",
         f"{len(front)} setting(s) are on the best trade-off line: none of them can get better on one goal without "
@@ -162,6 +161,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         "- Techniques allowed: Stage 1 " + ", ".join(setting_value("stage1_method", m) for m in s.stage1_methods)
         + "; Stage 2 " + ", ".join(setting_value("stage2_method", m) for m in s.stage2_methods)
         + "; Stage 3 " + ", ".join(setting_value("stage3_method", m) for m in s.stage3_methods) + ".",
+        f"- Tries over the limit, so not built: {sum(1 for t in trials if t['cost'] == 0)} of {len(trials)}.",
         f"- Tries that failed (could not be built or measured): {sum(1 for t in trials if not t['ok'])} of "
         f"{len(trials)}; the reasons are in the Trials sheet of search_results.xlsx.", "",
     ]
