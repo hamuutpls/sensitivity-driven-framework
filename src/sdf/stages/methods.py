@@ -198,7 +198,7 @@ def _transformed_activations(fn: Callable, extra: Callable[[MethodCall], dict[st
 
 
 _SIMPLIFIED = "simplified port of the fork: "
-_SIZE_NOTE = "size column is the plan's nominal bits; codebooks, outliers and scale overhead are not counted"
+_SIZE_NOTE = "group scales counted at gptq_groupsize; codebooks and outliers are not counted"
 _UNAVAILABLE = {
     "qtip": "QTIP (trellis-coded quantization with a bitshift trellis and tail-biting Viterbi) is a CUDA pipeline that "
             "writes its own packed checkpoint; it is not ported to this simulated, per-layer-bit setting",
@@ -254,7 +254,7 @@ METHODS: dict[str, Method] = {m.name: m for m in [
            library="in repo (torch)", version=2),
     # rank chosen so each layer keeps (1 - planned share) of its numbers; activation-aware SVD
     Method("low_rank", 2, "Low-rank (activation-aware SVD)", _PRUNE_PLANS, _calibrated(low_rank_),
-           params=("gptq_groupsize",), calibrated=True, storage="free", library="in repo (torch)", version=2),
+           calibrated=True, storage="free", library="in repo (torch)", version=2),
     # Stage 3: KV cache (stages/kv_methods.py). Standard rows: rounding techniques at stage0.kv_uniform_bits keeping
     # every word, forgetting techniques at 16 bits keeping stage0.kv_standard_keep_ratio (H2O's 20%; SnapKV and
     # InfiniGen set no share: SnapKV a fixed word count, InfiniGen an attention threshold).
@@ -344,9 +344,9 @@ def series(quant: Method, prune: Method) -> Method:
         with quant.apply(replace(call, plan=bits_only(call.plan))) as first, prune.apply(call) as second:
             yield {**first, **second}
 
-    # low-rank rounds its own factors with round-to-nearest, replacing what the Stage 1 method did to the weights
-    unavailable = quant.unavailable or (f"{prune.label} cannot follow a Stage 1 method: it rounds its factors with "
-                                        "round-to-nearest, which replaces the Stage 1 rounding"
+    # low-rank replaces each weight by its unrounded factors, undoing what the Stage 1 method did to the weights
+    unavailable = quant.unavailable or (f"{prune.label} cannot follow a Stage 1 method: rebuilding the weights "
+                                        "from unrounded factors replaces the Stage 1 rounding"
                                         if prune.name == "low_rank" else "")
     return Method(prune.name + AFTER + quant.name, 2, f"{prune.label} after {quant.label}", prune.plans,
                   apply if quant.apply and prune.apply and not unavailable else None,
