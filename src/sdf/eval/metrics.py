@@ -195,6 +195,7 @@ def measure_model(model: nn.Module, validation: torch.Tensor, held_out: torch.Te
         "decode_ms_per_token_std": statistics.stdev(decode) if len(decode) > 1 else 0.0,
         "prefill_tokens_per_s": cfg.latency_prompt_len / (statistics.fmean(prefill) / 1e3),
         "decode_tokens_per_s": 1e3 / statistics.fmean(decode),
+        "latency_mode": lat[0]["mode"],  # the mode that ran: a failed CUDA graph capture times eagerly
     }
     raw = ([{"measurement": "nll_val", "window": i, "value": v} for i, v in enumerate(nll_val)]
            + [{"measurement": "nll_heldout", "window": i, "value": v} for i, v in enumerate(nll_held)]

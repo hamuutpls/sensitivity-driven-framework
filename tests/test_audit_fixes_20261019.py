@@ -1,5 +1,6 @@
 """Fixes from the 2026-10-19 ponytail audit (numbers are the audit's findings). Every test here fails on main 0c3c70d."""
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -100,3 +101,50 @@ def test_llamacpp_measure_benchmarks_and_scores_the_quantized_file(monkeypatch):
         assert [c[0] for c in calls] == ["python", "llama-bench", "llama-perplexity", "llama-perplexity"]
         assert all(c[c.index("-m") + 1].endswith("f16.gguf") for c in calls[1:])
         assert out["llamacpp_size_gb"] == 4e-9
+
+
+# 7 ------------------------------------------------------------------------------------------------------------
+def test_the_latency_mode_that_ran_is_recorded_and_named_in_the_handoff(tiny_llama, tokenizer, small_cfg):
+    from conftest import fake_texts
+    from sdf.run import start_run
+    from sdf.search_space import SEARCH_SPACE
+    from sdf.stage0.run import run_stage0
+
+    assert small_cfg.eval.latency_mode == "cuda_graph"  # asked for, but a CPU has no CUDA graphs: eager ran
+    ctx = start_run(small_cfg.with_overrides({"stage0.joint_plan": False, "stage0.act_plan": "from_weights"}))
+    run_stage0(ctx, SEARCH_SPACE.make({"calib_samples": 16, "sensitive_threshold": 0.5}), model=tiny_llama,
+               tokenizer=tokenizer, text_loader=fake_texts)
+    rows = json.loads((ctx.run_dir / "stage_0" / "results.json").read_text())["rows"]
+    assert next(r for r in rows if r["variant"] == "fp16")["metrics"]["latency_mode"] == "eager"
+    handoff = (ctx.run_dir / "stage_0" / "handoff.md").read_text(encoding="utf-8")
+    assert "(eager timing)" in handoff and "cuda graph" not in handoff
+
+
+def _reporter(tmp_path, main_metrics):
+    from sdf.reporting.reporter import StageReporter
+    from sdf.requirements import DeploymentRequirement
+
+    return StageReporter(1, tmp_path, "t", {}, {}, {}, DeploymentRequirement(), list(main_metrics))
+
+
+def _pair(rep, original, framework):
+    with rep.method("m", "original") as r:
+        r.metrics.update(original)
+    with rep.method("m", "framework") as r:
+        r.metrics.update(framework)
+    rep.compute_deltas()
+
+
+def test_timings_of_rows_timed_in_different_modes_are_not_compared(tmp_path):
+    main = ["ppl_val", "prefill_ms_mean", "decode_ms_per_token_mean", "decode_tokens_per_s"]
+    original = {"ppl_val": 10.0, "prefill_ms_mean": 5.0, "decode_ms_per_token_mean": 4.0, "decode_tokens_per_s": 250.0,
+                "latency_mode": "cuda_graph"}
+    framework = {"ppl_val": 9.0, "prefill_ms_mean": 50.0, "decode_ms_per_token_mean": 40.0,
+                 "decode_tokens_per_s": 25.0, "latency_mode": "eager"}  # capture failed: ~10x slower
+    rep = _reporter(tmp_path / "a", main)
+    _pair(rep, original, framework)
+    assert rep.verdict(rep.rows[1]) == (["ppl_val"], [], [])
+    rep = _reporter(tmp_path / "b", main)
+    _pair(rep, {**original, "latency_mode": "eager"}, framework)
+    assert rep.verdict(rep.rows[1]) == (["ppl_val"], main[1:], [])  # same mode: a real slowdown
+

@@ -190,7 +190,8 @@ class StageReporter:
     def verdict(self, fw: ComparisonRow) -> tuple[list[str], list[str], list[str]] | None:
         """Main metrics on which framework row `fw` beats, loses to, or (one-off costs) costs more than its
         original row; None when there is no original row. The one judgement behind both the technical findings
-        and the plain summary. Perplexity counts once (see below). A difference within the larger of the two rows' std (a repeated timing's `<name>_std`) is a tie."""
+        and the plain summary. Perplexity counts once (see below). A difference within the larger of the two rows' std (a repeated timing's `<name>_std`) is a tie;
+        HF timings of two rows with different `latency_mode` are not compared."""
         orig = self.find_original(fw)
         if orig is None:
             return None
@@ -198,6 +199,10 @@ class StageReporter:
         for m in self.main_metrics:
             a, b = fw.metrics.get(m), orig.metrics.get(m)
             if not (is_number(a) and is_number(b)):
+                continue
+            # eager timing is ~10x slower than CUDA graph replay: rows timed differently are not compared
+            if (m.startswith(("prefill_", "decode_"))
+                    and fw.metrics.get("latency_mode") != orig.metrics.get("latency_mode")):
                 continue
             better = is_better(m, a - b)
             if better is None:
