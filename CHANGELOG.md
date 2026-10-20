@@ -10,14 +10,15 @@ Mohammad's answers (2026-10-20): "over 1 gb +10% is fine. do 100 tries. and only
   by their share of the windows, so it builds more models (about 438 at budget 100) for the same compute; the
   searcher comparison shows the models built and how many were on all the windows.
 - Only a model built for the searcher costs: a point the plan puts over the limit, a failure before building and a
-  repeat of the searcher's own try cost nothing; a failure after building still costs, so a broken setting cannot
-  rebuild for free. `search.max_tries_per_budget` (20) stops a searcher after budget x 20 tries.
+  repeat of the searcher's own try from the cache cost nothing; a failure after building still costs (it is not
+  cached, so its repeat rebuilds and costs again), so a broken setting cannot rebuild for free. `search.max_tries_per_budget` (20) stops a searcher after budget x 20 tries.
 - Stage 1 always follows the joint weight x activation plan; the `stage1_plan` search setting is removed.
 - MFBO gives more windows only to points it measured. MOBO completes a point over the limit with the worst values
   built so far and its shortfall as the constraint, so Optuna's GPSampler (which learns only from completed trials)
-  learns where the limit is.
-- The limit is checked on `search.memory_metric` before and after the build (`check_requirement`); `ppl_heldout` is
-  refused as an objective.
+  learns where the limit is; a point that crashed or was not measured is completed the same way with constraint 1,
+  so MOBO does not propose it again.
+- The limit is checked on `search.memory_metric` before and after the build (`check_requirement`); it must be
+  `predicted_weight_memory_gb`, the only size known before building; `ppl_heldout` is refused as an objective.
 - The report says unstructured pruning gives no vLLM speed-up, counts the tries over the limit, and no longer counts
   them as failures.
 

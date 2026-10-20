@@ -138,7 +138,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         f"{s.budget} full tries, where a full try is one model measured on all the evaluation windows. MFBO's rough "
         "tries use fewer windows and count by that share, so it builds more models for the same budget (see Models "
         "built below). A setting whose plan is already over the limit is not built and does not count, nor does one "
-        "that failed before building or a repeat of the method's own try. The methods: "
+        "that failed before building or a repeat of the method's own try that came from the cache. The methods: "
         + "; ".join(SEARCHER_NAMES[n] for n in s.searchers if n in SEARCHER_NAMES) + ".", "",
         "## What it means", "",
         f"{len(front)} setting(s) are on the best trade-off line: none of them can get better on one goal without "

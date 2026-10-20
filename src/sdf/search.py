@@ -90,8 +90,7 @@ def evaluate(ctx: RunContext, point: dict[str, Any], max_windows: int | None = N
 
 def check_requirement(cfg: FrameworkConfig, metrics: dict[str, Any]) -> RequirementCheck:
     """The requirement checked with the memory limit on cfg.search.memory_metric, before and after the build alike
-    (the requirement on its own prefers model_size_gb, which a simulated method fills with the 16-bit size). Without
-    that metric it falls back to predicted_weight_memory_gb."""
+    (the requirement on its own prefers model_size_gb, which a simulated method fills with the 16-bit size)."""
     return cfg.requirement.check({**metrics, "model_size_gb": metrics.get(cfg.search.memory_metric)})
 
 
@@ -158,8 +157,8 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
 class Recorder:
     """Every evaluation a searcher asks for, in order, with its cost: its share of the full evaluation windows for a
     model built for this searcher (even if measuring it then failed), else 0 (a point the plan puts over the limit, a
-    crash before building, or a point this searcher already tried on as many windows). Only built models use up the
-    budget."""
+    crash before building, or a point this searcher already tried on as many windows that came back from the cache).
+    Only built models use up the budget."""
 
     def __init__(self, ctx: RunContext, searcher: str, full_windows: int, **kw: Any):
         self.ctx, self.searcher, self.full, self.kw = ctx, searcher, full_windows, kw
@@ -187,7 +186,8 @@ class Recorder:
         r = evaluate(self.ctx, point, None if windows == self.full else windows, **self.kw)
         values = [r.get("metrics", {}).get(o) for o in self.objectives]
         built = "not_built" not in r and ("error" not in r or r.get("attempted", False))
-        repeat = any(t["point"] == point and t["windows"] == windows and t["built"] for t in self.trials)
+        repeat = r["cached"] and any(t["point"] == point and t["windows"] == windows and t["built"]
+                                     for t in self.trials)  # a failed build is not cached, so its repeat rebuilds
         ok = "error" not in r and all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
         t = {"searcher": self.searcher, "n": len(self.trials) + 1, "point": point, "windows": windows,
              "cost": windows / self.full if built and not repeat else 0.0, "built": built,
@@ -229,11 +229,11 @@ def run_mobo(rec: Recorder, space: SearchSpace, budget: int, seed: int):
     """Multi-objective Bayesian optimisation: Optuna's Gaussian-process sampler, with the requirement as a
     constraint. GPSampler learns only from completed trials, so a point over the limit (not built, no values) is
     completed with the worst values built so far and its shortfall as the constraint: the sampler learns where the
-    limit is. Before the first built model there are no such values, so those points wait and are told then.
-    A crash is told as failed. Returns the study."""
+    limit is. A point that crashed or could not be measured is completed the same way, with constraint 1, so the
+    sampler does not propose it again (a failed trial would teach it nothing). Before the first built model there are
+    no such values, so those points wait and are told then. Returns the study."""
     import optuna
     from optuna.distributions import CategoricalDistribution, FloatDistribution
-    from optuna.trial import TrialState
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     dists = {p.name: CategoricalDistribution(p.choices) if p.choices else FloatDistribution(p.low, p.high)
@@ -248,11 +248,9 @@ def run_mobo(rec: Recorder, space: SearchSpace, budget: int, seed: int):
             trial.set_constraint("requirement", t["violation"])  # optuna >= 5
             study.tell(trial, t["values"])
             worst = [max(a, b) for a, b in zip(worst or t["values"], t["values"])]
-        elif t["over_limit"]:
-            trial.set_constraint("requirement", t["violation"])
+        else:  # over the limit (its shortfall), or crashed or not measured (1: never a good place)
+            trial.set_constraint("requirement", t["violation"] if 0 < t["violation"] < FAILED else 1.0)
             waiting.append(trial)
-        else:
-            study.tell(trial, state=TrialState.FAIL)
         if worst:
             for w in waiting:
                 study.tell(w, worst)
@@ -349,6 +347,9 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     s = cfg.search
     if unknown := [n for n in s.searchers if n not in SEARCHERS]:
         raise ValueError(f"unknown searcher(s) {unknown}; known: {sorted(SEARCHERS)}")
+    if s.memory_metric != "predicted_weight_memory_gb":  # the limit is checked on the plan, before building
+        raise ValueError(f"search.memory_metric must be predicted_weight_memory_gb, not {s.memory_metric!r}: only "
+                         "the predicted size is known before a model is built")
     if "ppl_heldout" in s.objectives:
         raise ValueError("ppl_heldout is measured to check the choice, never optimised: use ppl_val")
     if any(o.startswith("vllm_") for o in s.objectives) and not cfg.eval.vllm_python:

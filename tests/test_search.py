@@ -198,11 +198,15 @@ def test_nsga3_keeps_asking_while_tries_are_not_built_and_stops_at_the_cap(cfg):
 def _fake_evaluate(over=lambda p: p["sensitive_threshold"] > 0.3, crash=lambda p: False):
     """evaluate() without building: a point is over the limit by `over`, crashes by `crash` (before building, or
     while building when it returns "building"), else measured from its settings (lower threshold, lower perplexity)."""
+    seen = set()
+
     def fake(ctx, point, max_windows=None, **kw):
-        base = {"dir": "d", "cached": False}
-        if c := crash(point):
+        key = json.dumps([point, max_windows], sort_keys=True)
+        base = {"dir": "d", "cached": key in seen}
+        if c := crash(point):  # a failure is not cached
             return {**base, "error": "RuntimeError: boom", **({"attempted": True} if c == "building" else {})}
         size = 0.5 + point["sensitive_threshold"]
+        seen.add(key)
         if over(point):
             return {**base, "metrics": {"predicted_weight_memory_gb": size}, "errors": {},
                     "not_built": "over the limit, so not built", "met": False,
@@ -225,7 +229,8 @@ def test_only_models_built_for_this_searcher_use_up_the_budget(cfg, monkeypatch)
     assert t["cost"] == 0 and not t["built"] and not t["over_limit"]  # a crash before building builds nothing
     t = rec(_point(cfg, sensitive_threshold=0.2, calib_samples=64))
     assert t["cost"] == 1 and t["built"] and not t["ok"]  # a model was built, then measuring it failed
-    assert rec.spent == 2.5
+    assert rec(_point(cfg, sensitive_threshold=0.2, calib_samples=64))["cost"] == 1  # not cached, so rebuilt
+    assert rec.spent == 3.5
 
 
 def test_mfbo_never_gives_more_windows_to_a_point_that_was_not_built(cfg, monkeypatch):
@@ -259,5 +264,20 @@ def test_check_uses_the_search_memory_metric_and_held_out_ppl_is_never_an_object
     assert search.check_requirement(cfg, m).met and not cfg.requirement.check(m).met
     monkeypatch.setattr(search, "_build_and_measure", lambda *a: {"metrics": {**m, "ppl_val": 10.0}, "errors": {}})
     assert evaluate(start_run(cfg), _point(cfg))["met"]  # after the build too
+    with pytest.raises(ValueError, match="memory_metric"):
+        run_search(start_run(cfg.with_overrides({"search.memory_metric": "model_size_gb"})))
     with pytest.raises(ValueError, match="ppl_heldout"):
         run_search(start_run(cfg.with_overrides({"search.objectives": ["ppl_heldout", "ppl_val"]})))
+
+
+def test_mobo_does_not_keep_proposing_a_point_that_fails_after_building(cfg, monkeypatch):
+    from optuna.trial import TrialState
+
+    # every H2O model is built and then fails (not cached), the rest are measured
+    monkeypatch.setattr(search, "evaluate", _fake_evaluate(over=lambda p: False,
+                                                           crash=lambda p: p["stage3_method"] == "h2o" and "building"))
+    rec = Recorder(start_run(cfg), "mobo", 6)
+    study = run_mobo(rec, technique_space(cfg), budget=20, seed=0)
+    assert not study.get_trials(states=(TrialState.FAIL,))  # the failures taught the model
+    late = rec.trials[10:]
+    assert sum(t["point"]["stage3_method"] == "h2o" for t in late) / len(late) < 0.25
