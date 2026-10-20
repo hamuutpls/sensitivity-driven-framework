@@ -44,6 +44,16 @@ following each side's memory vs perplexity trade-off line.
   chained Stage 3 row on the Stage 2 model it was built on (they cannot run the KV techniques).
 - Low-rank still cannot follow Stage 1, so its chained rows fail and say so.
 
+## 2026-10-20: H2O keeps a fixed cache (fix)
+
+The 0-3-4 run of 2026-10-19 gave perplexity about 398 for every row that forgets with H2O's rule (rtn_kv, QuaRot KV
+and KVQuant Our method rows, both H2O rows). Our simulation gave word i a cache of ceil(share x (i + 1)) words, so at
+word 1 the cache held one word, the word itself, and the first word (the attention sink the model leans on) was
+forgotten for good. Mohammad chose "A", the paper's rule: a fixed cache of ceil(share x window) words, filled before
+anything is forgotten. Only H2O changed; SnapKV and InfiniGen keep the visible-words share, so at the same share H2O now
+keeps more words on average (at 20% of 512 words: about 93 against 52), and more than Stage 0's coverage assumed.
+H2O is version 3, so its cached standard rows are redone.
+
 ## 2026-10-18: Stage 3 KV-cache techniques
 
 Mohammad's asks in the KV cache (Stage 3) thread: all five techniques, rounding and forgetting, HF and backends,
