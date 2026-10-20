@@ -13,6 +13,10 @@ from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
 
+# shortcut: one fixed limit for a whole worker run (build, perplexity, timing), not configurable; make it an
+# eval setting if a bigger model needs longer
+TIMEOUT_S = 4 * 3600
+
 
 def run_worker(python: str, worker: str, args: dict[str, Any], tmp: Path, error: type[Exception]) -> dict[str, Any]:
     """Write `args` to tmp/args.json, run `python <worker next to this file> args.json`, and return the JSON dict
@@ -23,7 +27,11 @@ def run_worker(python: str, worker: str, args: dict[str, Any], tmp: Path, error:
     # the backends compile kernels with tools installed next to their Python (ninja); a venv's bin/ is not on PATH
     # unless the venv is activated, so put it there
     env = {**os.environ, "PATH": os.pathsep.join([str(Path(python).parent), os.environ.get("PATH", "")])}
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+                           timeout=TIMEOUT_S)
+    except subprocess.TimeoutExpired:  # a hung backend must not stall the run; the row keeps its HF numbers
+        raise error(f"{worker.removesuffix('.py')} timed out after {TIMEOUT_S} s") from None
     if r.returncode:
         text = r.stderr or r.stdout
         log.warning("%s failed (%d):\n%s", worker, r.returncode, text[-4000:])
