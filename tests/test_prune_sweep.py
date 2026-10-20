@@ -1,5 +1,6 @@
 import json
 
+import pytest
 import torch
 from torch import nn
 
@@ -106,3 +107,32 @@ def test_run_threshold_sweep(tiny_llama, tokenizer, small_cfg):
     assert lo["protected_layers"] > hi["protected_layers"]
     assert lo["predicted_weight_memory_gb"] > hi["predicted_weight_memory_gb"]
     assert "## Threshold sweep" in out["report"].read_text(encoding="utf-8")
+
+
+def test_timing_settings_do_not_rerun_the_sweep(tiny_llama, tokenizer, small_cfg):
+    """Audit 2026-10-19 #6: the sweep measures perplexity only, so a timing change reuses every pruned row."""
+    cand = SEARCH_SPACE.make({"calib_samples": 16})
+    cfg = small_cfg.with_overrides({"stage0.prune_sweep_ratios": [0.5]})
+    run_prune_sweep(start_run(cfg), cand, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts)
+    again = run_prune_sweep(start_run(cfg.with_overrides({"eval.latency_repeats": 5})), cand, model=tiny_llama,
+                            tokenizer=tokenizer, text_loader=fake_texts)
+    rows = [r for r in json.loads(again["json"].read_text())["rows"] if r["variant"] != "fp16"]
+    assert len(rows) == 3 and all(r["info"]["cached"] for r in rows)
+
+
+def test_sweeps_without_rounding_predict_sizes_at_baseline_bits(tiny_llama, tokenizer, small_cfg):
+    """Audit 2026-10-19 #10: with prune_sweep_quantize off nothing is rounded, so an unpruned plan is the
+    uncompressed model's size, and the report does not say the numbers are stored with fewer bits."""
+    from sdf.stage0.threshold_sweep import run_threshold_sweep
+
+    cand = SEARCH_SPACE.make({"calib_samples": 16})
+    cfg = small_cfg.with_overrides({"stage0.prune_sweep_quantize": False, "stage0.prune_sweep_ratios": [0.0],
+                                    "stage0.uniform_prune_ratio": 0.0, "stage0.threshold_sweep": [0.5],
+                                    "stage0.guard_sweep": [0]})
+    for run in (run_prune_sweep, run_threshold_sweep):
+        out = run(start_run(cfg), cand, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts)
+        rows = {r["method"] + "/" + r["variant"]: r["metrics"] for r in json.loads(out["json"].read_text())["rows"]}
+        fp16 = rows.pop("baseline/fp16")["predicted_weight_memory_gb"]
+        unpruned = [k for k in rows if k in ("prune_000/original", "prune_000/framework", "standard/original")]
+        assert unpruned and all(rows[k]["predicted_weight_memory_gb"] == pytest.approx(fp16) for k in unpruned)
+        assert "remaining numbers with fewer bits" not in out["report"].read_text(encoding="utf-8")

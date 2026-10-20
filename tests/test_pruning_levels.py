@@ -2,6 +2,7 @@
 
 import copy
 import csv
+import json
 import math
 
 import pytest
@@ -11,8 +12,7 @@ from transformers import LlamaConfig, LlamaForCausalLM
 from sdf.run import start_run
 from sdf.search_space import SEARCH_SPACE
 from sdf.stage0.pruning_levels import (CSV_NAME, SUBDIR, capped_plan, feed_forward_share, layer_caps, layer_set,
-                                       level_plan, restored,
-                                       share_removed)
+                                       level_plan, restored)
 from sdf.stage0.run import run_stage0
 from sdf.stage0.sensitivity import find_decoder_layers
 from sdf.stages.pruning import mlp_linears, structured_prune_
@@ -66,12 +66,6 @@ def test_structured_levels_above_the_feed_forward_share_are_capped_and_remove_ev
     structured_prune_(m, capped, [torch.randint(0, 64, (2, 8))], -1, 16)
     ups, down = mlp_linears(find_decoder_layers(m)[0], 32)
     assert down.weight.abs().sum() == 0 and all(u.weight.abs().sum() == 0 for u in ups)
-
-
-def test_share_removed_weighs_layers_by_size(tiny_llama):
-    assert share_removed(tiny_llama, level_plan(4, [0, 1, 2, 3], 0.5, 16)) == pytest.approx(0.5)
-    assert share_removed(tiny_llama, level_plan(4, [2], 0.8, 16)) == pytest.approx(0.2)
-    assert share_removed(tiny_llama, level_plan(4, [], 0.8, 16)) == 0.0
 
 
 def test_restored_puts_back_every_decoder_weight(tiny_llama):
@@ -145,3 +139,16 @@ def test_without_a_guard_only_the_all_layers_set_runs(small_cfg, tiny_llama, tok
 def test_feed_forward_share_refuses_a_layer_without_a_feed_forward_block(tiny_llama):
     with pytest.raises(ValueError, match="feed-forward"):
         feed_forward_share(tiny_llama, torch.nn.Sequential(torch.nn.Linear(32, 32)))
+
+
+def test_timing_settings_do_not_rerun_the_pruning_levels(small_cfg, tiny_llama, tokenizer):
+    """Audit 2026-10-19 #6: the levels test measures perplexity only, so a timing change reuses every row."""
+    cfg = small_cfg.with_overrides({"stage0.pruning_levels": [0.5], "stage0.joint_plan": False,
+                                    "stage0.guard_top_k": 0})
+    cand = SEARCH_SPACE.make({"calib_samples": 16})
+    run_stage0(start_run(cfg), cand, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts)
+    res = run_stage0(start_run(cfg.with_overrides({"eval.latency_repeats": 5})), cand, model=tiny_llama,
+                     tokenizer=tokenizer, text_loader=fake_texts)
+    data = json.loads((res.outputs["report"].parent.parent / SUBDIR / "results.json").read_text())
+    rows = [r for r in data["rows"] if r["variant"] != "fp16"]
+    assert len(rows) == 3 and all(r["info"]["cached"] for r in rows)

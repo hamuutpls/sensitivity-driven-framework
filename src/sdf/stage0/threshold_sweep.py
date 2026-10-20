@@ -21,8 +21,8 @@ from sdf.reporting.markdown import _table
 from sdf.reporting.reporter import StageReporter
 from sdf.run import RunContext
 from sdf.stage0.planner import baseline_cost, plan_compression, uniform_plan
-from sdf.stage0.prune_sweep import METRICS, make_evaluator
-from sdf.stage0.run import _cost_metrics, load_fp16, load_guard, load_profile, setup, stage_reporter, weight_cost
+from sdf.stage0.prune_sweep import METRICS, make_evaluator, sweep_cost
+from sdf.stage0.run import _cost_metrics, load_fp16, load_guard, load_profile, setup, stage_reporter
 from sdf.stage0.sensitivity import normalize
 
 
@@ -37,7 +37,7 @@ def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, 
 
     profile, _ = load_profile(ctx, candidate, handle, text_loader)
     scores = normalize(profile.raw_scores, s0.normalization)
-    predict = weight_cost(profile, gs, s0)
+    predict = sweep_cost(profile, gs, s0)
     rep = stage_reporter(
         ctx, candidate, handle, profile, ("stage0", "eval", "model", "run"), stage=0,
         subdir="stage_0_threshold_sweep", title="Protection thresholds: how many layers to protect",
