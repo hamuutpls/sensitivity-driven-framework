@@ -2,8 +2,8 @@
 
 Annotated figures for the thesis, each as SVG (for the document, scales cleanly) and PNG. They use the real
 numbers from the Stage 0 run `20261003-144910_3df5df` (TinyLlama-1.1B-Chat, RTX 5070 Ti). Stage 1
-(quantization: weights and activations) and Stage 2 (pruning) are drawn as done; Stage 3 (KV cache), Stage 4 and
-the search as planned. Redraw with `pip install matplotlib && python docs/figures/make_figures.py`.
+(quantization: weights and activations), Stage 2 (pruning), Stage 3 (KV cache) and Stage 4 are drawn as done; the
+search as planned. Redraw with `pip install matplotlib && python docs/figures/make_figures.py`.
 
 | Figure | Shows |
 |---|---|
