@@ -59,18 +59,18 @@ Stage 1 weight method (`<pruning>_after_<quantization>`).
 | QuaRot KV | as QuaRot | | | in repo (`stages/kv_methods.py`): keys after RoPE and values rotated by a Hadamard matrix per head, rounded per token and head; standard row keys at `quarot_k_bits` |
 | KVQuant | research repo only | – | – | in repo, simplified port: pre-RoPE per-channel keys with calibrated ranges, per-token values, non-uniform levels from plain k-means, 1% outliers and the first word unrounded |
 | H2O | research repo only | – | – | in repo, attention function: a fixed cache of ceil(share × window) words, filled first, then half recent words and half heavy hitters, one evicted per new word |
-| SnapKV | research repo only | – | – | in repo, attention function: every word treated as a prompt end, window 32, max-pool kernel 7 |
-| InfiniGen | research repo with custom offloading | no | partly | in repo, token selection only (guess from 30% of q/k channels, no offline skewing); the CPU offloading is not run, so latency is not comparable |
+| SnapKV | research repo only | – | – | in repo, attention function: every word treated as a prompt end, window 32, max-pool kernel 7, H2O's fixed cache size |
+| InfiniGen | research repo with custom offloading | no | partly | in repo, token selection only (guess from 30% of q/k channels, no offline skewing, H2O's fixed cache size); the CPU offloading is not run, so latency is not comparable |
 
 All Stage 3 rows are simulated on HF (accuracy real, memory predicted). Standard rows: rounding techniques at
 `kv_uniform_bits` keeping every word, forgetting techniques at 16 bits keeping `kv_standard_keep_ratio` (20%). Our
 method rows follow the whole KV plan (bits and kept share); rtn_kv, QuaRot KV and KVQuant forget with H2O's rule, so
-rtn_kv's Our method row is the same computation as H2O's (Mohammad's choice, 2026-10-18). With SnapKV and InfiniGen a
-layer keeps its share of the words each word can see so far, as Stage 0 sized the plan; H2O's rule keeps a fixed
-cache of ceil(share × window) words, filled before anything is forgotten (Mohammad, 2026-10-20), so at the same share
-it keeps more words on average than SnapKV and InfiniGen (at 20% of 512: about 93 against 52). No backend
-can forget words or set per-layer KV bits, so llama.cpp, vLLM and TensorRT-LLM run only the uncompressed row and
-every Stage 3 row says why (Mohammad, 2026-10-18).
+rtn_kv's Our method row is the same computation as H2O's (Mohammad's choice, 2026-10-18). H2O, SnapKV and InfiniGen keep
+the same fixed cache of ceil(share × window) words, filled before anything is forgotten (Mohammad, 2026-10-20), so
+at the same share all three keep the same number of words. Stage 0 sized the plan with the share of the words each
+word can see so far, so the forgetting rules keep more words on average than Stage 0's coverage assumed (at 20% of
+512: about 93 against 52). No backend can forget words or set per-layer KV bits, so llama.cpp, vLLM and
+TensorRT-LLM run only the uncompressed row and every Stage 3 row says why (Mohammad, 2026-10-18).
 
 ## Stage 4: backends and downstream tasks
 

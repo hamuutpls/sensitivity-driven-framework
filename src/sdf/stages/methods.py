@@ -272,22 +272,24 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     Method("kvquant", 3, "KVQuant", ("kv",), _kv_method("kvquant", "h2o"), calibrated=True, version=2,
            library="in repo (simplified port)", note=_KV_NOTE + " KVQuant: levels from plain k-means, not "
            "sensitivity-weighted; the 1% unrounded outliers are not counted in the predicted memory."),
-    # keeps recent + heavy-hitter words
+    # keeps recent + heavy-hitter words; 3: fixed cache, filled before anything is forgotten (keeps the first word)
     Method("h2o", 3, "H2O", ("kv",), _kv_method("rtn", "h2o"), forgets=True, library="in repo (attention function)",
            note=_KV_NOTE + " H2O: a fixed cache of ceil(share x window) words per layer, filled first, then half "
-           "recent and half heavy hitters; scores are averaged over the query heads sharing a key/value head. At the "
-           "same share it keeps more words on average than SnapKV and InfiniGen, which keep a share of the words "
-           "seen so far.", version=3),  # 3: fixed cache, filled before anything is forgotten (keeps the first word)
-    # keeps an observation window and the earlier words it attends to most
-    Method("snapkv", 3, "SnapKV", ("kv",), _kv_method("rtn", "snapkv"), forgets=True, version=2,
+           "recent and half heavy hitters; scores are averaged over the query heads sharing a key/value head. SnapKV "
+           "and InfiniGen use the same cache size.", version=3),
+    # keeps an observation window and the earlier words it attends to most; 3: H2O's fixed cache
+    Method("snapkv", 3, "SnapKV", ("kv",), _kv_method("rtn", "snapkv"), forgets=True, version=3,
            library="in repo (attention function)", note=_KV_NOTE + " SnapKV: its paper keeps a fixed number of words; "
-           "the standard row keeps H2O's 20% instead, and the choice is redone at every word."),
-    # guesses attention from 30% of the channels and fetches only the top words; the CPU offloading is not run
-    Method("infinigen", 3, "InfiniGen", ("kv",), _kv_method("rtn", "infinigen"), forgets=True, version=2,
+           "the standard row keeps H2O's 20% instead, in the same fixed cache as H2O (ceil(share x window) words, "
+           "filled first), and the choice is redone at every word."),
+    # guesses attention from 30% of the channels and fetches only the top words; the CPU offloading is not run;
+    # 3: H2O's fixed cache
+    Method("infinigen", 3, "InfiniGen", ("kv",), _kv_method("rtn", "infinigen"), forgets=True, version=3,
            library="in repo (simplified port, no CPU offloading)",
            note=_KV_NOTE + " InfiniGen: its paper fetches the words above an attention threshold (a varying "
-           "count); the standard row keeps H2O's 20% instead. Channels are picked from the words so far, without the "
-           "offline skewing or the previous layer's guess; the full cache would sit in CPU memory, not run here."),
+           "count); the standard row keeps H2O's 20% instead, in the same fixed cache as H2O. Channels are picked "
+           "from the words so far, without the offline skewing or the previous layer's guess; the full cache would "
+           "sit in CPU memory, not run here."),
 ] + _fork_methods()}
 
 AFTER = "_after_"  # "<Stage 2 method>_after_<Stage 1 weight method>": the series path 0 -> 1 -> 2 -> 4

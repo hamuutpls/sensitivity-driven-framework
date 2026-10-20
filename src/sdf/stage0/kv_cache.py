@@ -96,7 +96,7 @@ def eager_attention(model: nn.Module) -> Iterator[None]:
 
 def budgets(keep_ratio: float, n: int, device: torch.device | None = None) -> torch.Tensor:
     """Words each of n queries keeps: ceil(keep_ratio x the words it can see), at least 1. Stage 0's coverage
-    and Stage 3's forgetting both use it (Mohammad, 2026-10-18). round: 0.7 * 10 is 7.000000000000001."""
+    uses it; Stage 3's fixed cache is its last entry (`cache_budgets`). round: 0.7 * 10 is 7.000000000000001."""
     return torch.tensor([max(1, math.ceil(round(keep_ratio * (i + 1), 9))) for i in range(n)], device=device)
 
 
