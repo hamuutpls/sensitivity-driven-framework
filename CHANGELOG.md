@@ -1,5 +1,52 @@
 # Changelog
 
+## 2026-10-20: the other ponytail audit fixes (audits 2026-10-19 and 2026-10-20)
+
+How results are judged (Mohammad's 09:17 choice, 2026-10-20 findings 21 and 30):
+- Backend perplexity (llama.cpp, vLLM, TensorRT-LLM) is no longer won or lost in the verdict. Each backend loads only
+  its own file format, so every method's weights are rounded a second time onto a plain grid, and the number measures
+  that re-rounded file, not the method. The columns stay in the tables, now named "... perplexity of the re-rounded
+  file". Perplexity now counts once in every verdict (Hugging Face validation and held-out halves agreeing).
+- Excel colours follow the verdict (2026-10-19 #16); the held-out perplexity half is coloured with the validation
+  half, and one-off costs are red.
+
+Runs and measurements:
+- Stage 3 (22): rtn_kv and KVQuant standard rows run the same attention code as their Our rows (versions 2 and 3).
+- SpinQuant (25): keeps a random sample of each calibration batch, not every input (no out-of-memory on 16 GB);
+  version 2, and the `*_with_spinquant` joint rows get a new version.
+- AQLM (29): no longer computes input statistics it never used, and calibration settings leave its cache key;
+  same weights.
+- Runner (2026-10-19 #1, #2, #4, #5, #9, #13, #14, #15, #18): a backend failure for a passing reason (busy card, out
+  of memory) is not saved to the cache; the FP16 row keeps its Hugging Face numbers when a backend fails; Stage 2
+  levels come from the plan's own share; standard rows' cache keys hold the plan's bits and pruning only, not the
+  sensitivity scores; exposure is measured against Stage 0's reference; rows of BiLLM, whose bits are fixed, drop the
+  predicted size of a plan it does not follow; duplicate capped levels are skipped with a note; the export group size
+  enters a key only when something is rounded.
+- Backends (#3): vLLM and TensorRT-LLM programs time out after 4 h, each llama.cpp program after 2 h, with the
+  backend's normal error, and the program's child processes are killed with it. Timings record the latency mode that
+  ran and rows timed in different modes are not compared (#7). Timing settings are checked when the config is built
+  (#17).
+- Stage 0 (#6, #10, #12): pruning tests leave timing settings out of their keys; sweeps that round nothing predict
+  sizes at baseline bits and their text names those bits; report text follows the scaling, guard and bit settings,
+  and the sensitivity column says "rank" only under rank scaling.
+- Low-rank (15, lean): the unreachable factor rounding and the group size in its key are gone.
+
+Colab (26, 27, #8):
+- The notebook no longer uses Google Drive (no sign-in box); results and caches go to `/content/thesis_compression/`.
+  Step 1 says the runtime type matters only on a free plan.
+- `scripts/colab_stage1.py` runs the methods given after it (`%run colab_stage1.py rtn gptq`), saves where the notebook
+  saves, and writes its result lines to `stage1_summary.txt` in the run folder.
+- The notebook drops loaded `sdf` modules before reloading `main`, so a fresh pull takes effect.
+
+Figures (28) are redrawn for Stages 3 and 4. Lean: unused `CALIB`, the duplicate `share_removed` and the bits-only KV
+plan in Stages 1-3 are gone.
+
+Numbers that change: standard weight and joint WxAy rows of Stages 1 and 2, and 16-bit pruning rows, get new cache
+keys (measured again once; same values);
+rtn_kv and KVQuant standard rows' speed and memory; SpinQuant rows; exposure columns; verdict lines and colours
+wherever a backend ran; BiLLM rows lose their predicted size; low-rank and AQLM rows are measured again (same
+values).
+
 ## 2026-10-20: audit fixes the final test waits for (ponytail audit 2026-10-20, findings 19, 23, 24)
 
 - Joint plan budget (19): the joint weight-and-activation plan gets the separate activation plan's real average

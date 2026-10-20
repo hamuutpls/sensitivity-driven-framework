@@ -419,7 +419,7 @@ def test_compare_report_counts_overlap_with_the_never_pruned_set():
     from sdf.stage0.compare import _report
 
     names = ["layer_removal", "hessian"]
-    res = {"scores": names, "threshold": 0.5, "per_layer": [], "protected": {s: [] for s in names},
+    res = {"scores": names, "threshold": 0.5, "per_layer": [], "protected": {s: [] for s in names}, "guard_top_k": 5,
            "top": {"layer_removal": [0, 2, 7, 21, 1], "hessian": [2, 1, 3, 7, 4]},
            "agreement": {a: {b: 0.0 for b in names} for a in names}, "overlap": {a: {b: 0 for b in names} for a in names},
            "time_s": {}, "peak_memory_gb": {}, "outliers": {s: [] for s in names}, "baseline_ppl": None}
@@ -427,3 +427,49 @@ def test_compare_report_counts_overlap_with_the_never_pruned_set():
                                                                             "gptq_groupsize": 128}).splitlines()
             if " of 5 " in line}
     assert "3 of 5" in rows["Hessian"] and "5 of 5" in rows["remove the layer"]
+
+
+def test_compare_report_gives_each_score_its_own_protected_count():
+    """Audit 2026-10-19 #12: with minmax scaling the scores protect different numbers of layers."""
+    from sdf.stage0.compare import _report
+
+    names = ["layer_removal", "hessian"]
+    per_layer = [{"layer": i, **{f"{s}_{c}": 0.0 for s in names for c in ("raw", "rank", "protected")}} for i in range(22)]
+    res = {"scores": names, "threshold": 0.5, "per_layer": per_layer, "guard_top_k": 1,
+           "protected": {"layer_removal": list(range(1, 22)), "hessian": [5]}, "top": {s: [5] for s in names},
+           "agreement": {a: {b: 0.0 for b in names} for a in names}, "overlap": {a: {b: 1 for b in names} for a in names},
+           "time_s": {}, "peak_memory_gb": {}, "outliers": {s: [] for s in names}, "baseline_ppl": None}
+    summary = _report(res, {"calib_dataset": "w", "calib_samples": 1, "gptq_groupsize": 128}).split("## Every layer")[0]
+    assert "*remove the layer* protects 21, *Hessian* protects 1 of 22 layers" in summary
+    assert "share 1 of their protected layers" in summary and "of the same 21" not in summary
+
+
+def test_compare_scores_top_layers_follow_the_guard_size(tiny_llama, tokenizer, small_cfg):
+    """Audit 2026-10-19 #12: the never-pruned set is guard_top_k layers, not a fixed 5."""
+    from sdf.stage0.compare import compare_scores
+
+    ctx = start_run(small_cfg.with_overrides({"stage0.guard_top_k": 2}))
+    out = compare_scores(ctx, SEARCH_SPACE.make({"calib_samples": 16}), ("layer_removal", "grad_x_weight"),
+                         model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts)
+    data = json.loads(out["json"].read_text())
+    assert all(len(top) == 2 for top in data["top"].values())
+    assert "| Top 2 layers |" in out["report"].read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("scaled, warning", [(1.0, "nothing beyond 6-bit"), (0.0, "uniform 3-bit plus pruning")])
+def test_stage0_report_text_follows_the_scaling_and_bit_settings(tiny_llama, tokenizer, small_cfg, monkeypatch,
+                                                                 scaled, warning):
+    """Audit 2026-10-19 #12: the intro describes minmax scaling under minmax, and the every-layer / no-layer
+    protected warnings name the configured bits."""
+    import sdf.stage0.run as stage0_run
+
+    monkeypatch.setattr(stage0_run, "normalize", lambda scores, method: [scaled] * len(scores))
+    cfg = small_cfg.with_overrides({"stage0.normalization": "minmax", "stage0.protected_bits": 6,
+                                    "stage0.compressed_bits": 3, "stage0.pruning_levels": [],
+                                    "stage0.joint_plan": False})
+    ctx = start_run(cfg)
+    run_stage0(ctx, SEARCH_SPACE.make({"calib_samples": 16}), model=tiny_llama, tokenizer=tokenizer,
+               text_loader=fake_texts, measure_fp16=False)
+    report = (ctx.run_dir / "stage_0" / "report.md").read_text(encoding="utf-8")
+    assert warning in report and "beyond 8-bit" not in report and "uniform 4-bit plus" not in report
+    assert "**Scale.**" in report and "spaced evenly" not in report and "roughly the most sensitive" not in report

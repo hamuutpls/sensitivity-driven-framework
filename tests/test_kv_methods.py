@@ -49,11 +49,21 @@ def test_group_mean_and_repeat_kv_shapes():
 def test_kv_methods_changed_since_their_first_cached_rows_have_a_new_version():
     from sdf.stages.methods import METHODS
     # rows cached at 439c84f / 90cd6a7 used the fixed-window budget, InfiniGen's look-ahead and SnapKV's pooling spill
-    assert {m: METHODS[m].version for m in ("quarot_kv", "kvquant")} == dict.fromkeys(("quarot_kv", "kvquant"), 2)
+    assert METHODS["quarot_kv"].version == 2
     # 2026-10-20: SnapKV and InfiniGen take H2O's fixed cache; their standard rows forget, so they are redone
     assert METHODS["snapkv"].version == METHODS["infinigen"].version == 3
-    assert METHODS["rtn_kv"].version == 1  # its standard row is unchanged
     assert METHODS["h2o"].version == 3  # 2026-10-20: fixed cache; its standard row forgets, so it is redone
+    # 2026-10-20: their standard rows forget nothing and were timed with the model's own attention
+    assert (METHODS["rtn_kv"].version, METHODS["kvquant"].version) == (2, 3)
+
+
+@pytest.mark.parametrize("name", KV_METHODS)
+def test_kv_rows_always_run_the_stage3_attention_code(name, stage0_dir, tiny_llama, small_cfg):
+    orig = original_plan(METHODS[name], Stage0Plans.load(stage0_dir), small_cfg.stage0, 0.3)
+    cand = SEARCH_SPACE.make({"calib_samples": 16})
+    batches = lambda: [torch.randint(0, 64, (2, 16))]  # noqa: E731
+    with METHODS[name].apply(MethodCall(tiny_llama, orig, cand, small_cfg, batches)):
+        assert tiny_llama.config._attn_implementation == SDF_KV  # same code as the Our method row, for fair timing
 
 
 def test_budgets_are_a_share_of_the_words_each_word_can_see():

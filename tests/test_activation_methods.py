@@ -88,6 +88,23 @@ def test_spinquant_learning_lowers_the_proxy_loss(outlier_model, batches):
     assert losses[1] <= losses[0]
 
 
+def test_spinquant_keeps_only_a_sample_of_each_batch(outlier_model, batches, monkeypatch):
+    # holding every calibration input first ran out of memory on a 16 GB card (audit 2026-10-20, finding 25)
+    held, cat = [], torch.cat
+    hidden = outlier_model.config.hidden_size
+    monkeypatch.setattr(torch, "cat", lambda ts, *a, **k: held.extend(
+        len(t) for t in ts if t.dtype == torch.float32 and t.dim() == 2 and t.shape[1] == hidden) or cat(ts, *a, **k))
+    spinquant(outlier_model, uniform_activation_plan(4, 4), batches, GS, steps=1, max_tokens=16)
+    assert held and max(held) == 16 // len(batches)  # 48 tokens per batch, 4 kept from each
+
+
+def test_spinquant_rows_are_redone_after_the_sampling_change():
+    from sdf.stages.methods import METHODS, methods_for
+    assert METHODS["spinquant"].version == 2
+    with_spin, with_quarot = methods_for(1, ["gptq_with_spinquant", "gptq_with_quarot"])
+    assert with_spin.version != METHODS["gptq"].version == with_quarot.version  # others keep their cached rows
+
+
 def test_orthogonal_is_built_on_the_requested_device_both_ways():
     # the power-of-two (Hadamard) path once stayed on the CPU, so SpinQuant's x @ r failed on a GPU
     for n in (8, 6):

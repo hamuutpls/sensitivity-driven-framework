@@ -255,7 +255,11 @@ def aqlm_(model: nn.Module, plan: CompressionPlan, batches: list[torch.Tensor], 
     instead of up to 1000 with convergence check, fitted on a random sample of 2**17 vectors, then every vector gets
     its nearest codeword). The k-means is not weighted by the layer's Hessian; no beam search over the codes, no
     fine-tuning of codebooks, scales or the model. `group_size` and `int_zero` do not apply."""
-    _apply(model, plan, batches, baseline_bits, "AQLM", lambda w, H, bits: aqlm_quantize_(w, bits))
+    require_bits_only(plan, "AQLM")
+    for lp, layer in zip(plan.layers, find_decoder_layers(model)):  # no input Hessians: the k-means does not use them
+        if lp.bit_width < baseline_bits:
+            for m in (m for m in layer.modules() if isinstance(m, nn.Linear)):
+                aqlm_quantize_(m.weight, lp.bit_width)
 
 
 @torch.no_grad()

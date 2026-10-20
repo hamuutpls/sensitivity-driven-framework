@@ -286,6 +286,7 @@ def write_handoff(
 
     # ---- Stage 4 ------------------------------------------------------------------------------------------
     ev = cfg.eval
+    mode = fp16.get("latency_mode")  # the mode that ran, not the configured one (capture can fail)
     keys = [("ppl_val", "Perplexity, validation half"), ("ppl_heldout", "Perplexity, held-out half"),
             ("prefill_ms_mean", "Time to read a prompt (ms)"), ("decode_ms_per_token_mean", "Time per word (ms)"),
             ("peak_memory_gb", "Peak graphics-card memory (GB)"), ("predicted_weight_memory_gb", "Size (GB)"),
@@ -303,7 +304,8 @@ def write_handoff(
               f"{'' if ev.max_windows is None else f' (first {ev.max_windows})'}, first half for validation and "
               f"second half held out (never tuned on); latency with a {ev.latency_prompt_len}-token prompt and "
               f"{ev.latency_decode_tokens} generated tokens, {ev.latency_warmup} warm-up and {ev.latency_repeats} "
-              f"timed repeats ({ev.latency_mode.replace('_', ' ')} timing); seed {cfg.run.seed}; backend HF Transformers.", ""]
+              f"timed repeats ({mode.replace('_', ' ') + ' timing' if mode else 'timing mode not recorded'}); "
+              f"seed {cfg.run.seed}; backend HF Transformers.", ""]
 
     # ---- search -------------------------------------------------------------------------------------------
     rows = [[p.name, p.stage, _n(candidate.get(p.name)),

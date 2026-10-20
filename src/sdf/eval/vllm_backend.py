@@ -57,10 +57,10 @@ METRICS.update({
     "vllm_decode_ms_per_token_std": MetricSpec("vLLM decode time per token (std)", "ms", None,
                                                "spread of times per written word-piece (vLLM)",
                                                "How much the decode time per token varied between repeated runs."),
-    "vllm_ppl_val": MetricSpec("vLLM perplexity (validation half)", "", "lower", "prediction error in vLLM (validation half)",
+    "vllm_ppl_val": MetricSpec("vLLM perplexity of the re-rounded file (validation half)", "", "lower", "prediction error of the re-rounded vLLM file (validation half)",
                                "Prediction error of the saved model on the validation half of the test text (lower is "
                                "better). The weights are re-rounded when saved, so compare between rows only."),
-    "vllm_ppl_heldout": MetricSpec("vLLM perplexity (held-out half)", "", "lower", "prediction error in vLLM (held-out half)",
+    "vllm_ppl_heldout": MetricSpec("vLLM perplexity of the re-rounded file (held-out half)", "", "lower", "prediction error of the re-rounded vLLM file (held-out half)",
                                    "As the validation-half value, on the held-out half of the test text (lower is better)."),
 })
 MAIN_METRICS = ["vllm_size_gb", "vllm_decode_ms_per_token", "vllm_ppl_val"]

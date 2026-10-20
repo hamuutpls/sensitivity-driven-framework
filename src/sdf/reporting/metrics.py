@@ -14,6 +14,10 @@ from typing import Literal
 # One-off costs (paid once, before the model is used) do not decide whether the framework beat the original;
 # reports state them separately so a framework row is not called a trade-off just for needing profiling.
 ONE_OFF_COSTS = frozenset({"build_time_s"})
+# Shown in the tables but not won or lost in the verdict: each backend loads only its own file format, so every
+# method's weights are rounded a second time onto a plain grid at the plan's bits, and this perplexity measures that
+# re-rounded file, not the method (audit 2026-10-20, findings 21 and 30)
+NOT_IN_VERDICT = frozenset({"llamacpp_ppl_val", "vllm_ppl_val", "trtllm_ppl_val"})
 
 
 @dataclass(frozen=True)

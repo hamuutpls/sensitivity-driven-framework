@@ -21,8 +21,8 @@ from sdf.reporting.markdown import _table
 from sdf.reporting.reporter import StageReporter
 from sdf.run import RunContext
 from sdf.stage0.planner import baseline_cost, plan_compression, uniform_plan
-from sdf.stage0.prune_sweep import METRICS, make_evaluator
-from sdf.stage0.run import _cost_metrics, load_fp16, load_guard, load_profile, setup, stage_reporter, weight_cost
+from sdf.stage0.prune_sweep import METRICS, make_evaluator, stored_bits, sweep_cost
+from sdf.stage0.run import _cost_metrics, load_fp16, load_guard, load_profile, setup, stage_reporter
 from sdf.stage0.sensitivity import normalize
 
 
@@ -37,7 +37,7 @@ def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, 
 
     profile, _ = load_profile(ctx, candidate, handle, text_loader)
     scores = normalize(profile.raw_scores, s0.normalization)
-    predict = weight_cost(profile, gs, s0)
+    predict = sweep_cost(profile, gs, s0)
     rep = stage_reporter(
         ctx, candidate, handle, profile, ("stage0", "eval", "model", "run"), stage=0,
         subdir="stage_0_threshold_sweep", title="Protection thresholds: how many layers to protect",
@@ -65,7 +65,7 @@ def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, 
         r.metrics.update(_cost_metrics(baseline_cost(profile, s0.baseline_bits)), protected_layers=0)
     uniform = uniform_plan(scores, s0.uniform_bits, s0.uniform_prune_ratio)
     row("standard", "original", uniform, label="Standard quantization",
-        description=f"every layer at {s0.uniform_bits} bits, {s0.uniform_prune_ratio:.0%} removed")
+        description=f"every layer at {stored_bits(s0)[0]} bits, {s0.uniform_prune_ratio:.0%} removed")
     for k in guards:
         guarded, _ = load_guard(ctx, candidate, handle, text_loader, profile, k)
         for t in thresholds:
@@ -94,7 +94,7 @@ def _write_plain(rep: StageReporter, s0, pr: float) -> None:
                      for r in ok if r.variant != "fp16"])
     rep.plain_intro = (
         "The protection threshold decides how many layers the framework protects: protected layers keep "
-        f"{s0.protected_bits} bits per number and lose nothing; the others get {s0.compressed_bits} bits and lose "
+        f"{stored_bits(s0)[1]} bits per number and lose nothing; the others get {stored_bits(s0)[2]} bits and lose "
         f"{pr:.0%} of their numbers. A low threshold protects many layers, so the model stays accurate but big; a "
         "high threshold protects few, so it is small but riskier. The guard is the number of layers whose "
         "removal hurts most, which are never pruned whatever the threshold. Here every combination is applied "
@@ -125,7 +125,7 @@ def _write_plain(rep: StageReporter, s0, pr: float) -> None:
         "- **Threshold**: layers with a sensitivity score at or above it are protected.",
         "- **Guard**: how many of the layers whose removal hurts most are never pruned.",
         "- **Protected layers**: how many of the layers keep "
-        f"{s0.protected_bits} bits with nothing removed.",
+        f"{stored_bits(s0)[1]} bits with nothing removed.",
         "- **Memory (GB)**: predicted memory to store the model; lower is better"
         + (f" (standard method: {std['predicted_weight_memory_gb']:.4g})." if std else "."),
         "- **Error**: perplexity on the validation half of the test text; lower is better"

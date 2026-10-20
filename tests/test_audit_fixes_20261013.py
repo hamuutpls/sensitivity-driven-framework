@@ -194,10 +194,10 @@ def test_a_serving_timing_difference_within_its_spread_is_a_tie(tmp_path):
     from sdf.eval import vllm_backend  # registers the vLLM metrics, std included
 
     assert "vllm_decode_ms_per_token_std" in vllm_backend.METRICS
-    rep = _reporter(tmp_path, ["vllm_decode_ms_per_token", "vllm_ppl_val"])
-    _pair(rep, {"vllm_decode_ms_per_token": 5.00, "vllm_decode_ms_per_token_std": 0.2, "vllm_ppl_val": 10.0},
-          {"vllm_decode_ms_per_token": 4.95, "vllm_decode_ms_per_token_std": 0.2, "vllm_ppl_val": 9.0})
-    assert rep.verdict(rep.rows[1]) == (["vllm_ppl_val"], [], [])  # 0.05 ms faster is inside the 0.2 ms spread
+    rep = _reporter(tmp_path, ["vllm_decode_ms_per_token", "vllm_size_gb"])
+    _pair(rep, {"vllm_decode_ms_per_token": 5.00, "vllm_decode_ms_per_token_std": 0.2, "vllm_size_gb": 1.0},
+          {"vllm_decode_ms_per_token": 4.95, "vllm_decode_ms_per_token_std": 0.2, "vllm_size_gb": 0.9})
+    assert rep.verdict(rep.rows[1]) == (["vllm_size_gb"], [], [])  # 0.05 ms faster is inside the 0.2 ms spread
 
 
 # 4 ------------------------------------------------------------------------------------------------------------

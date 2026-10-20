@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,29 @@ from typing import Any
 from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
+
+# shortcut: one fixed limit for a whole worker run (build, perplexity, timing), not configurable; make it an
+# eval setting if a bigger model needs longer
+TIMEOUT_S = 4 * 3600
+
+
+def run_killing_group(cmd: list[str], timeout: float, **kw) -> subprocess.CompletedProcess:
+    """subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw), but a timeout kills the program's
+    whole process group, not only the program: vLLM's engine process or TensorRT-LLM's MPI workers would otherwise
+    keep holding graphics-card memory (on Windows, which has no process groups, only the program is killed)."""
+    group = hasattr(os, "killpg")
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=group,
+                          **kw) as p:
+        try:
+            out, err = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if group:
+                os.killpg(p.pid, signal.SIGKILL)
+            else:
+                p.kill()
+            p.communicate()
+            raise
+    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
 
 
 def run_worker(python: str, worker: str, args: dict[str, Any], tmp: Path, error: type[Exception]) -> dict[str, Any]:
@@ -23,7 +47,10 @@ def run_worker(python: str, worker: str, args: dict[str, Any], tmp: Path, error:
     # the backends compile kernels with tools installed next to their Python (ninja); a venv's bin/ is not on PATH
     # unless the venv is activated, so put it there
     env = {**os.environ, "PATH": os.pathsep.join([str(Path(python).parent), os.environ.get("PATH", "")])}
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
+    try:
+        r = run_killing_group(cmd, TIMEOUT_S, encoding="utf-8", errors="replace", env=env)
+    except subprocess.TimeoutExpired:  # a hung backend must not stall the run; the row keeps its HF numbers
+        raise error(f"{worker.removesuffix('.py')} timed out after {TIMEOUT_S} s") from None
     if r.returncode:
         text = r.stderr or r.stdout
         log.warning("%s failed (%d):\n%s", worker, r.returncode, text[-4000:])
