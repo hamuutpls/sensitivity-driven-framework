@@ -67,6 +67,8 @@ class ComparisonRow:
     error: str | None = None
     requirement: dict[str, Any] = field(default_factory=dict)
     deltas: dict[str, dict[str, float | None]] = field(default_factory=dict)
+    # framework rows: main metrics won / lost against the original row (StageReporter.verdict), for the sheets
+    verdict: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def key(self) -> str:
@@ -172,10 +174,13 @@ class StageReporter:
     def compute_deltas(self) -> None:
         fp16 = self._find(None, "fp16")
         for row in self.rows:
-            row.deltas = {}
+            row.deltas, row.verdict = {}, {}
             if row.status != "ok":
                 continue
             original = self._find(row.compare_to, "original") if row.variant == "framework" else None
+            if original is not None:
+                wins, losses, _ = self.verdict(row)
+                row.verdict = {"wins": wins, "losses": losses}
             for name, value in row.metrics.items():
                 if not is_number(value):
                     continue

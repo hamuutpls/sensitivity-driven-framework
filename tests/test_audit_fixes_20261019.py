@@ -148,3 +148,37 @@ def test_timings_of_rows_timed_in_different_modes_are_not_compared(tmp_path):
     _pair(rep, {**original, "latency_mode": "eager"}, framework)
     assert rep.verdict(rep.rows[1]) == (["ppl_val"], main[1:], [])  # same mode: a real slowdown
 
+
+# 16 -----------------------------------------------------------------------------------------------------------
+def _fill(ws, row, header):
+    col = next(c.column for c in ws[1] if c.value == header)
+    return ws.cell(row=row, column=col).fill.fgColor.rgb
+
+
+def test_excel_colours_follow_the_verdict_and_a_tie_stays_plain(tmp_path):
+    from openpyxl import load_workbook
+
+    from sdf.reporting.excel import GREEN, RED, write_workbook
+    from sdf.reporting.master import write_master
+
+    rep = _reporter(tmp_path, ["ppl_val", "ppl_heldout", "decode_ms_per_token_mean", "peak_memory_gb"])
+    for method, fw_heldout in (("a", 9.0), ("b", 11.0)):  # b: the perplexity halves disagree, a tie
+        with rep.method(method, "original") as r:
+            r.metrics.update({"ppl_val": 10.0, "ppl_heldout": 10.0, "decode_ms_per_token_mean": 5.00,
+                              "decode_ms_per_token_std": 0.2, "peak_memory_gb": 1.0})
+        with rep.method(method, "framework") as r:  # 0.05 ms faster is inside the 0.2 ms spread: a tie
+            r.metrics.update({"ppl_val": 9.0, "ppl_heldout": fw_heldout, "decode_ms_per_token_mean": 4.95,
+                              "decode_ms_per_token_std": 0.2, "peak_memory_gb": 1.1})
+    rep.compute_deltas()
+    write_workbook(rep, tmp_path / "s.xlsx")
+    ws = load_workbook(tmp_path / "s.xlsx")["Summary"]
+    green, red, plain = GREEN.fgColor.rgb, RED.fgColor.rgb, "00000000"
+    for header in ("ppl_val Δ vs original", "ppl_val Δ% vs original"):
+        assert [_fill(ws, i, header) for i in (3, 5)] == [green, plain]
+    assert _fill(ws, 3, "peak_memory_gb Δ vs original") == red
+    assert _fill(ws, 3, "decode_ms_per_token_mean Δ vs original") == plain  # noise, not a win
+
+    rep.flush()  # results.json, which the master workbook is built from
+    write_master(tmp_path)
+    ws = load_workbook(tmp_path / "all_stages_comparison.xlsx")["All stages"]
+    assert [_fill(ws, i, "Δ% perplexity (val) vs original") for i in (3, 5)] == [green, plain]
