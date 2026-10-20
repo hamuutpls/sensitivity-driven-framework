@@ -67,11 +67,10 @@ All Stage 3 rows are simulated on HF (accuracy real, memory predicted). Standard
 method rows follow the whole KV plan (bits and kept share); rtn_kv, QuaRot KV and KVQuant forget with H2O's rule, so
 rtn_kv's Our method row is the same computation as H2O's (Mohammad's choice, 2026-10-18). H2O, SnapKV and InfiniGen keep
 the same fixed cache of ceil(share × window) words, filled before anything is forgotten (Mohammad, 2026-10-20), so
-at the same share all three keep the same number of words. Stage 0 sized the plan with the share of the words each word
-can see so far, so the forgetting rules keep more words on average than Stage 0's coverage assumed (at 20% of 512:
-about 93 against 52). No backend
-can forget words or set per-layer KV bits, so llama.cpp, vLLM and TensorRT-LLM run only the uncompressed row and
-every Stage 3 row says why (Mohammad, 2026-10-18).
+at the same share all three keep the same number of words. Stage 0 sized the plan with the share of the words each
+word can see so far, so the forgetting rules keep more words on average than Stage 0's coverage assumed (at 20% of
+512: about 93 against 52). No backend can forget words or set per-layer KV bits, so llama.cpp, vLLM and
+TensorRT-LLM run only the uncompressed row and every Stage 3 row says why (Mohammad, 2026-10-18).
 
 ## Stage 4: backends and downstream tasks
 

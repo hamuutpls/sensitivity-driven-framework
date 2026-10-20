@@ -4,9 +4,10 @@ Perplexity is measured with one forward pass per text window, so forgetting is s
 Mohammad, 2026-10-18): each word attends only to the past words the technique would still hold at that point, under
 a budget per layer from its share (the Stage 0 plan's share, or H2O's 20% in the standard rows): every forgetting
 rule keeps a fixed cache of ceil(keep_ratio x window) words, filled before anything is forgotten (`cache_budgets`;
-Mohammad, 2026-10-20), so H2O, SnapKV and InfiniGen keep the same number of words at the same share. A dropped word is dropped for a whole key/value head (shared by its group of query heads), since that
-is what frees memory. Rounding of cached keys and values is applied in place, as rtn_kv does; nothing is stored
-smaller, so memory comes from the plan's prediction and speed is not a compressed cache's speed.
+Mohammad, 2026-10-20), so H2O, SnapKV and InfiniGen keep the same number of words at the same share. A dropped word
+is dropped for a whole key/value head (shared by its group of query heads), since that is what frees memory. Rounding of
+cached keys and values is applied in place, as rtn_kv does; nothing is stored smaller, so memory comes from the plan's
+prediction and speed is not a compressed cache's speed.
 
 Hooks: rounding of keys before RoPE (KVQuant, plain rounding) is a forward hook on k_proj / v_proj; QuaRot's rotation
 (keys after RoPE) and every forgetting rule live in one attention function, `kv_attention_forward`, switched on per

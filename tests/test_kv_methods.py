@@ -62,13 +62,11 @@ def test_budgets_are_a_share_of_the_words_each_word_can_see():
     assert budgets(0.2, 512).tolist()[-1] == 103
 
 
-def _check_budgets(keep, r, fixed=False):
+def _check_budgets(keep, r):
     n = keep.shape[-1]
     assert not (keep & ~torch.ones(n, n, dtype=torch.bool).tril()).any()  # never a future word
     assert keep[..., torch.arange(n), torch.arange(n)].all()  # every word sees itself
-    want = budgets(r, n)
-    if fixed:  # H2O: a cache of ceil(r * n) words, filled before anything is forgotten
-        want = (torch.arange(n) + 1).clamp(max=int(want[-1]))
+    want = cache_budgets(r, n)  # a cache of ceil(r * n) words, filled before anything is forgotten
     assert torch.equal(keep.sum(-1), want.expand_as(keep.sum(-1)))
 
 
@@ -76,7 +74,7 @@ def _check_budgets(keep, r, fixed=False):
 def test_h2o_keeps_its_share_with_the_recent_half(r):
     keep = h2o_keep(_scores(n=16), groups=2, keep_ratio=r)
     assert keep.shape == (1, 2, 16, 16)
-    _check_budgets(keep, r, fixed=True)
+    _check_budgets(keep, r)
     size = int(budgets(r, 16)[-1])
     assert keep[..., size - 1, :size].all()  # nothing is forgotten until the cache is full
     for i in range(16):
@@ -105,20 +103,20 @@ def test_cache_budgets_fill_a_fixed_cache_first():
     assert cache_budgets(0.2, 512)[-1] == budgets(0.2, 512)[-1] == 103
 
 
-@pytest.mark.parametrize("r", [0.1, 0.3])
-def test_h2o_snapkv_and_infinigen_keep_the_same_number_of_words(r):
+@pytest.mark.parametrize("r,n", [(0.1, 40), (0.3, 40), (0.3, 128)])  # 128: SnapKV's cache beyond its 32-word window
+def test_h2o_snapkv_and_infinigen_keep_the_same_number_of_words(r, n):
     g = torch.Generator().manual_seed(4)
-    q, k = torch.randn(1, 4, 40, 8, generator=g), torch.randn(1, 2, 40, 8, generator=g)
-    s = (q @ repeat_kv(k, 2).mT).masked_fill(~torch.ones(40, 40, dtype=torch.bool).tril(), -math.inf)
+    q, k = torch.randn(1, 4, n, 8, generator=g), torch.randn(1, 2, n, 8, generator=g)
+    s = (q @ repeat_kv(k, 2).mT).masked_fill(~torch.ones(n, n, dtype=torch.bool).tril(), -math.inf)
     for keep in (h2o_keep(s, 2, r), snapkv_keep(s, 2, r), infinigen_keep(q, k, 2, r)):
-        _check_budgets(keep, r, fixed=True)
+        _check_budgets(keep, r)
 
 
 def test_snapkv_keeps_the_window_and_the_most_voted_word():
     s = _scores(n=20)
     s[..., 5] = torch.where(torch.isinf(s[..., 5]), s[..., 5], torch.full_like(s[..., 5], 20.0))
     keep = snapkv_keep(s, groups=2, keep_ratio=0.5, window=3, kernel=1)
-    _check_budgets(keep, 0.5, fixed=True)
+    _check_budgets(keep, 0.5)
     for i in range(6, 20):
         assert keep[..., i, i - 2:i + 1].all()  # observation window
         assert keep[..., i, 5].all()  # the word every query looks at
@@ -138,7 +136,7 @@ def test_infinigen_fetches_the_words_with_the_highest_guess():
     q, k = torch.randn(1, 4, 16, 8, generator=g).abs() + 1, torch.randn(1, 2, 16, 8, generator=g)
     k[:, :, 4] = 10.0  # word 4 matches every (positive) query, whichever channels are used
     keep = infinigen_keep(q, k, groups=2, keep_ratio=0.3)
-    _check_budgets(keep, 0.3, fixed=True)
+    _check_budgets(keep, 0.3)
     rows = [i for i, b in enumerate(cache_budgets(0.3, 16).tolist()) if b >= 2 and i > 4]
     assert keep[..., rows, 4].all()
 
