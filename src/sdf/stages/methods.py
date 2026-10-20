@@ -211,6 +211,7 @@ _ACT_EXTRA: dict[str, Callable[[MethodCall], dict[str, Any]]] = {
     "smoothquant": lambda c: {"alpha": c.candidate["smoothquant_alpha"]},
     "quarot": lambda c: {"seed": c.cfg.run.seed}, "spinquant": lambda c: {"seed": c.cfg.run.seed},
     "rptq": lambda c: {"seed": c.cfg.run.seed}}
+_ACT_VERSION = {"spinquant": 2}  # 2: calibration rows sampled per batch (a different sample)
 
 
 def _fork_methods() -> list[Method]:
@@ -227,7 +228,8 @@ def _fork_methods() -> list[Method]:
     for name, (fn, label, library, simplified) in ACTIVATION_METHODS.items():
         out.append(Method(name, 1, label, ("activations",), _transformed_activations(fn, _ACT_EXTRA[name]),
                           params=("smoothquant_alpha",) if name == "smoothquant" else (), calibrated=True,
-                          library=library, note=_SIMPLIFIED + simplified + "; weights stay unquantized in this stage"))
+                          library=library, note=_SIMPLIFIED + simplified + "; weights stay unquantized in this stage",
+                          version=_ACT_VERSION.get(name, 1)))
     return out
 
 METHODS: dict[str, Method] = {m.name: m for m in [
@@ -322,7 +324,8 @@ def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
     return Method(name, 1, f"{weights.label} + {label}" + (", every layer W8A8" if standard_w8a8 else ""),
                   () if standard_w8a8 else _JOINT_PLANS,
                   apply if weights.apply else None,
-                  version=weights.version,
+                  # unchanged while the activation method is at version 1, so those cached rows stay valid
+                  version=weights.version + 1000 * (_ACT_VERSION.get(acts, 1) - 1),
                   params=tuple(dict.fromkeys(weights.params + (("smoothquant_alpha",) if acts == "smoothquant" else ()))),
                   calibrated=True, library=weights.library, note=weights.note,
                   fixed_bits=weights.fixed_bits, unavailable=weights.unavailable,
