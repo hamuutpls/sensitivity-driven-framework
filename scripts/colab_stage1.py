@@ -42,43 +42,44 @@ main.STAGE2_METHODS = []
 main.STAGE3_METHODS = []
 main.OUTPUT_ROOT = f"{ROOT}/results"
 main.CACHE_DIR = f"{ROOT}/cache"
-main.main()
+try:  # the results are packed even when the run or the summary fails
+    main.main()
 
-run_dir = max(glob.glob(f"{ROOT}/results/*/"), key=os.path.getmtime)
-summary = open(os.path.join(run_dir, "stage1_summary.txt"), "w")  # closed in the finally below, even on an error
+    run_dir = max(glob.glob(f"{ROOT}/results/*/"), key=os.path.getmtime)
+    summary = open(os.path.join(run_dir, "stage1_summary.txt"), "w")  # closed in the finally below, even on an error
 
+    def emit(*parts) -> None:
+        """Print a result line and keep it in stage1_summary.txt."""
+        print(*parts, flush=True)
+        print(*parts, file=summary, flush=True)
 
-def emit(*parts) -> None:
-    """Print a result line and keep it in stage1_summary.txt."""
-    print(*parts, flush=True)
-    print(*parts, file=summary, flush=True)
-
-
-try:
-    data = json.load(open(os.path.join(run_dir, "stage_1", "results.json")))
-    keep = ("ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "avg_bits_per_weight", "avg_activation_bits",
-            "peak_memory_gb", "decode_ms_per_token_mean", "build_time_s")
-    emit("RESULTS-BEGIN", os.path.basename(run_dir.rstrip("/")), "device: Colab")
-    for r in data["rows"]:
-        emit(json.dumps({"method": r["method"], "variant": r["variant"], "status": r["status"],
-                         "error": (r.get("error") or "")[:300],
-                         **{k: r["metrics"].get(k) for k in keep}}))
-    emit("RESULTS-END")
-    stage0 = json.load(open(os.path.join(run_dir, "stage_0", "compression_plan.json")))
-    emit("PLAN-BEGIN", json.dumps([[lp["layer"], lp["bit_width"]] for lp in stage0["layers"]]), "PLAN-END")
-    joint_w, joint_a = (os.path.join(run_dir, "stage_0", f) for f in ("joint_weight_plan.json", "joint_activation_plan.json"))
-    if os.path.exists(joint_w) and os.path.exists(joint_a):
-        pairs = [[w["bit_width"], a["act_bits"]] for w, a in zip(json.load(open(joint_w))["layers"],
-                                                                json.load(open(joint_a))["layers"])]
-        row0 = next((r for r in json.load(open(os.path.join(run_dir, "stage_0", "results.json")))["rows"]
-                     if r["method"] == "joint_weights_activations"), {})
-        emit("JOINT-BEGIN", json.dumps({"pairs": pairs, "metrics": row0.get("metrics"),
-                                        "separate_plans": row0.get("info", {}).get("separate_plans"),
-                                        "interaction": row0.get("info", {}).get("interaction_at_lowest_bits"),
-                                        "per_layer_plan": row0.get("info", {}).get("per_layer_plan"),
-                                        "refinement": {k: v for k, v in row0.get("info", {}).get("refinement", {}).items()
-                                                       if k != "cost"}}),
-             "JOINT-END")
+    try:
+        data = json.load(open(os.path.join(run_dir, "stage_1", "results.json")))
+        keep = ("ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "avg_bits_per_weight", "avg_activation_bits",
+                "peak_memory_gb", "decode_ms_per_token_mean", "build_time_s")
+        emit("RESULTS-BEGIN", os.path.basename(run_dir.rstrip("/")), "device: Colab")
+        for r in data["rows"]:
+            emit(json.dumps({"method": r["method"], "variant": r["variant"], "status": r["status"],
+                             "error": (r.get("error") or "")[:300],
+                             **{k: r["metrics"].get(k) for k in keep}}))
+        emit("RESULTS-END")
+        stage0 = json.load(open(os.path.join(run_dir, "stage_0", "compression_plan.json")))
+        emit("PLAN-BEGIN", json.dumps([[lp["layer"], lp["bit_width"]] for lp in stage0["layers"]]), "PLAN-END")
+        joint_w, joint_a = (os.path.join(run_dir, "stage_0", f)
+                            for f in ("joint_weight_plan.json", "joint_activation_plan.json"))
+        if os.path.exists(joint_w) and os.path.exists(joint_a):
+            pairs = [[w["bit_width"], a["act_bits"]] for w, a in zip(json.load(open(joint_w))["layers"],
+                                                                    json.load(open(joint_a))["layers"])]
+            row0 = next((r for r in json.load(open(os.path.join(run_dir, "stage_0", "results.json")))["rows"]
+                         if r["method"] == "joint_weights_activations"), {})
+            refinement = row0.get("info", {}).get("refinement") or {}
+            emit("JOINT-BEGIN", json.dumps({"pairs": pairs, "metrics": row0.get("metrics"),
+                                            "separate_plans": row0.get("info", {}).get("separate_plans"),
+                                            "interaction": row0.get("info", {}).get("interaction_at_lowest_bits"),
+                                            "per_layer_plan": row0.get("info", {}).get("per_layer_plan"),
+                                            "refinement": {k: v for k, v in refinement.items() if k != "cost"}}),
+                 "JOINT-END")
+    finally:
+        summary.close()
 finally:
-    summary.close()
-print("packed:", pack_results(ROOT) or "already saved in D:/Thesis")
+    print("packed:", pack_results(ROOT) or "nothing to pack (already in D:/Thesis, or no results)")

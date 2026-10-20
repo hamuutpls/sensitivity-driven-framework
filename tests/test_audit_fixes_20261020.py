@@ -60,7 +60,8 @@ def test_errors_that_repeat_on_every_run_are_told_apart():  # review of PR #75, 
             raise vllm_backend.VLLMError(f"GPTQ export failed: {e}") from e
     except vllm_backend.VLLMError as refused:
         assert _lasting(refused)
-    assert _lasting(FileNotFoundError("llama-quantize")) and _lasting(ValueError("the plan has 3 layers"))
+    # may pass: a llama.cpp built later, a failed download (a FileNotFoundError subclass), garbled output
+    assert not _lasting(FileNotFoundError("llama-quantize")) and not _lasting(ValueError("Expecting value"))
     assert not _lasting(vllm_backend.VLLMError("vllm_worker failed (1): CUDA out of memory"))
     assert not _lasting(RuntimeError("llama-perplexity timed out after 7200 s"))
 

@@ -229,8 +229,9 @@ _KIND_SETTINGS = {"weights": ("weight_zero_point", "baseline_bits"), "activation
 
 def _setting_key(m: Method, s0) -> dict[str, Any]:
     default = type(s0)()
-    return {k: getattr(s0, k) for k in _KIND_SETTINGS[kind_of(m)]
-            if k not in m.unused_settings and getattr(s0, k) != getattr(default, k)}
+    # a Stage 2 method after a WxAy method keeps rounding activations (and vLLM rounds them with act_group_size)
+    names = _KIND_SETTINGS[kind_of(m)] + (("act_group_size",) if m.act_plan else ())
+    return {k: getattr(s0, k) for k in names if k not in m.unused_settings and getattr(s0, k) != getattr(default, k)}
 
 
 def plan_metrics(plan: Any, plans: Stage0Plans, cfg, candidate: dict[str, Any],
@@ -428,7 +429,8 @@ def run_stage(
                 except Exception as e:  # noqa: BLE001 - a missing program or file too, not only a failed run
                     log.warning("llama.cpp could not measure %s: %s", method.name, e)
                     info["llamacpp_error"] = str(e)
-                    retry += [] if _lasting(e) else ["llamacpp"]
+                    if not _lasting(e):
+                        retry.append("llamacpp")
         for name, (mod, err, _) in serving.items() if be_on(method) else ():
             if rotated:
                 info[f"{name}_error"] = _ROTATED
@@ -441,7 +443,8 @@ def run_stage(
             except err as e:  # a plan the backend cannot load (e.g. 3-bit GPTQ in vLLM): keep the row,
                 log.warning("%s could not measure %s: %s", name, method.name, e)  # record why
                 info[f"{name}_error"] = str(e)
-                retry += [] if _lasting(e) else [name]
+                if not _lasting(e):
+                    retry.append(name)
                 continue
             if joint:
                 info[f"{name}_activations"] = (_rounded_by_backend(name, method, cfg.stage0.act_group_size)
@@ -587,7 +590,7 @@ def run_stage(
                                           "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size,
                                           **source_key(cfg, candidate["calib_dataset"])}
                 # a backend that failed for a passing reason (busy card, out of memory, a crash) is tried again next
-                # run; one that cannot run this row at all (no llama.cpp, a plan it cannot load) is saved with it
+                # run; one whose format cannot hold this row's plan is saved with it
                 result, cached = ctx.cache.get_or_compute(f"stage{stage}_original", key,
                                                           lambda: build_and_measure(m, orig, "original"),
                                                           store=_no_passing_error)
@@ -662,8 +665,8 @@ def _plan_key(plan: Any) -> Any:
 
 def _no_passing_error(result: dict[str, Any]) -> bool:
     """Whether a standard row's result may be saved: not when a backend failed for a reason that may pass
-    (on_backends' `retry`); reasons that always repeat (the model rotates its inputs, no llama.cpp program, a plan
-    the backend's format cannot hold) are saved with the row."""
+    (on_backends' `retry`); reasons that always repeat (the model rotates its inputs, a plan the backend's format
+    cannot hold) are saved with the row."""
     if retry := result.get("retry"):
         log.warning("not caching this row, so the failed backends are tried again next run: %s",
                     {k: result["info"].get(f"{k}_error") for k in retry})
@@ -671,10 +674,10 @@ def _no_passing_error(result: dict[str, Any]) -> bool:
 
 
 def _lasting(e: BaseException) -> bool:
-    """Whether a backend error repeats on every run: a missing program or file (FileNotFoundError), or a plan the
-    export format cannot hold (ValueError, raised as is or as the cause of the backend's own error). A failed or
-    timed-out backend program (out of memory, a busy card) may pass."""
-    return isinstance(e, (FileNotFoundError, ValueError)) or isinstance(e.__cause__, ValueError)
+    """Whether a backend error repeats on every run: a plan the export format cannot hold (the backend's error raised
+    from the exporter's ValueError). Anything else may pass: a failed or timed-out program (out of memory, a busy
+    card), garbled output, a download that failed, or a llama.cpp program built after the run."""
+    return isinstance(e.__cause__, ValueError)
 
 
 def _before_metrics(row, before: dict[str, tuple[Method, Any]] | None, variant: str, plans: Stage0Plans, cfg,

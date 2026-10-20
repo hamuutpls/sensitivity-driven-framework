@@ -375,7 +375,8 @@ def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
                   calibrated=True, library=weights.library, note=weights.note,
                   fixed_bits=weights.fixed_bits, unavailable=weights.unavailable, overhead=weights.overhead,
                   joint=(8, 8) if standard_w8a8 else (None, None),
-                  unused_settings=weights.unused_settings + _UNUSED_ACT_SETTINGS.get(acts, ()))
+                  # act_group_size stays even after RPTQ: vLLM rounds a WxAy row's activations with it
+                  unused_settings=weights.unused_settings)
 
 
 def series(quant: Method, prune: Method, quant_plan: str = "quant") -> Method:

@@ -103,7 +103,8 @@ def test_the_notebook_does_not_use_google_drive():
     assert "google.colab" not in code and "drive.mount" not in code and "DRIVE" not in code
     assert 'main.OUTPUT_ROOT = f"{ROOT}/results"' in code
     assert "ROOT = results_root()" in code
-    assert code.rstrip().endswith('print(pack_results(ROOT) or "already saved in D:\\\\Thesis")')
+    last = "".join(cells[-1]["source"])  # packed in a finally, so a failed run is packed too
+    assert "try:\n    main.main()\nfinally:\n    print(pack_results(ROOT)" in last
 
 
 def test_results_root_is_d_thesis_on_the_pc_and_colab_disk_elsewhere(tmp_path):
@@ -129,6 +130,9 @@ def test_pack_results_writes_one_archive_and_nothing_on_the_pc(tmp_path):
         assert tar.getnames() == ["results", "results/run1", "results/run1/results.json"]  # the cache stays behind
     assert not (tmp_path / "out.tgz.part").exists()
     assert pack_results(str(tmp_path / "pc"), archive, local=str(tmp_path / "pc")) is None
+    # a run that wrote no results: the earlier run's archive is removed, never taken for this run's
+    assert pack_results(str(tmp_path / "empty"), archive, local=str(tmp_path / "pc")) is None
+    assert not (tmp_path / "out.tgz").exists() and not (tmp_path / "out.tgz.part").exists()
 
 
 # 27 -----------------------------------------------------------------------------------------------------------
@@ -151,6 +155,8 @@ def test_colab_stage1_runs_the_methods_it_is_given(monkeypatch, argv, namespace,
     monkeypatch.setitem(sys.modules, "main", fake)
     monkeypatch.setattr(sys, "argv", ["colab_stage1.py", *argv])
     monkeypatch.chdir(REPO)  # the script changes directory to the repository
+    # as on Colab, also when the tests run on the PC, where D:\Thesis exists
+    monkeypatch.setattr("sdf.utils.colab.results_root.__defaults__", ("/no/such/dir/x", "/content/thesis_compression"))
     with pytest.raises(_Stop):
         runpy.run_path(str(REPO / "scripts" / "colab_stage1.py"), init_globals=namespace)
     assert seen == {"methods": expected, "out": "/content/thesis_compression/results"}
@@ -171,9 +177,10 @@ def test_colab_stage1_closes_its_summary_and_packs_the_results(monkeypatch, tmp_
     monkeypatch.setattr("sdf.utils.colab.pack_results.__defaults__", (str(tmp_path / "out.tgz"), str(tmp_path / "pc")))
     monkeypatch.setattr("sdf.utils.colab.results_root.__defaults__", (str(tmp_path / "pc" / "x"), str(root)))
     monkeypatch.chdir(REPO)
-    with pytest.raises(FileNotFoundError):  # no Stage 0 plan file: the summary is still closed
+    with pytest.raises(FileNotFoundError):  # no Stage 0 plan file: the results are still packed
         runpy.run_path(str(REPO / "scripts" / "colab_stage1.py"))
-    assert "RESULTS-END" in (run / "stage1_summary.txt").read_text()
+    assert "RESULTS-END" in (run / "stage1_summary.txt").read_text() and (tmp_path / "out.tgz").exists()
+    (tmp_path / "out.tgz").unlink()
     (run / "stage_0" / "compression_plan.json").write_text(json.dumps({"layers": [{"layer": 0, "bit_width": 4}]}))
     out = runpy.run_path(str(REPO / "scripts" / "colab_stage1.py"))
     assert out["summary"].closed and (tmp_path / "out.tgz").exists()

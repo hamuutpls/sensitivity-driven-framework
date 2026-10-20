@@ -18,13 +18,14 @@ Runs and measurements:
 - AQLM (29): no longer computes input statistics it never used, and calibration settings leave its cache key;
   same weights.
 - Runner (2026-10-19 #1, #2, #4, #5, #9, #13, #14, #15, #18): a backend failure for a passing reason (busy card, out
-  of memory, a failed or timed-out program) is not saved to the cache, while one that repeats on every run (no
-  llama.cpp program, a plan the backend's format cannot hold) is saved with the row; the FP16 row keeps its Hugging Face numbers when a backend fails; Stage 2
+  of memory, a failed or timed-out program) is not saved to the cache, while one that repeats on every run (a plan
+  the backend's format cannot hold) is saved with the row; the FP16 row keeps its Hugging Face numbers when a backend fails; Stage 2
   levels come from the plan's own share; standard rows' cache keys hold the plan's bits and pruning only, not the
   sensitivity scores; exposure is measured against Stage 0's reference; rows of BiLLM, whose bits are fixed, drop the
   predicted size of a plan it does not follow; duplicate capped levels are skipped with a note; the export group size
   enters a key only when something is rounded; settings a method never reads (`weight_zero_point` for SqueezeLLM, SpQR,
-  AQLM, QuIP#, PB-LLM, BiLLM and bitsandbytes; `act_group_size` for RPTQ) stay out of its key.
+  AQLM, QuIP#, PB-LLM, BiLLM and bitsandbytes; `act_group_size` for RPTQ's own rows) stay out of its key, and a
+  Stage 2 method after a WxAy method keeps `act_group_size` in its key (it still rounds activations).
 - Backends (#3): vLLM and TensorRT-LLM programs time out after 4 h, each llama.cpp program after 2 h, with the
   backend's normal error, and the program's child processes are killed with it (also when the run is interrupted). Timings record the latency
   mode that ran and rows timed in different modes are not compared (#7); a row cached before the mode was recorded is

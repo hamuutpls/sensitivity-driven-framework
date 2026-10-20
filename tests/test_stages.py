@@ -336,10 +336,13 @@ def test_settings_a_method_never_reads_stay_out_of_its_key():
         assert _setting_key(METHODS[name], s0) == {}, name
     assert _setting_key(METHODS["quip"], s0) == {"weight_zero_point": "float"}  # QuIP rounds with GPTQ's grid
     assert _setting_key(METHODS["rptq"], s0) == {}
-    (both,) = methods_for(1, ["squeezellm_with_rptq"])
-    assert _setting_key(both, s0) == {}
+    (both,) = methods_for(1, ["squeezellm_with_rptq"])  # vLLM rounds its activations with act_group_size
+    assert _setting_key(both, s0) == {"act_group_size": 64}
     (both,) = methods_for(1, ["gptq_with_rptq"])
-    assert _setting_key(both, s0) == {"weight_zero_point": "float"}
+    assert _setting_key(both, s0) == {"weight_zero_point": "float", "act_group_size": 64}
+    from sdf.stages.methods import joint, series
+    series_ = series(joint(METHODS["gptq"], "quarot"), METHODS["unstructured_prune"])  # still rounds activations
+    assert _setting_key(series_, s0) == {"weight_zero_point": "float", "act_group_size": 64}
 
 
 def test_removed_channels_and_factors_need_no_mask_in_the_predicted_size(stage0_dir, small_cfg):

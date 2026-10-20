@@ -16,11 +16,16 @@ def results_root(local: str = LOCAL_ROOT, colab: str = COLAB_ROOT) -> str:
 
 
 def pack_results(root: str, archive: str = ARCHIVE, local: str = LOCAL_ROOT) -> str | None:
-    """Pack root/results into one .tgz; None when root is already on D:\\Thesis (nothing to bring back).
+    """Pack root/results into one .tgz; None when root is already on D:\\Thesis (nothing to bring back) or there are no
+    results yet. An archive from an earlier run is removed first, so it is never taken for this run's.
 
     Written under a temporary name and renamed, so a copy taken while it is being written is never half a file.
     """
     if os.path.abspath(root) == os.path.abspath(local):
+        return None
+    if os.path.exists(archive):
+        os.remove(archive)
+    if not os.path.isdir(os.path.join(root, "results")):
         return None
     tmp = archive + ".part"
     with tarfile.open(tmp, "w:gz") as tar:
