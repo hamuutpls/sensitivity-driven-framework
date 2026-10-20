@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(REPO, "src"))
 os.chdir(REPO)
 
 import main  # noqa: E402
-from sdf.utils.colab import pack_results, results_root  # noqa: E402
+from sdf.utils.colab import drop_old_archive, pack_results, results_root  # noqa: E402
 
 ALL = ["rtn", "gptq", "awq", "omniquant", "squeezellm", "spqr", "efficientqat", "aqlm", "quip", "quipsharp",
        "pbllm", "billm", "bitsandbytes", "qtip", "abqllm",
@@ -42,6 +42,7 @@ main.STAGE2_METHODS = []
 main.STAGE3_METHODS = []
 main.OUTPUT_ROOT = f"{ROOT}/results"
 main.CACHE_DIR = f"{ROOT}/cache"
+drop_old_archive()  # an earlier run's archive must never pass for this one's, even if this run is killed
 try:  # the results are packed even when the run or the summary fails
     main.main()
 

@@ -105,6 +105,7 @@ def test_the_notebook_does_not_use_google_drive():
     assert "ROOT = results_root()" in code
     last = "".join(cells[-1]["source"])  # packed in a finally, so a failed run is packed too
     assert "try:\n    main.main()\nfinally:\n    print(pack_results(ROOT)" in last
+    assert last.index("drop_old_archive()") < last.index("main.main()")  # a killed run leaves no old archive
 
 
 def test_results_root_is_d_thesis_on_the_pc_and_colab_disk_elsewhere(tmp_path):
@@ -170,9 +171,12 @@ def test_colab_stage1_closes_its_summary_and_packs_the_results(monkeypatch, tmp_
     (run / "stage_1" / "results.json").write_text(json.dumps({"rows": [{"method": "rtn", "variant": "original",
                                                                           "status": "ok", "metrics": {}}]}))
     fake = types.ModuleType("main")
-    fake.main = lambda: None
+    seen = []
+    fake.main = lambda: seen.append((tmp_path / "out.tgz").exists())  # an earlier archive is gone before the run
     monkeypatch.setitem(sys.modules, "main", fake)
     monkeypatch.setattr(sys, "argv", ["colab_stage1.py", "rtn"])
+    monkeypatch.setattr("sdf.utils.colab.drop_old_archive.__defaults__", (str(tmp_path / "out.tgz"),))
+    (tmp_path / "out.tgz").write_text("last run's")
     # defaults are bound when the functions are defined, so patch them, not the module constants
     monkeypatch.setattr("sdf.utils.colab.pack_results.__defaults__", (str(tmp_path / "out.tgz"), str(tmp_path / "pc")))
     monkeypatch.setattr("sdf.utils.colab.results_root.__defaults__", (str(tmp_path / "pc" / "x"), str(root)))
@@ -180,10 +184,10 @@ def test_colab_stage1_closes_its_summary_and_packs_the_results(monkeypatch, tmp_
     with pytest.raises(FileNotFoundError):  # no Stage 0 plan file: the results are still packed
         runpy.run_path(str(REPO / "scripts" / "colab_stage1.py"))
     assert "RESULTS-END" in (run / "stage1_summary.txt").read_text() and (tmp_path / "out.tgz").exists()
-    (tmp_path / "out.tgz").unlink()
     (run / "stage_0" / "compression_plan.json").write_text(json.dumps({"layers": [{"layer": 0, "bit_width": 4}]}))
     out = runpy.run_path(str(REPO / "scripts" / "colab_stage1.py"))
     assert out["summary"].closed and (tmp_path / "out.tgz").exists()
+    assert seen == [False, False]  # each run started with no archive from the run before
 
 
 # Stage 0 text -------------------------------------------------------------------------------------------------

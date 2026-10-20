@@ -15,6 +15,13 @@ def results_root(local: str = LOCAL_ROOT, colab: str = COLAB_ROOT) -> str:
     return local if os.path.isdir(os.path.dirname(local)) else colab
 
 
+def drop_old_archive(archive: str = ARCHIVE) -> None:
+    """Remove an earlier run's archive before a run starts, so a run killed before packing (out of memory, a lost VM)
+    never leaves the old one to be copied as its result."""
+    if os.path.exists(archive):
+        os.remove(archive)
+
+
 def pack_results(root: str, archive: str = ARCHIVE, local: str = LOCAL_ROOT) -> str | None:
     """Pack root/results into one .tgz; None when root is already on D:\\Thesis (nothing to bring back) or there are no
     results yet. An archive from an earlier run is removed first, so it is never taken for this run's.
@@ -23,8 +30,7 @@ def pack_results(root: str, archive: str = ARCHIVE, local: str = LOCAL_ROOT) -> 
     """
     if os.path.abspath(root) == os.path.abspath(local):
         return None
-    if os.path.exists(archive):
-        os.remove(archive)
+    drop_old_archive(archive)
     if not os.path.isdir(os.path.join(root, "results")):
         return None
     tmp = archive + ".part"

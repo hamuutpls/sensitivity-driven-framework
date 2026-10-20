@@ -43,7 +43,8 @@ Colab (26, 27, #8):
   Step 1 says the runtime type matters only on a free plan.
 - `scripts/colab_stage1.py` runs the methods given after it (`%run colab_stage1.py rtn gptq`), saves where the notebook
   saves, writes its result lines to `stage1_summary.txt` in the run folder (closed even on an error), and packs the
-  results the same way.
+  results the same way; both remove an earlier archive before the run starts, so a killed run never leaves the last
+  run's archive to be copied as its own.
 - The notebook drops loaded `sdf` modules before reloading `main`, so a fresh pull takes effect.
 
 Figures (28) are redrawn for Stages 3 and 4. Lean: unused `CALIB`, the duplicate `share_removed` and the bits-only KV
