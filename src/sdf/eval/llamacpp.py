@@ -27,6 +27,7 @@ from torch import nn
 
 from sdf.config import EvalConfig
 from sdf.reporting.metrics import METRICS, MetricSpec
+from sdf.eval.worker import run_killing_group
 from sdf.stage0.planner import CompressionPlan
 from sdf.utils.logging import get_logger
 
@@ -36,12 +37,12 @@ log = get_logger(__name__)
 # 2: the GGUF keeps the SentencePiece tokenizer (version 1 had flat token scores and wrong perplexity).
 VERSION = 2
 
-# Plan bits -> llama.cpp tensor type. K-quants (256-weight blocks, scale and minimum) are closest to the plan's
-# asymmetric groups; 8 bits has no K-quant.
 # shortcut: one fixed limit per llama.cpp program run, not configurable; make it an eval setting if a bigger
 # model needs longer
 TIMEOUT_S = 2 * 3600
 
+# Plan bits -> llama.cpp tensor type. K-quants (256-weight blocks, scale and minimum) are closest to the plan's
+# asymmetric groups; 8 bits has no K-quant.
 BITS_TO_GGUF = {16: "f16", 8: "q8_0", 6: "q6_k", 5: "q5_k", 4: "q4_k", 3: "q3_k", 2: "q2_k"}
 
 _NOTE = (" Measured in llama.cpp, the program people use to run models on their own computers, after saving the "
@@ -106,7 +107,7 @@ def _run(cmd: list[Any]) -> str:
     cmd = [str(c) for c in cmd]
     log.info("llama.cpp: %s", " ".join(cmd))
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_S)
+        r = run_killing_group(cmd, TIMEOUT_S, encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:  # a hung program must not stall the run; the row keeps its HF numbers
         raise RuntimeError(f"{Path(cmd[0]).name} timed out after {TIMEOUT_S} s") from None
     if r.returncode:

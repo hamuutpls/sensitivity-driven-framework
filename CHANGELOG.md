@@ -22,8 +22,9 @@ Runs and measurements:
   predicted size of a plan it does not follow; duplicate capped levels are skipped with a note; the export group size
   enters a key only when something is rounded.
 - Backends (#3): vLLM and TensorRT-LLM programs time out after 4 h, each llama.cpp program after 2 h, with the
-  backend's normal error. Timings record the latency mode that ran and rows timed in different modes are not
-  compared (#7). Timing settings are checked when the config is built (#17).
+  backend's normal error, and the program's child processes are killed with it. Timings record the latency mode that
+  ran and rows timed in different modes are not compared (#7). Timing settings are checked when the config is built
+  (#17).
 - Stage 0 (#6, #10, #12): pruning tests leave timing settings out of their keys; sweeps that round nothing predict
   sizes at baseline bits and their text names those bits; report text follows the scaling, guard and bit settings,
   and the sensitivity column says "rank" only under rank scaling.
@@ -39,7 +40,8 @@ Colab (26, 27, #8):
 Figures (28) are redrawn for Stages 3 and 4. Lean: unused `CALIB`, the duplicate `share_removed` and the bits-only KV
 plan in Stages 1-3 are gone.
 
-Numbers that change: standard weight rows of Stages 1 and 2 get new cache keys (measured again once; same values);
+Numbers that change: standard weight and joint WxAy rows of Stages 1 and 2, and 16-bit pruning rows, get new cache
+keys (measured again once; same values);
 rtn_kv and KVQuant standard rows' speed and memory; SpinQuant rows; exposure columns; verdict lines and colours
 wherever a backend ran; BiLLM rows lose their predicted size; low-rank rows are measured again (same values).
 

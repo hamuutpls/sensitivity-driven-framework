@@ -569,7 +569,10 @@ def _plan_key(plan: Any) -> Any:
 def _no_passing_error(result: dict[str, Any]) -> bool:
     """Whether a standard row's result may be saved: not when a backend failed, except for reasons that always
     repeat (the model rotates its inputs)."""
-    return all(v == _ROTATED for k, v in result.get("info", {}).items() if k.endswith("_error"))
+    errors = {k: v for k, v in result.get("info", {}).items() if k.endswith("_error") and v != _ROTATED}
+    if errors:  # a setup error (no llama.cpp, a width a backend cannot load) repeats: the row is rebuilt every run
+        log.warning("not caching this row, so the failed backends are tried again next run: %s", errors)
+    return not errors
 
 
 def _capped(m: Method, plan: Any, caps: Callable[[float], tuple[float, ...]],

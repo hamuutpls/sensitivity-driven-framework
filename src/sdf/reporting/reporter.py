@@ -207,9 +207,10 @@ class StageReporter:
             a, b = fw.metrics.get(m), orig.metrics.get(m)
             if not (is_number(a) and is_number(b)):
                 continue
-            # eager timing is ~10x slower than CUDA graph replay: rows timed differently are not compared
-            if (m.startswith(("prefill_", "decode_"))
-                    and fw.metrics.get("latency_mode") != orig.metrics.get("latency_mode")):
+            # eager timing is ~10x slower than CUDA graph replay: rows timed differently are not compared (a row
+            # saved before the mode was recorded has none and is compared as before)
+            modes = (fw.metrics.get("latency_mode"), orig.metrics.get("latency_mode"))
+            if m.startswith(("prefill_", "decode_")) and None not in modes and modes[0] != modes[1]:
                 continue
             better = is_better(m, a - b)
             if better is None:

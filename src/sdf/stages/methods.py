@@ -246,7 +246,8 @@ def _fork_methods() -> list[Method]:
         for name, (fn, label, params, library, takes_bits, simplified) in registry.items():
             out.append(Method(
                 name, 1, label, _WEIGHT_PLANS, _calibrated(fn), params=params, calibrated=name != "bitsandbytes",
-                library=library, note=f"{_SIMPLIFIED}{simplified}; {_SIZE_NOTE}" if simplified else _SIZE_NOTE,
+                library=library, note="; ".join(([f"{_SIMPLIFIED}{simplified}"] if simplified else [])
+                                                + ([_SIZE_NOTE] if takes_bits else [])),
                 fixed_bits="" if takes_bits else "it binarizes every layer the same way (about 1 bit), so its "
                 "standard row runs at its own width and the plan-following row is not possible",
                 overhead=SIZE_OVERHEAD.get(name)))

@@ -104,3 +104,31 @@ def test_prune_sweep_names_the_bits_it_really_stores():
     assert _stored_bits(s0) == (s0.baseline_bits,) * 3
     s0.prune_sweep_quantize = True
     assert _stored_bits(s0) == (s0.uniform_bits, s0.protected_bits, s0.compressed_bits)
+
+
+# review follow-ups --------------------------------------------------------------------------------------------
+def test_a_timed_out_backend_program_takes_its_children_with_it(tmp_path):
+    import subprocess
+    import time
+
+    from sdf.eval.worker import run_killing_group
+
+    pid_file = tmp_path / "child"
+    child = f"import subprocess, sys; p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); " \
+            f"open({str(pid_file)!r}, 'w').write(str(p.pid)); p.wait()"
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_killing_group([sys.executable, "-c", child], 3)
+    pid = int(pid_file.read_text())
+    time.sleep(0.5)
+    status = Path(f"/proc/{pid}/status")
+    assert not status.exists() or "zombie" in status.read_text()  # killed (a zombie until init reaps it)
+
+
+def test_a_row_saved_before_the_latency_mode_was_recorded_is_still_compared(tmp_path):
+    rep = _reporter(tmp_path, ["decode_ms_per_token_mean"])
+    with rep.method("m", "original") as r:
+        r.metrics.update({"decode_ms_per_token_mean": 4.0})
+    with rep.method("m", "framework") as r:
+        r.metrics.update({"decode_ms_per_token_mean": 8.0, "latency_mode": "cuda_graph"})
+    rep.compute_deltas()
+    assert rep.verdict(rep.rows[1]) == ([], ["decode_ms_per_token_mean"], [])

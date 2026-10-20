@@ -33,10 +33,10 @@ def test_a_hung_backend_program_times_out_with_the_backends_own_error(monkeypatc
     class BackendError(RuntimeError):
         pass
 
-    def hang(cmd, timeout=None, **kw):
+    def hang(cmd, timeout, **kw):
         assert timeout == worker.TIMEOUT_S
         raise subprocess.TimeoutExpired(cmd, timeout)
-    monkeypatch.setattr(worker.subprocess, "run", hang)
+    monkeypatch.setattr(worker, "run_killing_group", hang)
     with pytest.raises(BackendError, match="vllm_worker timed out"):
         worker.run_worker(sys.executable, "vllm_worker.py", {}, tmp_path, BackendError)
 
