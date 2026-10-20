@@ -2,6 +2,7 @@
 
 import copy
 import csv
+import json
 import math
 
 import pytest
@@ -145,3 +146,16 @@ def test_without_a_guard_only_the_all_layers_set_runs(small_cfg, tiny_llama, tok
 def test_feed_forward_share_refuses_a_layer_without_a_feed_forward_block(tiny_llama):
     with pytest.raises(ValueError, match="feed-forward"):
         feed_forward_share(tiny_llama, torch.nn.Sequential(torch.nn.Linear(32, 32)))
+
+
+def test_timing_settings_do_not_rerun_the_pruning_levels(small_cfg, tiny_llama, tokenizer):
+    """Audit 2026-10-19 #6: the levels test measures perplexity only, so a timing change reuses every row."""
+    cfg = small_cfg.with_overrides({"stage0.pruning_levels": [0.5], "stage0.joint_plan": False,
+                                    "stage0.guard_top_k": 0})
+    cand = SEARCH_SPACE.make({"calib_samples": 16})
+    run_stage0(start_run(cfg), cand, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts)
+    res = run_stage0(start_run(cfg.with_overrides({"eval.latency_repeats": 5})), cand, model=tiny_llama,
+                     tokenizer=tokenizer, text_loader=fake_texts)
+    data = json.loads((res.outputs["report"].parent.parent / SUBDIR / "results.json").read_text())
+    rows = [r for r in data["rows"] if r["variant"] != "fp16"]
+    assert len(rows) == 3 and all(r["info"]["cached"] for r in rows)

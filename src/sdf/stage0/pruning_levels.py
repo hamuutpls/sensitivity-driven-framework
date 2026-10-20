@@ -162,6 +162,8 @@ def run_pruning_levels(ctx, candidate: dict[str, Any], handle, text_loader: Call
     key_base = {**fp16_key(ctx, handle.device), "calib_dataset": candidate["calib_dataset"],
                 "calib_samples": candidate["calib_samples"], "calib_seq_len": cfg.calibration.seq_len,
                 "calib_batch_size": cfg.calibration.batch_size, **source_key(cfg, candidate["calib_dataset"])}
+    # only perplexity is measured here, so timing settings must not re-run every row
+    key_base["eval"] = {k: v for k, v in key_base["eval"].items() if not k.startswith("latency_")}
     out: list[dict[str, Any]] = []
     for tech, (fn, tech_label) in TECHNIQUES.items():
         for set_name, layers in sets.items():

@@ -110,6 +110,8 @@ def make_evaluator(ctx: RunContext, handle, text_loader, device) -> Callable[[Co
     def evaluate(plan: CompressionPlan, gs: int) -> tuple[dict[str, Any], bool]:
         key = {**fp16_key(ctx, device), "group_size": gs, "quantize": s0.prune_sweep_quantize,
                "pruning": "magnitude_per_row", **zero_key(s0), "layers": [[lp.bit_width, lp.pruning_ratio] for lp in plan.layers]}
+        # only perplexity is measured here, so timing settings must not re-run every row
+        key["eval"] = {k: v for k, v in key["eval"].items() if not k.startswith("latency_")}
         return ctx.cache.get_or_compute("prune_eval", key, lambda: measure(plan, gs))
 
     return evaluate

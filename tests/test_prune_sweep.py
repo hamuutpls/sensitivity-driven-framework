@@ -106,3 +106,14 @@ def test_run_threshold_sweep(tiny_llama, tokenizer, small_cfg):
     assert lo["protected_layers"] > hi["protected_layers"]
     assert lo["predicted_weight_memory_gb"] > hi["predicted_weight_memory_gb"]
     assert "## Threshold sweep" in out["report"].read_text(encoding="utf-8")
+
+
+def test_timing_settings_do_not_rerun_the_sweep(tiny_llama, tokenizer, small_cfg):
+    """Audit 2026-10-19 #6: the sweep measures perplexity only, so a timing change reuses every pruned row."""
+    cand = SEARCH_SPACE.make({"calib_samples": 16})
+    cfg = small_cfg.with_overrides({"stage0.prune_sweep_ratios": [0.5]})
+    run_prune_sweep(start_run(cfg), cand, model=tiny_llama, tokenizer=tokenizer, text_loader=fake_texts)
+    again = run_prune_sweep(start_run(cfg.with_overrides({"eval.latency_repeats": 5})), cand, model=tiny_llama,
+                            tokenizer=tokenizer, text_loader=fake_texts)
+    rows = [r for r in json.loads(again["json"].read_text())["rows"] if r["variant"] != "fp16"]
+    assert len(rows) == 3 and all(r["info"]["cached"] for r in rows)
