@@ -173,8 +173,8 @@ def _kv_method(rounding: str, forget: str) -> Callable[[MethodCall], ContextMana
             elif rounding == "kvquant" and min(keys + values) < base:
                 layers = calibrate_kvquant(call.model, call.batches(), keys, values, names, base)
                 stack.enter_context(kvquant_hooks(call.model, layers, keys, values, names, base))
-            if any(sp != LayerKV() for sp in specs):  # else attention stays the model's own (SDPA)
-                stack.enter_context(kv_attention(call.model, specs))
+            # always, so a standard row that forgets nothing is timed with the same attention code as its Our row
+            stack.enter_context(kv_attention(call.model, specs))
             yield {}
     return apply
 
@@ -259,13 +259,14 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     # baseline; same rounding as the Stage 0 KV measurement. Its Our method row follows the whole plan, so it is the
     # same computation as h2o's Our method row (Mohammad, 2026-10-18: "Whole plan")
     Method("rtn_kv", 3, "Round-to-nearest KV cache", ("kv",), _kv_method("rtn", "h2o"), library="in repo (torch)",
-           note=_KV_NOTE, framework_note="This row forgets with H2O's rule, so it matches H2O's Our method row."),
+           note=_KV_NOTE, framework_note="This row forgets with H2O's rule, so it matches H2O's Our method row.",
+           version=2),  # 2: standard row timed with the Stage 3 attention code
     # keys after RoPE and values rotated by a Hadamard matrix, then rounded per token and head
     # versions 2: each word keeps its share of the words it can see; fixes after the first review (2026-10-18)
     Method("quarot_kv", 3, "QuaRot KV", ("kv",), _kv_method("quarot", "h2o"), params=("quarot_k_bits",),
            library="in repo (torch Hadamard)", note=_KV_NOTE, version=2),
     # pre-RoPE per-channel keys, per-token values, non-uniform levels, 1% outliers and the first word unrounded
-    Method("kvquant", 3, "KVQuant", ("kv",), _kv_method("kvquant", "h2o"), calibrated=True, version=2,
+    Method("kvquant", 3, "KVQuant", ("kv",), _kv_method("kvquant", "h2o"), calibrated=True, version=3,  # 3: as rtn_kv 2
            library="in repo (simplified port)", note=_KV_NOTE + " KVQuant: levels from plain k-means, not "
            "sensitivity-weighted; the 1% unrounded outliers are not counted in the predicted memory."),
     # keeps recent + heavy-hitter words
