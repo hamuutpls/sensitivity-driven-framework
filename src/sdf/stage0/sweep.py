@@ -29,8 +29,6 @@ from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-CALIB = ("calib_dataset", "calib_samples")
-
 
 def default_grid(points: int = 5) -> dict[str, list[Any]]:
     """Every choice of a categorical parameter; `points` evenly spaced values of a continuous one. Only the
