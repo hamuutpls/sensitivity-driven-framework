@@ -43,6 +43,13 @@ def test_series_methods_pair_a_pruning_method_with_a_stage1_weight_method():
             methods_for(2, [bad])
 
 
+def test_low_rank_key_and_size_note_name_only_what_they_use():
+    assert METHODS["low_rank"].params == ()  # it rounds nothing, so the group size is not part of its key
+    assert "unrounded factors" in methods_for(2, ["low_rank_after_gptq"])[0].unavailable
+    assert METHODS["squeezellm"].note.endswith("group scales counted at gptq_groupsize; codebooks and outliers are "
+                                               "not counted")
+
+
 def test_stage0_plans_load(stage0_dir):
     plans = Stage0Plans.load(stage0_dir)
     assert {"quant", "prune", "prune_same_size", "activations", "kv", "joint_weights",
@@ -282,7 +289,7 @@ def test_pruning_and_low_rank_methods_remove_what_the_plan_says(tiny_llama):
         assert torch.linalg.matrix_rank(l.weight.float()) <= int(0.5 * out * inp / (out + inp))
 
 
-def test_pruning_methods_round_nothing_except_the_low_rank_factors(tiny_llama):
+def test_pruning_methods_round_nothing(tiny_llama):
     from sdf.stage0.planner import uniform_plan
     from sdf.stages.pruning import low_rank_, wanda_
 
@@ -297,6 +304,10 @@ def test_pruning_methods_round_nothing_except_the_low_rank_factors(tiny_llama):
     m = copy.deepcopy(tiny_llama)
     low_rank_(m, zero_ratio, batches, -1, 16)
     assert all(torch.equal(v, tiny_llama.state_dict()[k]) for k, v in m.state_dict().items())
+    at4, at16 = copy.deepcopy(tiny_llama), copy.deepcopy(tiny_llama)  # low-rank factors are not rounded either
+    low_rank_(at4, plan, batches, -1, 16)
+    low_rank_(at16, uniform_plan([0.0] * 4, 16, 0.5), batches, -1, 16)
+    assert all(torch.equal(v, at16.state_dict()[k]) for k, v in at4.state_dict().items())
 
 
 def test_stage_settings_join_the_cache_key_only_when_changed():

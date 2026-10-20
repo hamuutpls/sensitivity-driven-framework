@@ -176,8 +176,8 @@ def _kv_method(rounding: str, forget: str) -> Callable[[MethodCall], ContextMana
             elif rounding == "kvquant" and min(keys + values) < base:
                 layers = calibrate_kvquant(call.model, call.batches(), keys, values, names, base)
                 stack.enter_context(kvquant_hooks(call.model, layers, keys, values, names, base))
-            if any(sp != LayerKV() for sp in specs):  # else attention stays the model's own (SDPA)
-                stack.enter_context(kv_attention(call.model, specs))
+            # always, so a standard row that forgets nothing is timed with the same attention code as its Our row
+            stack.enter_context(kv_attention(call.model, specs))
             yield {}
     return apply
 
@@ -234,6 +234,7 @@ _ACT_EXTRA: dict[str, Callable[[MethodCall], dict[str, Any]]] = {
     "smoothquant": lambda c: {"alpha": c.candidate["smoothquant_alpha"]},
     "quarot": lambda c: {"seed": c.cfg.run.seed}, "spinquant": lambda c: {"seed": c.cfg.run.seed},
     "rptq": lambda c: {"seed": c.cfg.run.seed}}
+_ACT_VERSION = {"spinquant": 2}  # 2: calibration rows sampled per batch (a different sample)
 
 
 def _fork_methods() -> list[Method]:
@@ -251,7 +252,8 @@ def _fork_methods() -> list[Method]:
     for name, (fn, label, library, simplified) in ACTIVATION_METHODS.items():
         out.append(Method(name, 1, label, ("activations",), _transformed_activations(fn, _ACT_EXTRA[name]),
                           params=("smoothquant_alpha",) if name == "smoothquant" else (), calibrated=True,
-                          library=library, note=_SIMPLIFIED + simplified + "; weights stay unquantized in this stage"))
+                          library=library, note=_SIMPLIFIED + simplified + "; weights stay unquantized in this stage",
+                          version=_ACT_VERSION.get(name, 1)))
     return out
 
 METHODS: dict[str, Method] = {m.name: m for m in [
@@ -276,20 +278,21 @@ METHODS: dict[str, Method] = {m.name: m for m in [
            library="in repo (torch)", version=2),
     # rank chosen so each layer keeps (1 - planned share) of its numbers; activation-aware SVD
     Method("low_rank", 2, "Low-rank (activation-aware SVD)", _PRUNE_PLANS, _calibrated(low_rank_),
-           params=("gptq_groupsize",), calibrated=True, storage="free", library="in repo (torch)", version=2),
+           calibrated=True, storage="free", library="in repo (torch)", version=2),
     # Stage 3: KV cache (stages/kv_methods.py). Standard rows: rounding techniques at stage0.kv_uniform_bits keeping
     # every word, forgetting techniques at 16 bits keeping stage0.kv_standard_keep_ratio (H2O's 20%; SnapKV and
     # InfiniGen set no share: SnapKV a fixed word count, InfiniGen an attention threshold).
     # baseline; same rounding as the Stage 0 KV measurement. Its Our method row follows the whole plan, so it is the
     # same computation as h2o's Our method row (Mohammad, 2026-10-18: "Whole plan")
     Method("rtn_kv", 3, "Round-to-nearest KV cache", ("kv",), _kv_method("rtn", "h2o"), library="in repo (torch)",
-           note=_KV_NOTE, framework_note="This row forgets with H2O's rule, so it matches H2O's Our method row."),
+           note=_KV_NOTE, framework_note="This row forgets with H2O's rule, so it matches H2O's Our method row.",
+           version=2),  # 2: standard row timed with the Stage 3 attention code
     # keys after RoPE and values rotated by a Hadamard matrix, then rounded per token and head
     # versions 2: each word keeps its share of the words it can see; fixes after the first review (2026-10-18)
     Method("quarot_kv", 3, "QuaRot KV", ("kv",), _kv_method("quarot", "h2o"), params=("quarot_k_bits",),
            library="in repo (torch Hadamard)", note=_KV_NOTE, version=2),
     # pre-RoPE per-channel keys, per-token values, non-uniform levels, 1% outliers and the first word unrounded
-    Method("kvquant", 3, "KVQuant", ("kv",), _kv_method("kvquant", "h2o"), calibrated=True, version=2,
+    Method("kvquant", 3, "KVQuant", ("kv",), _kv_method("kvquant", "h2o"), calibrated=True, version=3,  # 3: as rtn_kv 2
            library="in repo (simplified port)", note=_KV_NOTE + " KVQuant: levels from plain k-means, not "
            "sensitivity-weighted; the 1% unrounded outliers are not counted in the predicted memory."),
     # keeps recent + heavy-hitter words
@@ -345,7 +348,8 @@ def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
     return Method(name, 1, f"{weights.label} + {label}" + (", every layer W8A8" if standard_w8a8 else ""),
                   () if standard_w8a8 else _JOINT_PLANS,
                   apply if weights.apply else None,
-                  version=weights.version,
+                  # unchanged while the activation method is at version 1, so those cached rows stay valid
+                  version=weights.version + 1000 * (_ACT_VERSION.get(acts, 1) - 1),
                   params=tuple(dict.fromkeys(weights.params + (("smoothquant_alpha",) if acts == "smoothquant" else ()))),
                   calibrated=True, library=weights.library, note=weights.note,
                   fixed_bits=weights.fixed_bits, unavailable=weights.unavailable, overhead=weights.overhead,
@@ -364,9 +368,9 @@ def series(quant: Method, prune: Method) -> Method:
         with quant.apply(replace(call, plan=bits_only(call.plan))) as first, prune.apply(call) as second:
             yield {**first, **second}
 
-    # low-rank rounds its own factors with round-to-nearest, replacing what the Stage 1 method did to the weights
-    unavailable = quant.unavailable or (f"{prune.label} cannot follow a Stage 1 method: it rounds its factors with "
-                                        "round-to-nearest, which replaces the Stage 1 rounding"
+    # low-rank replaces each weight by its unrounded factors, undoing what the Stage 1 method did to the weights
+    unavailable = quant.unavailable or (f"{prune.label} cannot follow a Stage 1 method: rebuilding the weights "
+                                        "from unrounded factors replaces the Stage 1 rounding"
                                         if prune.name == "low_rank" else "")
     return Method(prune.name + AFTER + quant.name, 2, f"{prune.label} after {quant.label}", prune.plans,
                   apply if quant.apply and prune.apply and not unavailable else None,

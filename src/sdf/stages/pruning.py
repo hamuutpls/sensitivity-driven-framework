@@ -1,7 +1,6 @@
 """Stage 2 pruning methods: Wanda (unstructured), structured pruning of feed-forward channels, low-rank.
 
-Pruning only: a method removes what the plan's pruning ratios say and rounds nothing, except low-rank, whose two
-factors are stored at the plan's bits (a plan at the baseline bits leaves them in FP16). Weights are quantized
+Pruning only: a method removes what the plan's pruning ratios say and rounds nothing. Weights are quantized
 by Stage 1 when the two stages run in series (0 -> 1 -> 2 -> 4), and left in FP16 when Stage 2 runs alone
 (0 -> 2 -> 4).
 """
@@ -13,7 +12,7 @@ from torch import nn
 
 from sdf.stage0.planner import CompressionPlan
 from sdf.stage0.prune_sweep import magnitude_mask
-from sdf.stage0.sensitivity import find_decoder_layers, round_to_nearest
+from sdf.stage0.sensitivity import find_decoder_layers
 from sdf.stages.weights import run_to
 
 
@@ -93,8 +92,7 @@ def low_rank_(model: nn.Module, plan: CompressionPlan, batches: list[torch.Tenso
               baseline_bits: int, int_zero: bool = True) -> None:
     """Low-rank factorisation, activation-aware (ASVD, Yuan et al., 2023): W ~ A B with A = U_k S_k and
     B = V_k^T D^-1, from the SVD of W D, where D = diag(||x_j||) weighs input channels by how large their inputs
-    are. The rank k keeps (1 - planned share) of the layer's numbers: k (out + in) = (1 - r) out * in. Both
-    factors are rounded to the planned bits (nothing is rounded at the baseline bits)."""
+    are. The rank k keeps (1 - planned share) of the layer's numbers: k (out + in) = (1 - r) out * in."""
     for lp, layer in zip(plan.layers, find_decoder_layers(model)):
         if lp.pruning_ratio == 0:
             continue
@@ -108,7 +106,4 @@ def low_rank_(model: nn.Module, plan: CompressionPlan, batches: list[torch.Tenso
             d = norms[m].sqrt().clamp(min=1e-6)
             U, S, Vh = torch.linalg.svd(m.weight.float() * d, full_matrices=False)
             A, B = U[:, :k] * S[:k], Vh[:k] / d
-            if lp.bit_width < baseline_bits:
-                A = round_to_nearest(A, lp.bit_width, group_size, int_zero)
-                B = round_to_nearest(B, lp.bit_width, group_size, int_zero)
             m.weight.data.copy_((A @ B).to(m.weight.dtype))

@@ -197,17 +197,23 @@ def spinquant(model: nn.Module, plan: ActivationPlan, batches: list[torch.Tensor
     """SpinQuant (Liu et al., 2024): QuaRot's structure with the residual rotation R1 learned on the orthogonal
     group by Cayley steps, starting from the QuaRot Hadamard. Simplified: the loss is the squared error between
     rounded and unrounded q/k/v/gate/up inputs (the only inputs R1 changes), summed over layers, on up to
-    `max_tokens` calibration tokens per layer (the paper minimises the end loss); plain normalised Cayley steps,
-    no momentum; R2 (per head) and the down_proj rotation stay fixed random orthogonal matrices instead of learned."""
+    `max_tokens` calibration tokens per layer, drawn about evenly from each batch (the paper minimises the end
+    loss); plain normalised Cayley steps, no momentum; R2 (per head) and the down_proj rotation stay fixed random orthogonal matrices instead of learned."""
     _fuse_norms(model)
     probes, bits = [], []
     for lp, l in zip(plan.layers, find_decoder_layers(model)):
         if lp.act_bits < below:
             probes += [l.self_attn.q_proj, l.mlp.gate_proj]
             bits += [lp.act_bits] * 2
-    xs: dict[nn.Linear, list[torch.Tensor]] = {}
-    _run(model, batches, probes, lambda m, x: xs.setdefault(m, []).append(x.reshape(-1, m.in_features).float()))
     gen = torch.Generator().manual_seed(seed)
+    per_batch = -(-max_tokens // max(len(batches), 1))
+    xs: dict[nn.Linear, list[torch.Tensor]] = {}
+
+    def keep(m: nn.Linear, x: torch.Tensor) -> None:  # a sample per batch: all inputs do not fit on a 16 GB card
+        x = x.reshape(-1, m.in_features)
+        xs.setdefault(m, []).append(x[torch.randperm(len(x), generator=gen)[:per_batch]].float())
+
+    _run(model, batches, probes, keep)
     data = []
     for m, b in zip(probes, bits):
         x = torch.cat(xs[m])
