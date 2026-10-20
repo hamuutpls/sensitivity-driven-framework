@@ -7,13 +7,14 @@
   than `act_avg_bits` no longer leaves the joint plan more bits than the plan it is compared with.
 - Size per method (23): the predicted size counts what SqueezeLLM, SpQR, AQLM, QuIP# and bitsandbytes store besides
   their bits (codebooks, outliers, their own scales) instead of one scale and zero per `gptq_groupsize` weights.
-  Assumed outlier shares: SqueezeLLM 0.45% (the paper's), SpQR about 1%; an outlier is a 16-bit value and a 16-bit
-  column index. Per-row and per-Linear parts (codebooks, row scales) do not shrink when weights are pruned. Our
+  Assumed outlier shares: SqueezeLLM 0.45% (the paper's) at 48 bits each (a 16-bit value and a 32-bit column index,
+  which matches the paper's 4.05 -> 4.27 bits per weight), SpQR about 1% at 32 bits (its own 16-bit index). Per-row and per-Linear parts (codebooks, row scales) do not shrink when weights are pruned. Our
   method's SqueezeLLM rows grow most (a 256-entry codebook per row costs about 1.6 bits per weight at 8 bits), so
   their size relative to the standard row rises. Stage 0 sizes stay method-agnostic, so a Stage 1 row of these
   methods shows a different size from the same plan in Stage 0. AQLM's codebooks are counted for a Llama layer's 7
-  Linears. The settings search checks the size limit with the same count. Only size columns change; nothing is
-  re-measured.
+  Linears; per-row parts are counted for every row, so after structured pruning or low-rank the size is slightly
+  high. The settings search checks the size limit with the same count (search version 2, so saved points are
+  redone). Only size columns change; nothing is re-measured.
 - AWQ under grouped-query attention (24): o_proj is rounded plainly, as the reference implementation does when its
   scale cannot be folded into v_proj (TinyLlama: 4 key/value heads for 32 query heads). AWQ is version 3, so its
   cached standard rows are redone.

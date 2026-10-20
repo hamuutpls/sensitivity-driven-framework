@@ -46,8 +46,10 @@ def test_size_counts_what_each_method_stores():  # 23
                             overhead=METHODS[name].overhead).avg_bits_per_weight
 
     assert bits_per_weight("rtn", 4) == 4.25  # one fp16 scale and zero per 128 weights, as before
-    assert bits_per_weight("squeezellm", 8) == pytest.approx(9.81, abs=0.01)
-    assert bits_per_weight("squeezellm", 4) == pytest.approx(4.25, abs=0.01)
+    assert bits_per_weight("squeezellm", 8) == pytest.approx(9.88, abs=0.01)
+    assert bits_per_weight("squeezellm", 4) == pytest.approx(4.32, abs=0.01)
+    # SqueezeLLM's outliers alone cost what its paper reports for 0.45%: 4.27 - 4.05 bits per weight
+    assert bits_per_weight("squeezellm", 4) - 4 - rows * 16 * 16 / numel == pytest.approx(4.27 - 4.05, abs=0.01)
     assert bits_per_weight("spqr", 4) == pytest.approx(4 + 0.375 + 0.25 + 0.32)
     assert bits_per_weight("bitsandbytes", 4) == 4.5
     assert bits_per_weight("bitsandbytes", 8) == pytest.approx(8.0, abs=0.02)
@@ -55,7 +57,7 @@ def test_size_counts_what_each_method_stores():  # 23
     # pruning half the weights halves the per-weight parts, not the per-row codebook
     half = predict_cost(uniform_plan([0.0], 8, 0.5), prof, 128, 32, 16, sparse_storage="free",
                         overhead=METHODS["squeezellm"].overhead).avg_bits_per_weight
-    assert half == pytest.approx(4 + rows * 256 * 16 / numel + 0.0045 * 32 / 2)
+    assert half == pytest.approx(4 + rows * 256 * 16 / numel + 0.0045 * 48 / 2)
     # a fully removed layer is stored as nothing, codebooks included
     gone = [predict_cost(uniform_plan([0.0], 8, 1.0), prof, 128, 32, 16, sparse_storage="free",
                          overhead=METHODS[m].overhead).avg_bits_per_weight for m in ("squeezellm", "aqlm", "rtn")]
@@ -76,5 +78,5 @@ def test_every_row_of_a_method_counts_its_size_the_same_way(tiny_llama):  # 23
     plans = Stage0Plans(None, {}, prof, None)
     cand, plan = SEARCH_SPACE.make({}), uniform_plan([0.0], 4, 0.0)
     own = plan_metrics(plan, plans, Config(), cand, None, sq.overhead)["avg_bits_per_weight"]
-    assert own == pytest.approx(4 + (100 * 16 * 16 + 0.0045 * 10_000 * 32) / 10_000)
+    assert own == pytest.approx(4 + (100 * 16 * 16 + 0.0045 * 10_000 * 48) / 10_000)
     assert plan_metrics(plan, plans, Config(), cand)["avg_bits_per_weight"] != own

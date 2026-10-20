@@ -32,7 +32,7 @@ from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-VERSION = 1  # bump when a change to the chain or the measurement changes a point's numbers (the cache key)
+VERSION = 2  # 2: sizes count each method's stored extras (codebooks, outliers, scales). Bump when a change to the chain or the measurement changes a point's numbers (the cache key)
 FAILED = 1e9  # objective and constraint value of a point that could not be built or measured
 
 
