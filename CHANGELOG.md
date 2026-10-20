@@ -14,7 +14,8 @@ Runs and measurements:
 - Stage 3 (22): rtn_kv and KVQuant standard rows run the same attention code as their Our rows (versions 2 and 3).
 - SpinQuant (25): keeps a random sample of each calibration batch, not every input (no out-of-memory on 16 GB);
   version 2, and the `*_with_spinquant` joint rows get a new version.
-- AQLM (29): no longer computes input statistics it never used; same weights.
+- AQLM (29): no longer computes input statistics it never used, and calibration settings leave its cache key;
+  same weights.
 - Runner (2026-10-19 #1, #2, #4, #5, #9, #13, #14, #15, #18): a backend failure for a passing reason (busy card, out
   of memory) is not saved to the cache; the FP16 row keeps its Hugging Face numbers when a backend fails; Stage 2
   levels come from the plan's own share; standard rows' cache keys hold the plan's bits and pruning only, not the
@@ -43,7 +44,8 @@ plan in Stages 1-3 are gone.
 Numbers that change: standard weight and joint WxAy rows of Stages 1 and 2, and 16-bit pruning rows, get new cache
 keys (measured again once; same values);
 rtn_kv and KVQuant standard rows' speed and memory; SpinQuant rows; exposure columns; verdict lines and colours
-wherever a backend ran; BiLLM rows lose their predicted size; low-rank rows are measured again (same values).
+wherever a backend ran; BiLLM rows lose their predicted size; low-rank and AQLM rows are measured again (same
+values).
 
 ## 2026-10-20: audit fixes the final test waits for (ponytail audit 2026-10-20, findings 19, 23, 24)
 

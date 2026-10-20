@@ -97,13 +97,13 @@ def test_colab_stage1_runs_the_methods_it_is_given(monkeypatch, argv, namespace,
 
 # Stage 0 text -------------------------------------------------------------------------------------------------
 def test_prune_sweep_names_the_bits_it_really_stores():
-    from sdf.stage0.prune_sweep import _stored_bits
+    from sdf.stage0.prune_sweep import stored_bits
 
     s0 = FrameworkConfig().stage0
     s0.prune_sweep_quantize = False
-    assert _stored_bits(s0) == (s0.baseline_bits,) * 3
+    assert stored_bits(s0) == (s0.baseline_bits,) * 3
     s0.prune_sweep_quantize = True
-    assert _stored_bits(s0) == (s0.uniform_bits, s0.protected_bits, s0.compressed_bits)
+    assert stored_bits(s0) == (s0.uniform_bits, s0.protected_bits, s0.compressed_bits)
 
 
 # review follow-ups --------------------------------------------------------------------------------------------
@@ -132,3 +132,9 @@ def test_a_row_saved_before_the_latency_mode_was_recorded_is_still_compared(tmp_
         r.metrics.update({"decode_ms_per_token_mean": 8.0, "latency_mode": "cuda_graph"})
     rep.compute_deltas()
     assert rep.verdict(rep.rows[1]) == ([], ["decode_ms_per_token_mean"], [])
+
+
+def test_aqlm_does_not_carry_calibration_settings_it_does_not_use():
+    from sdf.stages.methods import METHODS
+
+    assert not METHODS["aqlm"].calibrated and METHODS["gptq"].calibrated

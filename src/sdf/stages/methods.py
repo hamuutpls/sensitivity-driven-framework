@@ -245,7 +245,7 @@ def _fork_methods() -> list[Method]:
     for registry in (WEIGHT_METHODS_A, WEIGHT_METHODS_B, WEIGHT_METHODS_BNB):
         for name, (fn, label, params, library, takes_bits, simplified) in registry.items():
             out.append(Method(
-                name, 1, label, _WEIGHT_PLANS, _calibrated(fn), params=params, calibrated=name != "bitsandbytes",
+                name, 1, label, _WEIGHT_PLANS, _calibrated(fn), params=params, calibrated=name not in ("bitsandbytes", "aqlm"),
                 library=library, note="; ".join(([f"{_SIMPLIFIED}{simplified}"] if simplified else [])
                                                 + ([_SIZE_NOTE] if takes_bits else [])),
                 fixed_bits="" if takes_bits else "it binarizes every layer the same way (about 1 bit), so its "

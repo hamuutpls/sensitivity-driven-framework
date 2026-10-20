@@ -124,7 +124,7 @@ def sweep_cost(profile, group_size: int, s0) -> Callable[[CompressionPlan], Plan
     return predict if s0.prune_sweep_quantize else lambda plan: predict(pruning_only(plan, s0.baseline_bits))
 
 
-def _stored_bits(s0) -> tuple[int, int, int]:
+def stored_bits(s0) -> tuple[int, int, int]:
     """The bits the sweep's standard, protected and compressed layers are stored at: the plan's, or every layer at
     baseline_bits when the sweep rounds nothing."""
     q = s0.prune_sweep_quantize
@@ -162,7 +162,7 @@ def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, toke
         row.info["cached"] = cached
 
     evaluate = make_evaluator(ctx, handle, text_loader, device)
-    ub = _stored_bits(s0)[0]
+    ub = stored_bits(s0)[0]
 
     for r in ratios:
         pct = round(r * 100)
@@ -208,7 +208,7 @@ def _curve(rep: StageReporter, variant: str) -> list[tuple[int, dict[str, Any] |
 
 
 def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, guarded, rounding: str) -> None:
-    ub, pb, cb = _stored_bits(s0)
+    ub, pb, cb = stored_bits(s0)
     fp16 = next((r.metrics for r in rep.rows if r.variant == "fp16" and r.status == "ok"), {})
     base = fp16.get("ppl_val")
     curves = {v: c for v in ("original", "framework", "same_size") if (c := _curve(rep, v))}

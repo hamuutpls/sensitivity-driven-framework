@@ -297,7 +297,7 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | ID | Interface | Direction | Requirement |
 |---|---|---|---|
 | IF-01 | Hugging Face Hub | in | Models and datasets shall be loaded by name from configuration (`model.name`, `data.sources`). |
-| IF-02 | File system / Google Drive | out | Outputs and cache shall be plain files (Markdown, JSON, XLSX, PNG) under configurable roots. |
+| IF-02 | File system | out | Outputs and cache shall be plain files (Markdown, JSON, XLSX, PNG) under configurable roots. |
 | IF-03 | Command line | in | `--config <yaml>` and repeated `--set key=value` (values parsed as YAML). |
 | IF-04 | Inference backends | in/out | Stage 4 shall talk to each backend through one `Backend` interface (load, generate, measure). Planned. |
 | IF-05 | Optuna, pymoo | in/out | Searchers shall wrap these libraries behind one `ask` / `tell` interface. Planned. |
