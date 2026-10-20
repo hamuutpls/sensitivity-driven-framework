@@ -32,7 +32,8 @@ from sdf.eval.metrics import perplexity
 from sdf.reporting.markdown import _table
 from sdf.reporting.reporter import StageReporter
 from sdf.run import RunContext
-from sdf.stage0.planner import (CompressionPlan, baseline_cost, plan_compression, same_size_pruning_plan, uniform_plan)
+from sdf.stage0.planner import (CompressionPlan, PlanCost, baseline_cost, plan_compression, pruning_only,
+                                same_size_pruning_plan, uniform_plan)
 from sdf.stage0.run import (_cost_metrics, fp16_key, load_fp16, load_guard, load_profile,
                             setup, stage_reporter, weight_cost)
 from sdf.stage0.sensitivity import fake_quantize_, find_decoder_layers, int_zero, normalize, zero_key
@@ -117,6 +118,12 @@ def make_evaluator(ctx: RunContext, handle, text_loader, device) -> Callable[[Co
     return evaluate
 
 
+def sweep_cost(profile, group_size: int, s0) -> Callable[[CompressionPlan], PlanCost]:
+    """`weight_cost` for the plans the sweeps measure: at `baseline_bits` when they round nothing."""
+    predict = weight_cost(profile, group_size, s0)
+    return predict if s0.prune_sweep_quantize else lambda plan: predict(pruning_only(plan, s0.baseline_bits))
+
+
 def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, tokenizer=None,
                     text_loader: Callable[[str, str], list[str]] | None = None) -> dict[str, Any]:
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
@@ -127,7 +134,7 @@ def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, toke
     profile, _ = load_profile(ctx, candidate, handle, text_loader)
     scores = normalize(profile.raw_scores, s0.normalization)
     guarded, _ = load_guard(ctx, candidate, handle, text_loader, profile)
-    predict = weight_cost(profile, gs, s0)
+    predict = sweep_cost(profile, gs, s0)
     rounding = (f"weights rounded to the plan's bits (group size {gs})" if s0.prune_sweep_quantize
                 else "no rounding (pruning only)")
     rep = stage_reporter(
@@ -228,8 +235,9 @@ def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, 
         "Earlier, Stage 0 only predicted what pruning would cost. Here we actually delete the numbers, at "
         f"every level from {ratios[0]:.0%} to {ratios[-1]:.0%}, and test the result on real text. In each "
         "row of each layer we delete the numbers closest to zero, since they change the output least. "
-        f"Both versions also store the remaining numbers with fewer bits ({rounding}). "
-        f"The standard method treats every layer the same: {s0.uniform_bits} bits and the same share deleted "
+        + (f"Both versions also store the remaining numbers with fewer bits ({rounding}). "
+           if s0.prune_sweep_quantize else "")
+        + f"The standard method treats every layer the same: {s0.uniform_bits} bits and the same share deleted "
         f"everywhere. The framework protects the most sensitive layers (threshold {threshold:g}): they keep "
         f"{s0.protected_bits} bits and nothing is deleted from them, and the layers whose removal breaks the "
         f"model ({', '.join(map(str, sorted(guarded))) or 'none'}) are never pruned.")
