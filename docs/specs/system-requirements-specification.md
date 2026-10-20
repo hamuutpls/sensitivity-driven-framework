@@ -71,7 +71,7 @@ flowchart LR
     Examiner([Thesis reader / examiner]) -- reads --> Drive
 ```
 
-The framework runs on Google Colab (outputs on Google Drive) or on a local GPU machine (the reference local
+The framework runs on Google Colab (outputs in the Colab session, no Google Drive) or on a local GPU machine (the reference local
 machine is a Windows PC with an RTX 5070 Ti, 16 GB).
 
 #### 1.3.2 System functions
@@ -200,7 +200,7 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | REP-06 | Every report shall be understandable by a reader with no AI background: a plain-language part (what was done, what came out, why, glossary) ahead of the technical tables. | M | Implemented | I | User preference, 2026-09-28 | SDD §4.3 |
 | REP-07 | At the end of a full run the system shall write `all_stages_comparison.xlsx` and a master report. | M | Implemented | T | SPEC | SDD §4.7 |
 | REP-08 | Text outputs shall be UTF-8 on every platform (including Windows). | M | Implemented | T | DEC | SDD §4.3 |
-| REP-09 | A framework row's verdict against the original (beats / trade-off / loses / ties) shall ignore one-off costs (build time), which are stated separately; a run with no deployment target shall show "no targets set", not "met". | M | Implemented | T | DEC (2026-10-01) | SDD §4.3 |
+| REP-09 | A framework row's verdict against the original (beats / trade-off / loses / ties) shall ignore one-off costs (build time), which are stated separately, and backend perplexity (the backend's re-rounded file, shown in the tables only; Mohammad, 2026-10-20); a run with no deployment target shall show "no targets set", not "met". | M | Implemented | T | DEC (2026-10-01) | SDD §4.3 |
 | REP-09 | Every report shall describe the original model (parameters, layers, hidden size, attention and key/value heads, vocabulary, maximum context, number format, size at 16 bits), read from the model's config, with a plain-language meaning for each. | M | Implemented | T | User request, 2026-09-30 | SDD §4.3 |
 
 #### 3.1.6 Stage 0: sensitivity profiling and planning (S0)

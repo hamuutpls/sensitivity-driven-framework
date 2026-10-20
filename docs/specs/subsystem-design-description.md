@@ -109,7 +109,7 @@ Not used: *Structure* (5.7) is covered by composition and logical; *Interface* a
 
 See the context diagram in [SyRS §1.3.1](system-requirements-specification.md#131-system-context). The system
 reads a model and datasets from the Hugging Face Hub, reads and writes a cache folder, writes results to a
-results folder (Google Drive on Colab), and (planned) drives four inference backends.
+results folder (`/content/thesis_compression` on Colab, no Google Drive), and (planned) drives four inference backends.
 
 ### 3.2 Composition view: subsystems
 
