@@ -60,12 +60,12 @@ METRICS.update({
         "llama.cpp decode throughput (std)", "tok/s", None, "spread of writing speeds (llama.cpp)",
         "How much the writing speed varied between repeated runs."),
     "llamacpp_ppl_val": MetricSpec(
-        "llama.cpp perplexity (validation half)", "", "lower", "prediction error in llama.cpp (validation half)",
+        "llama.cpp perplexity of the re-rounded file (validation half)", "", "lower", "prediction error of the re-rounded llama.cpp file (validation half)",
         "Prediction error of the llama.cpp file on the validation half of the test text (lower is better). "
         "llama.cpp rounds the numbers its own way and scores only the second half of each window, so compare it "
         "between rows, not with the other perplexity columns."),
     "llamacpp_ppl_heldout": MetricSpec(
-        "llama.cpp perplexity (held-out half)", "", "lower", "prediction error in llama.cpp (held-out half)",
+        "llama.cpp perplexity of the re-rounded file (held-out half)", "", "lower", "prediction error of the re-rounded llama.cpp file (held-out half)",
         "As the validation-half value, on the held-out half of the test text (lower is better)."),
 })
 MAIN_METRICS = ["llamacpp_size_gb", "llamacpp_decode_tokens_per_s", "llamacpp_ppl_val"]

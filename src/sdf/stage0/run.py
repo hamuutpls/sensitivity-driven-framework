@@ -838,7 +838,8 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         "before it is put on that scale. \"Protected\" layers keep high precision; the others are compressed "
         "and have the listed share of their numbers removed.",
         [("layer", "Layer", "The layer's position in the model, counting from 0 at the input end."),
-         ("sensitivity", "Sensitivity (0 to 1)", "The layer's rank among all layers: 0 is the least sensitive "
+         ("sensitivity", "Sensitivity (0 to 1)", ("The layer's rank among all layers" if rank else
+          "The layer's raw score rescaled so the lowest is 0 and the highest 1") + ": 0 is the least sensitive "
           "layer, 1 the most. The plans compare this with the threshold."),
          ("raw_score", "Raw score", _RAW_SCORE_MEANING.get(profile.method, "The measurement before it is put on "
           "the 0 to 1 scale.")),
@@ -985,7 +986,7 @@ def _add_kv_details(rep: StageReporter, prof: KVProfile, plan: KVPlan, bits_only
         "two notes (a *key* and a *value*) about every earlier word in every layer, so it doesn't have to "
         "reread the whole text for each new word. For long texts these notes can take more memory than the "
         "model itself. The same idea is applied to them: each layer's keys, then its values, are rounded to "
-        f"fewer bits one at a time to see how much that hurts, and each layer's attention is checked to see "
+        "fewer bits one at a time to see how much that hurts, and each layer's attention is checked to see "
         "whether it only looks at a few earlier words. The plan then gives fragile notes more bits, robust "
         "ones fewer, and lets layers that focus on few words forget the rest.")
     rep.glossary.update({

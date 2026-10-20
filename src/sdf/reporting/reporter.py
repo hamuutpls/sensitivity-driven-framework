@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
-from sdf.reporting.metrics import ONE_OFF_COSTS, is_better, is_number, label
+from sdf.reporting.metrics import NOT_IN_VERDICT, ONE_OFF_COSTS, is_better, is_number, label
 from sdf.requirements import DeploymentRequirement
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.logging import get_logger
@@ -67,7 +67,8 @@ class ComparisonRow:
     error: str | None = None
     requirement: dict[str, Any] = field(default_factory=dict)
     deltas: dict[str, dict[str, float | None]] = field(default_factory=dict)
-    # framework rows: main metrics won / lost against the original row (StageReporter.verdict), for the sheets
+    # framework rows: main metrics won / lost / one-off costs against the original row (StageReporter.verdict), for
+    # the sheets
     verdict: dict[str, list[str]] = field(default_factory=dict)
 
     @property
@@ -179,8 +180,8 @@ class StageReporter:
                 continue
             original = self._find(row.compare_to, "original") if row.variant == "framework" else None
             if original is not None:
-                wins, losses, _ = self.verdict(row)
-                row.verdict = {"wins": wins, "losses": losses}
+                wins, losses, one_off = self.verdict(row)
+                row.verdict = {"wins": wins, "losses": losses, "one_off": one_off}
             for name, value in row.metrics.items():
                 if not is_number(value):
                     continue
@@ -195,13 +196,14 @@ class StageReporter:
     def verdict(self, fw: ComparisonRow) -> tuple[list[str], list[str], list[str]] | None:
         """Main metrics on which framework row `fw` beats, loses to, or (one-off costs) costs more than its
         original row; None when there is no original row. The one judgement behind both the technical findings
-        and the plain summary. Perplexity counts once (see below). A difference within the larger of the two rows' std (a repeated timing's `<name>_std`) is a tie;
-        HF timings of two rows with different `latency_mode` are not compared."""
+        and the plain summary. Perplexity counts once (see below); a backend's perplexity is not counted
+        (NOT_IN_VERDICT). A difference within the larger of the two rows' std (a repeated timing's `<name>_std`) is
+        a tie; HF timings of two rows with different `latency_mode` are not compared."""
         orig = self.find_original(fw)
         if orig is None:
             return None
         wins, losses, one_off = [], [], []
-        for m in self.main_metrics:
+        for m in (m for m in self.main_metrics if m not in NOT_IN_VERDICT):
             a, b = fw.metrics.get(m), orig.metrics.get(m)
             if not (is_number(a) and is_number(b)):
                 continue

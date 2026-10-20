@@ -124,6 +124,13 @@ def sweep_cost(profile, group_size: int, s0) -> Callable[[CompressionPlan], Plan
     return predict if s0.prune_sweep_quantize else lambda plan: predict(pruning_only(plan, s0.baseline_bits))
 
 
+def _stored_bits(s0) -> tuple[int, int, int]:
+    """The bits the sweep's standard, protected and compressed layers are stored at: the plan's, or every layer at
+    baseline_bits when the sweep rounds nothing."""
+    q = s0.prune_sweep_quantize
+    return (s0.uniform_bits, s0.protected_bits, s0.compressed_bits) if q else (s0.baseline_bits,) * 3
+
+
 def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, tokenizer=None,
                     text_loader: Callable[[str, str], list[str]] | None = None) -> dict[str, Any]:
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
@@ -155,19 +162,20 @@ def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, toke
         row.info["cached"] = cached
 
     evaluate = make_evaluator(ctx, handle, text_loader, device)
+    ub = _stored_bits(s0)[0]
 
     for r in ratios:
         pct = round(r * 100)
         plans = {"original": (uniform_plan(scores, s0.uniform_bits, r),
                               f"Standard method, {pct}% removed",
-                              f"every layer at {s0.uniform_bits} bits, {pct}% pruned"),
+                              f"every layer at {ub} bits, {pct}% pruned"),
                  "framework": (plan_compression(scores, threshold, r, s0.protected_bits, s0.compressed_bits, guarded),
                                f"Sensitivity-guided framework, {pct}% removed",
                                f"Stage 0 plan (threshold {threshold:g}), {pct}% pruned on unprotected layers")}
         if s0.prune_sweep_same_size:
             plans["same_size"] = (same_size_pruning_plan(scores, s0.uniform_bits, r, profile.layer_numel, guarded),
                                   f"Framework, same size, {pct}% removed",
-                                  f"every layer at {s0.uniform_bits} bits, {pct}% of all weights pruned, "
+                                  f"every layer at {ub} bits, {pct}% of all weights pruned, "
                                   "placed by sensitivity")
         for key_, (plan, name, desc) in plans.items():
             method, variant = (f"same_{pct:03d}", "framework") if key_ == "same_size" else (f"prune_{pct:03d}", key_)
@@ -200,6 +208,7 @@ def _curve(rep: StageReporter, variant: str) -> list[tuple[int, dict[str, Any] |
 
 
 def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, guarded, rounding: str) -> None:
+    ub, pb, cb = _stored_bits(s0)
     fp16 = next((r.metrics for r in rep.rows if r.variant == "fp16" and r.status == "ok"), {})
     base = fp16.get("ppl_val")
     curves = {v: c for v in ("original", "framework", "same_size") if (c := _curve(rep, v))}
@@ -237,16 +246,16 @@ def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, 
         "row of each layer we delete the numbers closest to zero, since they change the output least. "
         + (f"Both versions also store the remaining numbers with fewer bits ({rounding}). "
            if s0.prune_sweep_quantize else "")
-        + f"The standard method treats every layer the same: {s0.uniform_bits} bits and the same share deleted "
+        + f"The standard method treats every layer the same: {ub} bits and the same share deleted "
         f"everywhere. The framework protects the most sensitive layers (threshold {threshold:g}): they keep "
-        f"{s0.protected_bits} bits and nothing is deleted from them, and the layers whose removal breaks the "
+        f"{pb} bits and nothing is deleted from them, and the layers whose removal breaks the "
         f"model ({', '.join(map(str, sorted(guarded))) or 'none'}) are never pruned.")
     rep.glossary.update({
-        "Standard method, N% removed": f"Every layer stored at {s0.uniform_bits} bits with N% of its numbers "
+        "Standard method, N% removed": f"Every layer stored at {ub} bits with N% of its numbers "
                                        "deleted.",
         "Sensitivity-guided framework, N% removed": f"The Stage 0 plan: the fragile layers kept at "
-                                                    f"{s0.protected_bits} bits and untouched, the others at "
-                                                    f"{s0.compressed_bits} bits with N% of their numbers deleted.",
+                                                    f"{pb} bits and untouched, the others at "
+                                                    f"{cb} bits with N% of their numbers deleted.",
         "Pruning": "Deleting numbers from the model. 100% removed means a layer keeps none of its numbers and "
                    "simply passes its input on unchanged.",
     })
@@ -259,7 +268,7 @@ def _write_plain(rep: StageReporter, ratios: list[float], s0, threshold: float, 
         rep.plain_why.append(f"The framework is more accurate at {', '.join(f'{p}%' for p in wins)} removed.")
     if fair:
         rep.glossary["Framework, same size, N% removed"] = (
-            f"The fair comparison: every layer at {s0.uniform_bits} bits like the standard method, and N% of all "
+            f"The fair comparison: every layer at {ub} bits like the standard method, and N% of all "
             "the numbers deleted, so the same size and the same share removed. Only where the deleting happens "
             "differs: the layers that matter least lose the most, the fragile ones less, the never-pruned ones "
             "nothing.")

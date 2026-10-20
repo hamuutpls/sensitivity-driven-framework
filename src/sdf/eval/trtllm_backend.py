@@ -60,12 +60,12 @@ METRICS.update({
     "trtllm_decode_ms_per_token_std": MetricSpec("TensorRT-LLM decode time per token (std)", "ms", None,
                                                  "spread of times per written word-piece (TensorRT-LLM)",
                                                  "How much the decode time per token varied between repeated runs."),
-    "trtllm_ppl_val": MetricSpec("TensorRT-LLM perplexity (validation half)", "", "lower",
-                                 "prediction error in TensorRT-LLM (validation half)",
+    "trtllm_ppl_val": MetricSpec("TensorRT-LLM perplexity of the re-rounded file (validation half)", "", "lower",
+                                 "prediction error of the re-rounded TensorRT-LLM file (validation half)",
                                  "Prediction error of the built engine on the validation half of the test text (lower "
                                  "is better). The weights are re-rounded when saved, so compare between rows only."),
-    "trtllm_ppl_heldout": MetricSpec("TensorRT-LLM perplexity (held-out half)", "", "lower",
-                                     "prediction error in TensorRT-LLM (held-out half)",
+    "trtllm_ppl_heldout": MetricSpec("TensorRT-LLM perplexity of the re-rounded file (held-out half)", "", "lower",
+                                     "prediction error of the re-rounded TensorRT-LLM file (held-out half)",
                                      "As the validation-half value, on the held-out half of the test text."),
 })
 MAIN_METRICS = ["trtllm_engine_gb", "trtllm_decode_ms_per_token", "trtllm_ppl_val"]

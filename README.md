@@ -37,7 +37,8 @@ comparison report; `MODE = "prune_sweep"` really prunes the model at every level
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hamuutpls/sensitivity-driven-framework/blob/main/notebooks/colab_run.ipynb)
 
 `notebooks/colab_run.ipynb` pulls `main`, installs the package, runs the tests and then `main.py` on the Colab
-GPU, with results and caches in `MyDrive/thesis_compression/` so they survive the session.
+GPU, with results and caches in `/content/thesis_compression/` (no Google Drive, so nothing to sign in to); copy
+them off Colab before the session ends.
 
 ## Layout
 
