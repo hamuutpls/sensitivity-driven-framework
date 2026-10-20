@@ -2,8 +2,9 @@
 
 Perplexity is measured with one forward pass per text window, so forgetting is simulated per word ("every word",
 Mohammad, 2026-10-18): each word attends only to the past words the technique would still hold at that point, under
-a budget of ceil(keep_ratio x the words it can see) per layer (the Stage 0 plan's share, or H2O's 20% in the
-standard rows). A dropped word is dropped for a whole key/value head (shared by its group of query heads), since that
+a budget per layer from its share (the Stage 0 plan's share, or H2O's 20% in the standard rows): SnapKV and
+InfiniGen keep ceil(keep_ratio x the words it can see); H2O, and the rounding techniques that forget with its rule,
+keep a fixed cache of ceil(keep_ratio x window) words, filled before anything is forgotten (Mohammad, 2026-10-20). A dropped word is dropped for a whole key/value head (shared by its group of query heads), since that
 is what frees memory. Rounding of cached keys and values is applied in place, as rtn_kv does; nothing is stored
 smaller, so memory comes from the plan's prediction and speed is not a compressed cache's speed.
 
@@ -100,14 +101,13 @@ def h2o_keep(scores: torch.Tensor, groups: int, keep_ratio: float) -> torch.Tens
     if keep_ratio >= 1:
         return keep
     size = int(budgets(keep_ratio, n)[-1])
-    budget = [min(i + 1, size) for i in range(n)]
     acc = torch.zeros(keep.shape[:3], device=scores.device)
     kept = torch.zeros_like(acc, dtype=torch.bool)
     for i in range(n):
         kept[..., i] = True
-        if budget[i] < i + 1 and (i == 0 or budget[i] == budget[i - 1]):  # full: one in, one out
+        if i >= size:  # full: one in, one out
             heavy = kept.clone()
-            heavy[..., i - max(budget[i] // 2, 1) + 1:] = False  # the recent half is never evicted
+            heavy[..., i - max(size // 2, 1) + 1:] = False  # the recent half is never evicted
             kept.scatter_(-1, acc.masked_fill(~heavy, math.inf).argmin(-1, keepdim=True), False)
         keep[:, :, i] = kept
         p = scores[:, :, i].float().masked_fill(~repeat_kv(kept, groups), -math.inf).softmax(-1)

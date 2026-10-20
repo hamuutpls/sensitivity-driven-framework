@@ -6,8 +6,9 @@ The 0-3-4 run of 2026-10-19 gave perplexity about 398 for every row that forgets
 and KVQuant Our method rows, both H2O rows). Our simulation gave word i a cache of ceil(share x (i + 1)) words, so at
 word 1 the cache held one word, the word itself, and the first word (the attention sink the model leans on) was
 forgotten for good. Mohammad chose "A", the paper's rule: a fixed cache of ceil(share x window) words, filled before
-anything is forgotten. Only H2O changed; SnapKV and InfiniGen keep the visible-words share. H2O is version 3, so its
-cached standard rows are redone.
+anything is forgotten. Only H2O changed; SnapKV and InfiniGen keep the visible-words share, so at the same share H2O now
+keeps more words on average (at 20% of 512 words: about 93 against 52), and more than Stage 0's coverage assumed.
+H2O is version 3, so its cached standard rows are redone.
 
 ## 2026-10-18: Stage 3 KV-cache techniques
 
