@@ -90,6 +90,10 @@ class Method:
     # what the method stores per rounded layer besides its bits, in bits (planner.predict_cost `overhead`);
     # None: one scale and zero per gptq_groupsize weights
     overhead: Callable[[int, int, int], float] | None = None
+    # a Stage 2 method after a WxAy (joint) Stage 1 method: the activation plan key its Our method rows follow
+    # ("activations" or "joint_acts"); its plans are then JointPlan, the weight half carrying the pruning
+    act_plan: str = ""
+    joint_bits: tuple[int | None, int | None] | None = None  # and that method's standard (weight, activation) bits
 
 
 @dataclass(frozen=True)
@@ -205,22 +209,26 @@ _SIZE_NOTE = ("size column: the plan's bits plus what the method stores besides 
               "and bitsandbytes: their codebooks, outliers and scales; outliers assumed at 0.45% for SqueezeLLM and "
               "about 1% for SpQR); "
               "for the others it is not modelled: one scale and zero per gptq_groupsize weights is assumed. A "
-              "2**b-entry codebook per row makes SqueezeLLM's 8-bit layers about 1.6 bits per weight larger")
+              "2**b-entry codebook per row makes SqueezeLLM's 8-bit layers about 1.6 bits per weight larger. "
+              "Per-row and per-Linear parts are counted for every row, so after structured pruning or low-rank "
+              "the size is slightly high; AQLM and QuIP# assume a Llama layer's 7 Linears")
 _LINEARS = 7  # shortcut: the Linears of a Llama decoder layer (q, k, v, o, gate, up, down); count them for other models
 # Extra bits a method stores for one rounded decoder layer that keeps `kept` weights, in Linears with `rows` outputs in
-# all, besides `b` bits per weight. An fp16 number is 16 bits; an outlier is stored as in CSR, a 16-bit value and a
-# 16-bit column index (every input width here is below 65536).
+# all, besides `b` bits per weight. An fp16 number is 16 bits. Per-row and per-Linear parts assume pruning removed no
+# rows (structured pruning and low-rank do, so their size is slightly high).
 SIZE_OVERHEAD: dict[str, Callable[[int, int, int], float]] = {
-    # a 2**b-entry fp16 codebook per output row; 0.45% outliers (the paper's share)
-    "squeezellm": lambda b, kept, rows: rows * 2 ** b * 16 + 0.0045 * kept * 32,
+    # a 2**b-entry fp16 codebook per output row; 0.45% outliers (the paper's share) at 48 bits each, an fp16 value and
+    # a 32-bit column index, which matches the paper's 4.05 -> 4.27 bits per weight
+    "squeezellm": lambda b, kept, rows: rows * 2 ** b * 16 + 0.0045 * kept * 48,
     # 3-bit scale and zero per 16 weights; an fp16 scale and zero for each of them per 16 rows x 16 weights
     # (spqr_'s defaults in weights_a.py: 3-bit statistics, groups of 16);
-    # outliers counted at about 1% (assumed: SpQR's share depends on its threshold)
+    # outliers counted at about 1% (assumed: SpQR's share depends on its threshold), each a 16-bit value and a 16-bit
+    # column index (SpQR's own format)
     "spqr": lambda b, kept, rows: kept * (2 * 3 / 16 + 2 * 2 * 16 / (16 * 16) + 0.01 * 32),
     # b codebooks of 256 fp16 codewords of 8 numbers per Linear; one fp16 scale per output row
     "aqlm": lambda b, kept, rows: _LINEARS * b * 256 * 8 * 16 + rows * 16,
-    # the E8 lattice codebook is fixed, not stored; one scale per Linear (its random-sign vectors, about 0.003 bits
-    # per weight, are not counted)
+    # the E8 lattice codebook is fixed, not stored; one scale per Linear (its random-sign vectors, stored as fp16 for
+    # each input and output, about 0.013 bits per weight on TinyLlama, are not counted)
     "quipsharp": lambda b, kept, rows: _LINEARS * 16,
     # NF4: an fp32 absmax per 64 weights; int8: an fp32 absmax per output row
     "bitsandbytes": lambda b, kept, rows: kept * 32 / 64 if b == 4 else rows * 32,
@@ -299,22 +307,24 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     Method("kvquant", 3, "KVQuant", ("kv",), _kv_method("kvquant", "h2o"), calibrated=True, version=3,  # 3: as rtn_kv 2
            library="in repo (simplified port)", note=_KV_NOTE + " KVQuant: levels from plain k-means, not "
            "sensitivity-weighted; the 1% unrounded outliers are not counted in the predicted memory."),
-    # keeps recent + heavy-hitter words
+    # keeps recent + heavy-hitter words; 3: fixed cache, filled before anything is forgotten (keeps the first word)
     Method("h2o", 3, "H2O", ("kv",), _kv_method("rtn", "h2o"), forgets=True, library="in repo (attention function)",
            note=_KV_NOTE + " H2O: a fixed cache of ceil(share x window) words per layer, filled first, then half "
-           "recent and half heavy hitters; scores are averaged over the query heads sharing a key/value head. At the "
-           "same share it keeps more words on average than SnapKV and InfiniGen, which keep a share of the words "
-           "seen so far.", version=3),  # 3: fixed cache, filled before anything is forgotten (keeps the first word)
-    # keeps an observation window and the earlier words it attends to most
-    Method("snapkv", 3, "SnapKV", ("kv",), _kv_method("rtn", "snapkv"), forgets=True, version=2,
+           "recent and half heavy hitters; scores are averaged over the query heads sharing a key/value head. SnapKV "
+           "and InfiniGen use the same cache size.", version=3),
+    # keeps an observation window and the earlier words it attends to most; 3: H2O's fixed cache
+    Method("snapkv", 3, "SnapKV", ("kv",), _kv_method("rtn", "snapkv"), forgets=True, version=3,
            library="in repo (attention function)", note=_KV_NOTE + " SnapKV: its paper keeps a fixed number of words; "
-           "the standard row keeps H2O's 20% instead, and the choice is redone at every word."),
-    # guesses attention from 30% of the channels and fetches only the top words; the CPU offloading is not run
-    Method("infinigen", 3, "InfiniGen", ("kv",), _kv_method("rtn", "infinigen"), forgets=True, version=2,
+           "the standard row keeps H2O's 20% instead, in the same fixed cache as H2O (ceil(share x window) words, "
+           "filled first), and the choice is redone at every word."),
+    # guesses attention from 30% of the channels and fetches only the top words; the CPU offloading is not run;
+    # 3: H2O's fixed cache
+    Method("infinigen", 3, "InfiniGen", ("kv",), _kv_method("rtn", "infinigen"), forgets=True, version=3,
            library="in repo (simplified port, no CPU offloading)",
            note=_KV_NOTE + " InfiniGen: its paper fetches the words above an attention threshold (a varying "
-           "count); the standard row keeps H2O's 20% instead. Channels are picked from the words so far, without the "
-           "offline skewing or the previous layer's guess; the full cache would sit in CPU memory, not run here."),
+           "count); the standard row keeps H2O's 20% instead, in the same fixed cache as H2O. Channels are picked "
+           "from the words so far, without the offline skewing or the previous layer's guess; the full cache would "
+           "sit in CPU memory, not run here."),
 ] + _fork_methods()}
 
 AFTER = "_after_"  # "<Stage 2 method>_after_<Stage 1 weight method>": the series path 0 -> 1 -> 2 -> 4
@@ -360,29 +370,38 @@ def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
                   joint=(8, 8) if standard_w8a8 else (None, None))
 
 
-def series(quant: Method, prune: Method) -> Method:
-    """`prune` (Stage 2) applied to the model `quant` (Stage 1, weights) has just quantized. The quantization
-    follows the plan's bits, the pruning its ratios; both plans are the two halves of one combined plan."""
-    if (quant.stage, prune.stage) != (1, 2) or quant.plans != _WEIGHT_PLANS:
+def series(quant: Method, prune: Method, quant_plan: str = "quant") -> Method:
+    """`prune` (Stage 2) applied to the model `quant` (Stage 1, weights or WxAy) has just quantized. The quantization
+    follows the plan's bits, the pruning its ratios; both plans are the two halves of one combined plan. After a WxAy
+    method the plan is a JointPlan whose weight half carries the pruning, and the activations stay rounded while the
+    pruning calibrates and the model is measured. `quant_plan`: the Stage 1 weight plan key Our method rows follow
+    ("joint_weights" for a WxAy method's joint plan)."""
+    joint = quant.joint is not None
+    if (quant.stage, prune.stage) != (1, 2) or not (quant.plans == _WEIGHT_PLANS or joint):
         raise ValueError(f"{prune.name} (Stage {prune.stage}) cannot follow {quant.name} (Stage {quant.stage}): "
-                         "only a Stage 1 weight method can precede a Stage 2 method")
+                         "only a Stage 1 weight or WxAy method can precede a Stage 2 method")
 
     @contextmanager
     def apply(call: MethodCall) -> Iterator[dict[str, Any]]:
-        with quant.apply(replace(call, plan=bits_only(call.plan))) as first, prune.apply(call) as second:
+        weights = call.plan.weights if joint else call.plan
+        first_plan = JointPlan(bits_only(weights), call.plan.acts) if joint else bits_only(weights)
+        with quant.apply(replace(call, plan=first_plan)) as first, \
+                prune.apply(replace(call, plan=weights)) as second:
             yield {**first, **second}
 
     # low-rank replaces each weight by its unrounded factors, undoing what the Stage 1 method did to the weights
     unavailable = quant.unavailable or (f"{prune.label} cannot follow a Stage 1 method: rebuilding the weights "
                                         "from unrounded factors replaces the Stage 1 rounding"
                                         if prune.name == "low_rank" else "")
+    act_plan = {"quant": "activations", "joint_weights": "joint_acts"}[quant_plan] if joint else ""
     return Method(prune.name + AFTER + quant.name, 2, f"{prune.label} after {quant.label}", prune.plans,
                   apply if quant.apply and prune.apply and not unavailable else None,
                   version=quant.version * 1000 + prune.version, params=tuple(dict.fromkeys(quant.params + prune.params)),
                   calibrated=quant.calibrated or prune.calibrated, library=prune.library, storage=prune.storage,
-                  quant_plans=quant.plans * len(prune.plans),  # every pruning plan follows the one bits plan
+                  quant_plans=(quant_plan,) * len(prune.plans),  # every pruning plan follows the one bits plan
                   note=quant.note, fixed_bits=quant.fixed_bits, unavailable=unavailable,
-                  max_ratio=prune.max_ratio, overhead=quant.overhead)
+                  max_ratio=prune.max_ratio, overhead=quant.overhead, act_plan=act_plan,
+                  joint_bits=quant.joint if joint else None)
 
 
 def methods_for(stage: int, names: list[str]) -> list[Method]:

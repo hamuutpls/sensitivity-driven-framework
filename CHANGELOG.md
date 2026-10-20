@@ -54,15 +54,80 @@ values).
   than `act_avg_bits` no longer leaves the joint plan more bits than the plan it is compared with.
 - Size per method (23): the predicted size counts what SqueezeLLM, SpQR, AQLM, QuIP# and bitsandbytes store besides
   their bits (codebooks, outliers, their own scales) instead of one scale and zero per `gptq_groupsize` weights.
-  Assumed outlier shares: SqueezeLLM 0.45% (the paper's), SpQR about 1%; an outlier is a 16-bit value and a 16-bit
-  column index. Per-row and per-Linear parts (codebooks, row scales) do not shrink when weights are pruned. Our
+  Assumed outlier shares: SqueezeLLM 0.45% (the paper's) at 48 bits each (a 16-bit value and a 32-bit column index,
+  which matches the paper's 4.05 -> 4.27 bits per weight), SpQR about 1% at 32 bits (its own 16-bit index). Per-row and per-Linear parts (codebooks, row scales) do not shrink when weights are pruned. Our
   method's SqueezeLLM rows grow most (a 256-entry codebook per row costs about 1.6 bits per weight at 8 bits), so
   their size relative to the standard row rises. Stage 0 sizes stay method-agnostic, so a Stage 1 row of these
   methods shows a different size from the same plan in Stage 0. AQLM's codebooks are counted for a Llama layer's 7
-  Linears. Only size columns change; nothing is re-measured.
+  Linears; per-row parts are counted for every row, so after structured pruning or low-rank the size is slightly
+  high. The settings search checks the size limit with the same count (search version 2, so saved points are
+  redone). Only size columns change; nothing is re-measured.
 - AWQ under grouped-query attention (24): o_proj is rounded plainly, as the reference implementation does when its
   scale cannot be folded into v_proj (TinyLlama: 4 key/value heads for 32 query heads). AWQ is version 3, so its
   cached standard rows are redone.
+
+## 2026-10-20: Settings search: 1.1 GB, 100 full tries, joint plan
+
+Mohammad's answers (2026-10-20): "over 1 gb +10% is fine. do 100 tries. and only the built models count as tries";
+"the goal is joint planning"; "its ok to build 438 models".
+
+- main.py: TARGET_MEMORY_GB 1.1, SEARCH_BUDGET 100.
+- The budget is 100 full tries per searcher (a model built and measured on all the windows). MFBO's rough tries count
+  by their share of the windows, so it builds more models (about 438 at budget 100) for the same compute; the
+  searcher comparison shows the models built and how many were on all the windows.
+- Only a model built for the searcher costs: a point the plan puts over the limit, a failure before building and a
+  repeat of the searcher's own try from the cache cost nothing; a failure after building still costs (it is not
+  cached, so its repeat rebuilds and costs again), so a broken setting cannot rebuild for free. `search.max_tries_per_budget` (20) stops a searcher after budget x 20 tries.
+- Stage 1 always follows the joint weight x activation plan; the `stage1_plan` search setting is removed.
+- MFBO gives more windows only to points it measured. MOBO completes a point over the limit with the worst values
+  built so far and its shortfall as the constraint, so Optuna's GPSampler (which learns only from completed trials)
+  learns where the limit is; a point that crashed or was not measured is completed the same way with constraint 1,
+  so MOBO does not propose it again.
+- The limit is checked on `search.memory_metric` before and after the build (`check_requirement`); it must be
+  `predicted_weight_memory_gb`, the only size known before building; `ppl_heldout` is refused as an objective.
+- The report says unstructured pruning gives no vLLM speed-up, counts the tries over the limit, and no longer counts
+  them as failures.
+
+## 2026-10-19: Settings search under a memory limit (MODE = "search")
+
+Mohammad's asks: "make the framework dynamic and find the best settings that satisfy perplexity, memory, and
+latency"; then memory = model size below 1 GB, latency from vLLM on Colab, 50 tries per searcher, the project's
+search-space list plus a technique for each stage.
+
+- `src/sdf/search.py`: a point is the SEARCH_SPACE hyperparameters plus a Stage 1 WxAy technique (separate or joint
+  Stage 0 plan), a Stage 2 pruning technique (at the plan's prune_ratio_aggressive) and a Stage 3 KV technique.
+  `evaluate` builds the chained Our method model 0 -> 1 -> 2 -> 3 and measures it (cached per point).
+- Searchers, same budget and seed: MOBO (Optuna GPSampler, the requirement as a constraint), MFBO (successive halving
+  over the evaluation windows) and NSGA-III (pymoo). `pip install .[search]`.
+- Stage 3 rows built on a Stage 2 row now send that Stage 2 model to the backends (they cannot run the KV techniques),
+  so a search point gets vLLM latency; the row says so.
+- Outputs in `<run>/search/`: search_report.md, search_results.xlsx (Trials, Pareto, Searcher comparison, Best
+  configs), trade-off plots and hypervolume per searcher. Settings in main.py section 8.
+
+## 2026-10-19: Sequential run of Stages 0 -> 1 -> 2 -> 3 -> 4 (MODE = "chain")
+
+Mohammad's ask: "start a thread that will run stages 0 1 2 3 4 sequentially", then "stage 1 should be the best wxay
+pick", "test everything as long as we can reach the highest memory reduction and lowest perplexity" and "yes" to
+following each side's memory vs perplexity trade-off line.
+
+- `run_chain` (`src/sdf/stages/runner.py`, `MODE = "chain"`): Stage 1 runs `STAGE1_METHODS`; every WxAy row of a side
+  (Standard, Our method) on its memory vs perplexity trade-off line is pruned by every `STAGE2_METHODS` method at
+  every share (`stage_2_<side>_after_<row>/`); every Stage 2 row of the side on its line gets every
+  `STAGE3_METHODS` method (`stage_3_<side>_after_<Stage 1 row>_<Stage 2 row>/`). Held-out perplexity never chooses.
+- `run_stage(after=...)`: Stage 2 after a Stage 1 weight or WxAy row (`series()` now takes WxAy methods: the
+  activations stay rounded while pruning calibrates and the model is measured). `run_stage(before=...)`: Stage 3 on a
+  Stage 2 row. `only=` runs one side. All join the cache key.
+- Stage 4 (evaluation) runs inside every row: Hugging Face always; backends for Stage 1 and 2 rows, and for a
+  chained Stage 3 row on the Stage 2 model it was built on (they cannot run the KV techniques).
+- Low-rank still cannot follow Stage 1, so its chained rows fail and say so.
+
+## 2026-10-20: SnapKV and InfiniGen use H2O's cache size (fairness)
+
+After the H2O fix, H2O kept a fixed cache of ceil(share x window) words while SnapKV and InfiniGen kept a share of the
+words each word can see, so at 20% of 512 words H2O kept about 93 words on average against 52. Mohammad approved giving
+all three the same cache ("do what you recommend", 2026-10-20 09:17): word i keeps min(i + 1, ceil(share x window))
+words (`cache_budgets` in `stages/kv_methods.py`). SnapKV and InfiniGen are version 3, so their cached standard rows are
+redone. Stage 0's coverage still sizes the plan with the visible-words share and is unchanged.
 
 ## 2026-10-20: H2O keeps a fixed cache (fix)
 
