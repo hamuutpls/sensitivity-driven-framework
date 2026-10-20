@@ -26,8 +26,10 @@ class ArtifactCache:
     def path(self, kind: str, key: Any) -> Path:
         return self.root / kind / f"{config_hash(key)}.json"
 
-    def get_or_compute(self, kind: str, key: Any, compute: Callable[[], Any]) -> tuple[Any, bool]:
-        """Return (value, was_cached)."""
+    def get_or_compute(self, kind: str, key: Any, compute: Callable[[], Any],
+                       store: Callable[[Any], bool] = lambda value: True) -> tuple[Any, bool]:
+        """Return (value, was_cached). A value `store` rejects is returned but not saved, so the next call
+        computes it again."""
         p = self.path(kind, key)
         if p.exists():
             try:
@@ -38,7 +40,8 @@ class ArtifactCache:
                 log.warning("corrupt cache entry %s ignored", p)
         log.info("cache miss: %s, computing", kind)
         value = compute()
-        atomic_write_text(p, json.dumps({"key": key, "value": value}, indent=2, default=str))
+        if store(value):
+            atomic_write_text(p, json.dumps({"key": key, "value": value}, indent=2, default=str))
         return value, False
 
 

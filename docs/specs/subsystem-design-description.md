@@ -384,7 +384,7 @@ parameters, calibration when used, and the FP16 key), `<method>[_suffix]/framewo
 method accepts, compared with the method's original row). A method whose `apply` is `None` is a failed row saying
 "not implemented yet". Predicted plan costs (weight memory, activation bits, KV memory) sit next to the measured
 metrics. **Rationale.** Original and framework run the same code and differ only in the plan, which is exactly
-the comparison the thesis makes; fresh models keep the stages independent (PIPE-02). Plan keys: `quant`, `prune`, `prune_same_size`, `activations`, `kv`, `kv_bits_only`; the
+the comparison the thesis makes; fresh models keep the stages independent (PIPE-02). Plan keys: `quant`, `prune`, `prune_same_size`, `activations`, `kv`; the
 kind of plan decides the standard method (`original_plan`). `<pruning>_after_<quantization>` names a series method
 (`series`, config `stages.stage2_after`). Library choices per method:
 [`stage-methods-feasibility.md`](../stage-methods-feasibility.md).

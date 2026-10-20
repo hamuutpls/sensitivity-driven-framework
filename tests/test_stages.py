@@ -45,7 +45,7 @@ def test_series_methods_pair_a_pruning_method_with_a_stage1_weight_method():
 
 def test_stage0_plans_load(stage0_dir):
     plans = Stage0Plans.load(stage0_dir)
-    assert {"quant", "prune", "prune_same_size", "activations", "kv", "kv_bits_only", "joint_weights",
+    assert {"quant", "prune", "prune_same_size", "activations", "kv", "joint_weights",
             "joint_acts"} <= set(plans.plans)
     assert all(lp.pruning_ratio == 0 for lp in plans.plans["quant"].layers)
     assert all(lp.bit_width == 16 for k in ("prune", "prune_same_size") for lp in plans.plans[k].layers)
