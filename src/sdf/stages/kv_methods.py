@@ -2,9 +2,9 @@
 
 Perplexity is measured with one forward pass per text window, so forgetting is simulated per word ("every word",
 Mohammad, 2026-10-18): each word attends only to the past words the technique would still hold at that point, under
-a budget per layer from its share (the Stage 0 plan's share, or H2O's 20% in the standard rows): SnapKV and
-InfiniGen keep ceil(keep_ratio x the words it can see); H2O, and the rounding techniques that forget with its rule,
-keep a fixed cache of ceil(keep_ratio x window) words, filled before anything is forgotten (Mohammad, 2026-10-20). A dropped word is dropped for a whole key/value head (shared by its group of query heads), since that
+a budget per layer from its share (the Stage 0 plan's share, or H2O's 20% in the standard rows): every forgetting
+rule keeps a fixed cache of ceil(keep_ratio x window) words, filled before anything is forgotten (`cache_budgets`;
+Mohammad, 2026-10-20), so H2O, SnapKV and InfiniGen keep the same number of words at the same share. A dropped word is dropped for a whole key/value head (shared by its group of query heads), since that
 is what frees memory. Rounding of cached keys and values is applied in place, as rtn_kv does; nothing is stored
 smaller, so memory comes from the plan's prediction and speed is not a compressed cache's speed.
 
@@ -79,6 +79,13 @@ def _causal(n: int, device: torch.device) -> torch.Tensor:
     return torch.ones(n, n, dtype=torch.bool, device=device).tril()
 
 
+def cache_budgets(keep_ratio: float, n: int, device: torch.device | None = None) -> torch.Tensor:
+    """Words each of n queries may keep: a fixed cache of ceil(keep_ratio x n) words, filled before anything is
+    forgotten, so word i keeps min(i + 1, size). The same for H2O, SnapKV and InfiniGen (Mohammad, 2026-10-20)."""
+    size = int(budgets(keep_ratio, n)[-1])
+    return (torch.arange(n, device=device) + 1).clamp(max=size)
+
+
 def _top_per_row(score: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
     """Bool mask of the k[i] highest entries in each row i of score (..., n, n)."""
     kmax = int(k.max())
@@ -100,7 +107,7 @@ def h2o_keep(scores: torch.Tensor, groups: int, keep_ratio: float) -> torch.Tens
     keep = _causal(n, scores.device).expand(b, scores.shape[1] // groups, n, n).clone()
     if keep_ratio >= 1:
         return keep
-    size = int(budgets(keep_ratio, n)[-1])
+    size = int(cache_budgets(keep_ratio, n)[-1])
     acc = torch.zeros(keep.shape[:3], device=scores.device)
     kept = torch.zeros_like(acc, dtype=torch.bool)
     for i in range(n):
@@ -125,7 +132,7 @@ def snapkv_keep(scores: torch.Tensor, groups: int, keep_ratio: float, window: in
     keep = causal.expand(b, scores.shape[1] // groups, n, n).clone()
     if keep_ratio >= 1:
         return keep
-    budget = budgets(keep_ratio, n, dev)
+    budget = cache_budgets(keep_ratio, n, dev)
     w = budget.clamp(max=window)
     c = group_mean(scores.float().softmax(-1), groups).cumsum(2)
     rows = torch.arange(n, device=dev)
@@ -157,7 +164,7 @@ def infinigen_keep(query: torch.Tensor, key: torch.Tensor, groups: int, keep_rat
     keep = causal.expand(b, hq // groups, n, n).clone()
     if keep_ratio >= 1:
         return keep
-    budget = budgets(keep_ratio, n, query.device)
+    budget = cache_budgets(keep_ratio, n, query.device)
     picked = (_top_per_row(guess, budget - 1) & causal) | eye
     full = budget >= torch.arange(n, device=query.device) + 1
     keep[:, :, ~full] = picked[:, :, ~full]

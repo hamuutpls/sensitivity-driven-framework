@@ -14,7 +14,7 @@ from sdf.run import start_run
 from sdf.search_space import SEARCH_SPACE
 from sdf.stage0.kv_cache import KVLayerPlan, KVPlan, kv_projections, uniform_kv_plan
 from sdf.stage0.sensitivity import find_decoder_layers, round_to_nearest
-from sdf.stages.kv_methods import (LayerKV, SDF_KV, budgets, calibrate_kvquant, group_mean, h2o_keep,
+from sdf.stages.kv_methods import (LayerKV, SDF_KV, budgets, cache_budgets, calibrate_kvquant, group_mean, h2o_keep,
                                    infinigen_keep, kmeans_1d, kv_attention, kv_attention_forward, kvquant_hooks,
                                    kvquant_round, quarot_round, repeat_kv, snap_to_levels, snapkv_keep)
 from sdf.stages.methods import METHODS, MethodCall
@@ -49,8 +49,9 @@ def test_group_mean_and_repeat_kv_shapes():
 def test_kv_methods_changed_since_their_first_cached_rows_have_a_new_version():
     from sdf.stages.methods import METHODS
     # rows cached at 439c84f / 90cd6a7 used the fixed-window budget, InfiniGen's look-ahead and SnapKV's pooling spill
-    assert {m: METHODS[m].version for m in ("quarot_kv", "kvquant", "snapkv", "infinigen")} == \
-        dict.fromkeys(("quarot_kv", "kvquant", "snapkv", "infinigen"), 2)
+    assert {m: METHODS[m].version for m in ("quarot_kv", "kvquant")} == dict.fromkeys(("quarot_kv", "kvquant"), 2)
+    # 2026-10-20: SnapKV and InfiniGen take H2O's fixed cache; their standard rows forget, so they are redone
+    assert METHODS["snapkv"].version == METHODS["infinigen"].version == 3
     assert METHODS["rtn_kv"].version == 1  # its standard row is unchanged
     assert METHODS["h2o"].version == 3  # 2026-10-20: fixed cache; its standard row forgets, so it is redone
 
@@ -99,11 +100,25 @@ def test_h2o_never_loses_the_first_word_the_model_leans_on(r):
     assert h2o_keep(s, groups=2, keep_ratio=r)[..., -1, 0].all()
 
 
+def test_cache_budgets_fill_a_fixed_cache_first():
+    assert cache_budgets(0.2, 12).tolist() == [1, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]  # ceil(0.2 * 12) = 3
+    assert cache_budgets(0.2, 512)[-1] == budgets(0.2, 512)[-1] == 103
+
+
+@pytest.mark.parametrize("r", [0.1, 0.3])
+def test_h2o_snapkv_and_infinigen_keep_the_same_number_of_words(r):
+    g = torch.Generator().manual_seed(4)
+    q, k = torch.randn(1, 4, 40, 8, generator=g), torch.randn(1, 2, 40, 8, generator=g)
+    s = (q @ repeat_kv(k, 2).mT).masked_fill(~torch.ones(40, 40, dtype=torch.bool).tril(), -math.inf)
+    for keep in (h2o_keep(s, 2, r), snapkv_keep(s, 2, r), infinigen_keep(q, k, 2, r)):
+        _check_budgets(keep, r, fixed=True)
+
+
 def test_snapkv_keeps_the_window_and_the_most_voted_word():
     s = _scores(n=20)
     s[..., 5] = torch.where(torch.isinf(s[..., 5]), s[..., 5], torch.full_like(s[..., 5], 20.0))
     keep = snapkv_keep(s, groups=2, keep_ratio=0.5, window=3, kernel=1)
-    _check_budgets(keep, 0.5)
+    _check_budgets(keep, 0.5, fixed=True)
     for i in range(6, 20):
         assert keep[..., i, i - 2:i + 1].all()  # observation window
         assert keep[..., i, 5].all()  # the word every query looks at
@@ -123,8 +138,8 @@ def test_infinigen_fetches_the_words_with_the_highest_guess():
     q, k = torch.randn(1, 4, 16, 8, generator=g).abs() + 1, torch.randn(1, 2, 16, 8, generator=g)
     k[:, :, 4] = 10.0  # word 4 matches every (positive) query, whichever channels are used
     keep = infinigen_keep(q, k, groups=2, keep_ratio=0.3)
-    _check_budgets(keep, 0.3)
-    rows = [i for i, b in enumerate(budgets(0.3, 16).tolist()) if b >= 2 and i > 4]
+    _check_budgets(keep, 0.3, fixed=True)
+    rows = [i for i, b in enumerate(cache_budgets(0.3, 16).tolist()) if b >= 2 and i > 4]
     assert keep[..., rows, 4].all()
 
 
