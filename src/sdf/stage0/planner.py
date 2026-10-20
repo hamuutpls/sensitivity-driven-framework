@@ -11,7 +11,7 @@ The "original method" allocation used for comparison is uniform: every layer get
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
-from typing import Any
+from typing import Any, Callable
 
 from sdf.search_space import PER_CHANNEL
 from sdf.stage0.sensitivity import SensitivityProfile
@@ -209,6 +209,7 @@ def predict_cost(
     baseline_bits: int,
     sparse_storage: str = "bitmask",
     reference_scores: list[float] | None = None,
+    overhead: Callable[[int, int, int], float] | None = None,
 ) -> PlanCost:
     """Predicted storage of a plan.
 
@@ -219,6 +220,10 @@ def predict_cost(
     "dense" stores them as zeros (no saving, as in a plain checkpoint), "free" costs them nothing (the ideal,
     only real for structured pruning). A fully pruned layer (ratio 1) is stored as nothing in every mode.
     Parameters outside the decoder Linear weights stay at `baseline_bits`.
+
+    `overhead(bits, stored, rows)`: the extra bits a method stores for one rounded layer in its own format
+    (codebooks, outliers, its own scales) when `stored` of its weights are kept, in place of the scale/zero pairs
+    above. Per-row and per-Linear parts do not shrink when weights are pruned.
 
     The exposure uses `reference_scores` (0-1, one per layer) when given, else the plan's own sensitivities.
     Plans built from different measures must share a reference to be compared: with rank scores, protecting
@@ -240,7 +245,11 @@ def predict_cost(
         kept = numel * (1.0 - lp.pruning_ratio)
         stored = numel if sparse_storage == "dense" and lp.pruning_ratio < 1.0 else kept
         bits = stored * lp.bit_width
-        if lp.bit_width < baseline_bits:
+        if lp.bit_width >= baseline_bits or lp.pruning_ratio >= 1.0:
+            pass  # nothing rounded, or a fully removed layer, which is stored as nothing in every mode
+        elif overhead is not None:
+            bits += overhead(lp.bit_width, stored, rows)
+        else:
             groups = rows if group_size == PER_CHANNEL else numel / group_size
             bits += groups * (stored / numel) * group_overhead_bits
         if sparse_storage == "bitmask" and 0.0 < lp.pruning_ratio < 1.0:

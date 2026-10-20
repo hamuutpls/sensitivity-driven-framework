@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-10-20: audit fixes the final test waits for (ponytail audit 2026-10-20, findings 19, 23, 24)
+
+- Joint plan budget (19): the joint weight-and-activation plan gets the separate activation plan's real average
+  activation bits in every mode, not only when that plan comes from the weight plan. A measured plan that spends less
+  than `act_avg_bits` no longer leaves the joint plan more bits than the plan it is compared with.
+- Size per method (23): the predicted size counts what SqueezeLLM, SpQR, AQLM, QuIP# and bitsandbytes store besides
+  their bits (codebooks, outliers, their own scales) instead of one scale and zero per `gptq_groupsize` weights.
+  Assumed outlier shares: SqueezeLLM 0.45% (the paper's) at 48 bits each (a 16-bit value and a 32-bit column index,
+  which matches the paper's 4.05 -> 4.27 bits per weight), SpQR about 1% at 32 bits (its own 16-bit index). Per-row and per-Linear parts (codebooks, row scales) do not shrink when weights are pruned. Our
+  method's SqueezeLLM rows grow most (a 256-entry codebook per row costs about 1.6 bits per weight at 8 bits), so
+  their size relative to the standard row rises. Stage 0 sizes stay method-agnostic, so a Stage 1 row of these
+  methods shows a different size from the same plan in Stage 0. AQLM's codebooks are counted for a Llama layer's 7
+  Linears; per-row parts are counted for every row, so after structured pruning or low-rank the size is slightly
+  high. The settings search checks the size limit with the same count (search version 2, so saved points are
+  redone). Only size columns change; nothing is re-measured.
+- AWQ under grouped-query attention (24): o_proj is rounded plainly, as the reference implementation does when its
+  scale cannot be folded into v_proj (TinyLlama: 4 key/value heads for 32 query heads). AWQ is version 3, so its
+  cached standard rows are redone.
+
 ## 2026-10-20: Settings search: 1.1 GB, 100 full tries, joint plan
 
 Mohammad's answers (2026-10-20): "over 1 gb +10% is fine. do 100 tries. and only the built models count as tries";

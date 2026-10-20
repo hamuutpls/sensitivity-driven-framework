@@ -131,7 +131,7 @@ def awq_(model: nn.Module, plan: CompressionPlan, batches: list[torch.Tensor], g
     here W is replaced by round(W s) / s, which computes the same). a is searched over `grid` steps in [0, 1)
     for the smallest output error on the calibration inputs; a = 0 is plain round-to-nearest, so AWQ is never
     worse than RTN there. Linears fed the same input (attention q/k/v, MLP gate/up) share one s, as they must
-    when it is folded into the one op before them.
+    when it is folded into the one op before them. o_proj is scaled only when its scale can be folded (see below).
     ponytail: no weight-clipping search (the paper's second step); add it if AWQ trails GPTQ by much."""
     require_bits_only(plan, "AWQ")
     for lp, layer in zip(plan.layers, find_decoder_layers(model)):
@@ -142,12 +142,18 @@ def awq_(model: nn.Module, plan: CompressionPlan, batches: list[torch.Tensor], g
         groups: dict[tuple, list[nn.Linear]] = {}
         for m, xs in inputs.items():  # same input tensor -> same group
             groups.setdefault((xs[0].data_ptr(), xs[0].shape), []).append(m)
+        attn = getattr(layer, "self_attn", None)
+        # o_proj's scale folds into v_proj only when each v_proj output feeds one o_proj input; with grouped-query
+        # attention it feeds several, which cannot take different scales, so o_proj is plainly rounded (a = 0), as
+        # the reference implementation (llm-awq auto_scale) does
+        v, o = getattr(attn, "v_proj", None), getattr(attn, "o_proj", None)  # absent on OPT, fused-QKV models
+        no_fold = v is not None and o is not None and v.out_features != o.in_features
         for linears in groups.values():
             X = torch.cat(inputs[linears[0]])
             x_mean = X.abs().float().mean(0)
             ref = [(X @ m.weight.T).float() for m in linears]
             best_err, best = float("inf"), None
-            for i in range(grid):
+            for i in range(1 if no_fold and linears == [o] else grid):
                 s = x_mean.pow(i / grid).clamp(min=1e-4)
                 s = (s / (s.max() * s.min()).sqrt()).to(X.dtype)
                 qs = [_scaled_rtn(m.weight.data, s, lp.bit_width, group_size, int_zero) for m in linears]

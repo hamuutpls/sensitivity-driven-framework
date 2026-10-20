@@ -32,7 +32,7 @@ from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-VERSION = 1  # bump when a change to the chain or the measurement changes a point's numbers (the cache key)
+VERSION = 2  # 2: sizes count each method's stored extras (codebooks, outliers, scales). Bump when a change to the chain or the measurement changes a point's numbers (the cache key)
 FAILED = 1e9  # objective and constraint value of a point that could not be built or measured
 
 
@@ -135,7 +135,7 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
             _free_memory()
 
     plan, _ = _capped(m, framework_plan(m, plans, "prune"), caps, plans.profile.layer_numel)
-    size = plan_metrics(plan, plans, cfg, candidate, m.storage)
+    size = plan_metrics(plan, plans, cfg, candidate, m.storage, m.overhead)
     if check_requirement(cfg, size).met is False:  # the size follows from the plan: not worth building
         return {"metrics": size, "errors": {}, "not_built": "over the limit, so not built"}
     try:  # from here a model is built, so a failure still used up a try ("attempted")

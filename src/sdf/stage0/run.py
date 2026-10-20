@@ -140,11 +140,14 @@ def calib_batches(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHand
 
 
 def weight_cost(profile: SensitivityProfile, group_size: int, s0, reference: list[float] | None = None,
-                storage: str | None = None) -> Callable[[CompressionPlan], PlanCost]:
-    """`predict_cost` with the run's storage settings (`storage` overrides stage0.sparse_storage)."""
+                storage: str | None = None, overhead: Callable[[int, int, int], float] | None = None,
+                ) -> Callable[[CompressionPlan], PlanCost]:
+    """`predict_cost` with the run's storage settings (`storage` overrides stage0.sparse_storage; `overhead` is a
+    method's own stored extras, Method.overhead)."""
     return functools.partial(predict_cost, profile=profile, group_size=group_size,
                              group_overhead_bits=s0.group_overhead_bits, baseline_bits=s0.baseline_bits,
-                             sparse_storage=storage or s0.sparse_storage, reference_scores=reference)
+                             sparse_storage=storage or s0.sparse_storage, reference_scores=reference,
+                             overhead=overhead)
 
 
 def stage_reporter(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
@@ -522,6 +525,12 @@ def _act_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
     return prof, act
 
 
+def joint_act_budget(s0, act: ActivationPlan | None) -> float:
+    """The joint plan's average activation bits: the separate activation plan's real average, which can fall short
+    of act_avg_bits (made from the weight plan, or a greedy plan that skips layers where more bits do not help)."""
+    return s0.joint_avg_act_bits or (act.avg_bits if act is not None else s0.act_avg_bits)
+
+
 def _joint_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
                 text_loader: Callable[[str, str], list[str]], rep: StageReporter, quant: CompressionPlan,
                 act: ActivationPlan | None) -> tuple[CompressionPlan, ActivationPlan, JointProfile] | None:
@@ -529,9 +538,7 @@ def _joint_rows(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle
     and the same average activation bits as the activation plan unless set otherwise, so the two can be compared."""
     s0 = ctx.cfg.stage0
     avg_w = s0.joint_avg_weight_bits or sum(lp.bit_width for lp in quant.layers) / len(quant.layers)
-    # a plan made from the weight plan does not aim at act_avg_bits: give the joint plan that plan's real average
-    avg_a = s0.joint_avg_act_bits or (act.avg_bits if s0.act_plan == "from_weights" and act is not None
-                                      else s0.act_avg_bits)
+    avg_a = joint_act_budget(s0, act)
     out = None
     with rep.method(METHOD_JOINT, "framework", label="Our method: weights and activations planned together",
                     plain_desc="each layer was tested with its weights and its incoming numbers rounded together, at "

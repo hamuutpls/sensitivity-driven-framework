@@ -228,16 +228,19 @@ def _setting_key(kind: str, s0) -> dict[str, Any]:
 
 
 def plan_metrics(plan: Any, plans: Stage0Plans, cfg, candidate: dict[str, Any],
-                 storage: str | None = None) -> dict[str, Any]:
+                 storage: str | None = None, overhead: Callable[[int, int, int], float] | None = None,
+                 ) -> dict[str, Any]:
     """What the plan is predicted to cost (the same predictions Stage 0 reports), next to the measured metrics.
-    `storage`: how removed weights are stored (Method.storage), when not the run's stage0.sparse_storage."""
+    `storage`: how removed weights are stored (Method.storage), when not the run's stage0.sparse_storage;
+    `overhead`: what the method stores besides its bits (Method.overhead)."""
     s0 = cfg.stage0
     if isinstance(plan, CompressionPlan):
-        return _cost_metrics(weight_cost(plans.profile, candidate["gptq_groupsize"], s0, storage=storage)(plan))
+        return _cost_metrics(weight_cost(plans.profile, candidate["gptq_groupsize"], s0, storage=storage,
+                                         overhead=overhead)(plan))
     if isinstance(plan, ActivationPlan):
         return {"avg_activation_bits": plan.avg_bits}
     if isinstance(plan, JointPlan):
-        return {**plan_metrics(plan.weights, plans, cfg, candidate, storage),
+        return {**plan_metrics(plan.weights, plans, cfg, candidate, storage, overhead),
                 **plan_metrics(plan.acts, plans, cfg, candidate)}
     if isinstance(plan, KVPlan) and plans.kv_profile is not None:
         m = _kv_metrics(predict_kv(plan, plans.kv_profile, s0.kv_context_len, s0.kv_batch_size, s0.kv_group_size,
@@ -563,7 +566,7 @@ def run_stage(
                 if used is not None:
                     used[(m.name, "original")] = (m, orig, level)
                 _before_metrics(row, before, "original", plans, cfg, candidate)
-                row.metrics.update(plan_metrics(orig, plans, cfg, candidate, m.storage))
+                row.metrics.update(plan_metrics(orig, plans, cfg, candidate, m.storage, m.overhead))
                 if stage == 2:
                     row.metrics["decoder_weights_removed"] = decoder_share_removed(_weights(orig), plans.profile.layer_numel)
                 row.metrics.update(result["metrics"])
@@ -595,7 +598,7 @@ def run_stage(
                 if used is not None:
                     used[(mf.name + suffix, "framework")] = (mf, plan, level)
                 _before_metrics(row, before, "framework", plans, cfg, candidate)
-                row.metrics.update(plan_metrics(plan, plans, cfg, candidate, mf.storage))
+                row.metrics.update(plan_metrics(plan, plans, cfg, candidate, mf.storage, mf.overhead))
                 if stage == 2:
                     row.metrics["decoder_weights_removed"] = decoder_share_removed(_weights(plan),
                                                                                   plans.profile.layer_numel)
@@ -624,7 +627,7 @@ def _before_metrics(row, before: dict[str, tuple[Method, Any]] | None, variant: 
         return
     first, first_plan = before[variant]
     row.info["built_on"] = first.name
-    row.metrics.update(plan_metrics(first_plan, plans, cfg, candidate, first.storage))
+    row.metrics.update(plan_metrics(first_plan, plans, cfg, candidate, first.storage, first.overhead))
     if isinstance(first_plan, (CompressionPlan, JointPlan)):
         row.metrics["decoder_weights_removed"] = decoder_share_removed(_weights(first_plan), plans.profile.layer_numel)
 
