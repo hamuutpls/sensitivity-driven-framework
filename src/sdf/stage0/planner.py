@@ -221,8 +221,9 @@ def predict_cost(
     only real for structured pruning). A fully pruned layer (ratio 1) is stored as nothing in every mode.
     Parameters outside the decoder Linear weights stay at `baseline_bits`.
 
-    `overhead(bits, numel, rows)`: the extra bits a method stores for one rounded layer in its own format
-    (codebooks, outliers, its own scales), in place of the scale/zero pairs above.
+    `overhead(bits, stored, rows)`: the extra bits a method stores for one rounded layer in its own format
+    (codebooks, outliers, its own scales) when `stored` of its weights are kept, in place of the scale/zero pairs
+    above. Per-row and per-Linear parts do not shrink when weights are pruned.
 
     The exposure uses `reference_scores` (0-1, one per layer) when given, else the plan's own sensitivities.
     Plans built from different measures must share a reference to be compared: with rank scores, protecting
@@ -245,7 +246,7 @@ def predict_cost(
         stored = numel if sparse_storage == "dense" and lp.pruning_ratio < 1.0 else kept
         bits = stored * lp.bit_width
         if lp.bit_width < baseline_bits and overhead is not None:
-            bits += overhead(lp.bit_width, numel, rows) * (stored / numel)
+            bits += overhead(lp.bit_width, stored, rows)
         elif lp.bit_width < baseline_bits:
             groups = rows if group_size == PER_CHANNEL else numel / group_size
             bits += groups * (stored / numel) * group_overhead_bits

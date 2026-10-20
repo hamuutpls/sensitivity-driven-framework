@@ -46,11 +46,31 @@ def test_size_counts_what_each_method_stores():  # 23
                             overhead=METHODS[name].overhead).avg_bits_per_weight
 
     assert bits_per_weight("rtn", 4) == 4.25  # one fp16 scale and zero per 128 weights, as before
-    assert bits_per_weight("squeezellm", 8) == pytest.approx(9.88, abs=0.01)
-    assert bits_per_weight("squeezellm", 4) == pytest.approx(4.32, abs=0.01)
-    assert bits_per_weight("spqr", 4) == pytest.approx(4 + 0.375 + 0.25 + 0.48)
+    assert bits_per_weight("squeezellm", 8) == pytest.approx(9.81, abs=0.01)
+    assert bits_per_weight("squeezellm", 4) == pytest.approx(4.25, abs=0.01)
+    assert bits_per_weight("spqr", 4) == pytest.approx(4 + 0.375 + 0.25 + 0.32)
     assert bits_per_weight("bitsandbytes", 4) == 4.5
     assert bits_per_weight("bitsandbytes", 8) == pytest.approx(8.0, abs=0.02)
     assert 2 < bits_per_weight("aqlm", 2) < 2.05 and 3 <= bits_per_weight("quipsharp", 3) < 3.001
-    # the series and joint rows of a method count its size the same way
-    assert METHODS["squeezellm"].overhead is not None
+    # pruning half the weights halves the per-weight parts, not the per-row codebook
+    half = predict_cost(uniform_plan([0.0], 8, 0.5), prof, 128, 32, 16, sparse_storage="free",
+                        overhead=METHODS["squeezellm"].overhead).avg_bits_per_weight
+    assert half == pytest.approx(4 + rows * 256 * 16 / numel + 0.0045 * 32 / 2)
+
+
+def test_every_row_of_a_method_counts_its_size_the_same_way(tiny_llama):  # 23
+    from sdf.config import FrameworkConfig as Config
+    from sdf.search_space import SEARCH_SPACE
+    from sdf.stage0.planner import uniform_plan
+    from sdf.stage0.sensitivity import SensitivityProfile
+    from sdf.stages.methods import METHODS, joint, series
+    from sdf.stages.runner import Stage0Plans, plan_metrics
+    sq = METHODS["squeezellm"]
+    assert series(sq, METHODS["unstructured_prune"]).overhead is sq.overhead
+    assert joint(METHODS["spqr"], "rtn_act").overhead is METHODS["spqr"].overhead
+    prof = SensitivityProfile(raw_scores=[1.0], layer_numel=[10_000], layer_rows=[100], method="layer_removal")
+    plans = Stage0Plans(None, {}, prof, None)
+    cand, plan = SEARCH_SPACE.make({}), uniform_plan([0.0], 4, 0.0)
+    own = plan_metrics(plan, plans, Config(), cand, None, sq.overhead)["avg_bits_per_weight"]
+    assert own == pytest.approx(4 + (100 * 16 * 16 + 0.0045 * 10_000 * 32) / 10_000)
+    assert plan_metrics(plan, plans, Config(), cand)["avg_bits_per_weight"] != own

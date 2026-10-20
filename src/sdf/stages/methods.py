@@ -202,23 +202,25 @@ def _transformed_activations(fn: Callable, extra: Callable[[MethodCall], dict[st
 
 _SIMPLIFIED = "simplified port of the fork: "
 _SIZE_NOTE = ("size column: the plan's bits plus what the method stores besides them (SqueezeLLM, SpQR, AQLM, QuIP# "
-              "and bitsandbytes: their codebooks, outliers and scales, outlier shares assumed at 0.45% and about 1%; "
-              "the others: one scale and zero per gptq_groupsize weights)")
+              "and bitsandbytes: their codebooks, outliers and scales, outlier shares assumed at 0.45% and about 1%); "
+              "for the others it is not modelled: one scale and zero per gptq_groupsize weights is assumed. A "
+              "2**b-entry codebook per row makes SqueezeLLM's 8-bit layers about 1.6 bits per weight larger")
 _LINEARS = 7  # shortcut: the Linears of a Llama decoder layer (q, k, v, o, gate, up, down); count them for other models
-# Extra bits a method stores for one rounded decoder layer of `numel` weights in Linears with `rows` outputs in all,
-# besides `b` bits per weight. Fp16 numbers are 16 bits, an outlier's position a 32-bit index.
+# Extra bits a method stores for one rounded decoder layer that keeps `kept` weights, in Linears with `rows` outputs in
+# all, besides `b` bits per weight. An fp16 number is 16 bits; an outlier is stored as in CSR, a 16-bit value and a
+# 16-bit column index (every input width here is below 65536).
 SIZE_OVERHEAD: dict[str, Callable[[int, int, int], float]] = {
-    # a 2**b-entry fp16 codebook per output row; 0.45% outliers (the paper's share) kept as value + index
-    "squeezellm": lambda b, numel, rows: rows * 2 ** b * 16 + 0.0045 * numel * (16 + 32),
+    # a 2**b-entry fp16 codebook per output row; 0.45% outliers (the paper's share)
+    "squeezellm": lambda b, kept, rows: rows * 2 ** b * 16 + 0.0045 * kept * 32,
     # 3-bit scale and zero per 16 weights; an fp16 scale and zero for each of them per 16 rows x 16 weights;
-    # outliers counted at about 1% (assumed: SpQR's share depends on its threshold) as value + index
-    "spqr": lambda b, numel, rows: numel * (2 * 3 / 16 + 2 * 2 * 16 / (16 * 16) + 0.01 * (16 + 32)),
+    # outliers counted at about 1% (assumed: SpQR's share depends on its threshold)
+    "spqr": lambda b, kept, rows: kept * (2 * 3 / 16 + 2 * 2 * 16 / (16 * 16) + 0.01 * 32),
     # b codebooks of 256 fp16 codewords of 8 numbers per Linear; one fp16 scale per output row
-    "aqlm": lambda b, numel, rows: _LINEARS * b * 256 * 8 * 16 + rows * 16,
+    "aqlm": lambda b, kept, rows: _LINEARS * b * 256 * 8 * 16 + rows * 16,
     # the E8 lattice codebook is fixed, not stored; one scale per Linear
-    "quipsharp": lambda b, numel, rows: _LINEARS * 16,
+    "quipsharp": lambda b, kept, rows: _LINEARS * 16,
     # NF4: an fp32 absmax per 64 weights; int8: an fp32 absmax per output row
-    "bitsandbytes": lambda b, numel, rows: numel * 32 / 64 if b == 4 else rows * 32,
+    "bitsandbytes": lambda b, kept, rows: kept * 32 / 64 if b == 4 else rows * 32,
 }
 _UNAVAILABLE = {
     "qtip": "QTIP (trellis-coded quantization with a bitshift trellis and tail-biting Viterbi) is a CUDA pipeline that "

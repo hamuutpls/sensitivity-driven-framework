@@ -472,7 +472,8 @@ any profile) and its time is added to the framework rows' build time. The unifor
 
 **Cost model (`predict_cost`).** Per decoder layer: `kept = numel · (1 − prune)`; `bits = kept · bit_width`,
 plus `group_overhead_bits` (32: one scale and zero point) per quantisation group of `gptq_groupsize` weights
-(or per output channel). Everything outside the decoder Linear weights stays at `baseline_bits` (16). Reported:
+(or per output channel), or, for a Stage 1 method with its own format, what it stores besides its bits
+(`Method.overhead`, `methods.SIZE_OVERHEAD`: SqueezeLLM, SpQR, AQLM, QuIP#, bitsandbytes). Everything outside the decoder Linear weights stays at `baseline_bits` (16). Reported:
 weight memory (GB), average bits per weight, sparsity, and
 
     sensitivity exposure = Σ_l s_l · (1 − b_l · (1 − p_l) / 16) / Σ_l s_l

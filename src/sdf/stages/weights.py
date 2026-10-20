@@ -146,13 +146,14 @@ def awq_(model: nn.Module, plan: CompressionPlan, batches: list[torch.Tensor], g
         # o_proj's scale folds into v_proj only when each v_proj output feeds one o_proj input; with grouped-query
         # attention it feeds several, which cannot take different scales, so o_proj is plainly rounded (a = 0), as
         # the reference implementation (llm-awq auto_scale) does
-        no_fold = attn is not None and attn.v_proj.out_features != attn.o_proj.in_features
+        v, o = getattr(attn, "v_proj", None), getattr(attn, "o_proj", None)  # absent on OPT, fused-QKV models
+        no_fold = v is not None and o is not None and v.out_features != o.in_features
         for linears in groups.values():
             X = torch.cat(inputs[linears[0]])
             x_mean = X.abs().float().mean(0)
             ref = [(X @ m.weight.T).float() for m in linears]
             best_err, best = float("inf"), None
-            for i in range(1 if no_fold and linears == [attn.o_proj] else grid):
+            for i in range(1 if no_fold and linears == [o] else grid):
                 s = x_mean.pow(i / grid).clamp(min=1e-4)
                 s = (s / (s.max() * s.min()).sqrt()).to(X.dtype)
                 qs = [_scaled_rtn(m.weight.data, s, lp.bit_width, group_size, int_zero) for m in linears]
