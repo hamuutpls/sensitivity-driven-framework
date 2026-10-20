@@ -56,6 +56,10 @@ def test_size_counts_what_each_method_stores():  # 23
     half = predict_cost(uniform_plan([0.0], 8, 0.5), prof, 128, 32, 16, sparse_storage="free",
                         overhead=METHODS["squeezellm"].overhead).avg_bits_per_weight
     assert half == pytest.approx(4 + rows * 256 * 16 / numel + 0.0045 * 32 / 2)
+    # a fully removed layer is stored as nothing, codebooks included
+    gone = [predict_cost(uniform_plan([0.0], 8, 1.0), prof, 128, 32, 16, sparse_storage="free",
+                         overhead=METHODS[m].overhead).avg_bits_per_weight for m in ("squeezellm", "aqlm", "rtn")]
+    assert gone == [0.0, 0.0, 0.0]
 
 
 def test_every_row_of_a_method_counts_its_size_the_same_way(tiny_llama):  # 23

@@ -202,7 +202,8 @@ def _transformed_activations(fn: Callable, extra: Callable[[MethodCall], dict[st
 
 _SIMPLIFIED = "simplified port of the fork: "
 _SIZE_NOTE = ("size column: the plan's bits plus what the method stores besides them (SqueezeLLM, SpQR, AQLM, QuIP# "
-              "and bitsandbytes: their codebooks, outliers and scales, outlier shares assumed at 0.45% and about 1%); "
+              "and bitsandbytes: their codebooks, outliers and scales; outliers assumed at 0.45% for SqueezeLLM and "
+              "about 1% for SpQR); "
               "for the others it is not modelled: one scale and zero per gptq_groupsize weights is assumed. A "
               "2**b-entry codebook per row makes SqueezeLLM's 8-bit layers about 1.6 bits per weight larger")
 _LINEARS = 7  # shortcut: the Linears of a Llama decoder layer (q, k, v, o, gate, up, down); count them for other models
@@ -212,12 +213,14 @@ _LINEARS = 7  # shortcut: the Linears of a Llama decoder layer (q, k, v, o, gate
 SIZE_OVERHEAD: dict[str, Callable[[int, int, int], float]] = {
     # a 2**b-entry fp16 codebook per output row; 0.45% outliers (the paper's share)
     "squeezellm": lambda b, kept, rows: rows * 2 ** b * 16 + 0.0045 * kept * 32,
-    # 3-bit scale and zero per 16 weights; an fp16 scale and zero for each of them per 16 rows x 16 weights;
+    # 3-bit scale and zero per 16 weights; an fp16 scale and zero for each of them per 16 rows x 16 weights
+    # (spqr_'s defaults in weights_a.py: 3-bit statistics, groups of 16);
     # outliers counted at about 1% (assumed: SpQR's share depends on its threshold)
     "spqr": lambda b, kept, rows: kept * (2 * 3 / 16 + 2 * 2 * 16 / (16 * 16) + 0.01 * 32),
     # b codebooks of 256 fp16 codewords of 8 numbers per Linear; one fp16 scale per output row
     "aqlm": lambda b, kept, rows: _LINEARS * b * 256 * 8 * 16 + rows * 16,
-    # the E8 lattice codebook is fixed, not stored; one scale per Linear
+    # the E8 lattice codebook is fixed, not stored; one scale per Linear (its random-sign vectors, about 0.003 bits
+    # per weight, are not counted)
     "quipsharp": lambda b, kept, rows: _LINEARS * 16,
     # NF4: an fp32 absmax per 64 weights; int8: an fp32 absmax per output row
     "bitsandbytes": lambda b, kept, rows: kept * 32 / 64 if b == 4 else rows * 32,
