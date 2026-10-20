@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import json
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -52,6 +53,7 @@ from sdf.stage0.sensitivity import (
     profile_sensitivity,
     zero_key,
 )
+from sdf.utils.cache import atomic_write_text
 from sdf.utils.env import environment_info, resolve_device
 from sdf.utils.model_info import count_parameters, describe_model
 from sdf.utils.logging import get_logger
@@ -308,7 +310,7 @@ def load_guard(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
 _PLAN_OUTPUTS = ("joint_weight_plan.json", "joint_activation_plan.json", "joint_profile.json", "quant_plan.json",
                  "prune_plan.json", "prune_plan_same_size.json", "kv_profile.json", "kv_cache_plan.json",
                  "kv_cache_plan_bits_only.json", "activation_plan.json", "activation_profile.json",
-                 "compression_plan.json", "sensitivity_profile.json")
+                 "compression_plan.json", "sensitivity_profile.json", "exposure_reference.json")
 
 
 def run_stage0(
@@ -348,6 +350,8 @@ def run_stage0(
     reference = (normalize(load_profile(ctx, candidate, handle, text_loader, score="layer_removal")[0].raw_scores,
                            s0.normalization) if profile.method != "layer_removal" and s0.guard_top_k else None)
     predict = weight_cost(profile, candidate["gptq_groupsize"], s0, reference)
+    if reference is not None:  # Stages 1-3 score exposure against the same reference
+        atomic_write_text(rep.dir / "exposure_reference.json", json.dumps(reference))
 
     # --- FP16 baseline: measured once per (model, eval settings, hardware) and cached ----------------------
     with rep.method("baseline", "fp16", description="uncompressed model") as row:
