@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-20: SnapKV and InfiniGen use H2O's cache size (fairness)
+
+After the H2O fix, H2O kept a fixed cache of ceil(share x window) words while SnapKV and InfiniGen kept a share of the
+words each word can see, so at 20% of 512 words H2O kept about 93 words on average against 52. Mohammad approved giving
+all three the same cache ("do what you recommend", 2026-10-20 09:17): word i keeps min(i + 1, ceil(share x window))
+words (`cache_budgets` in `stages/kv_methods.py`). SnapKV and InfiniGen are version 3, so their cached standard rows are
+redone. Stage 0's coverage still sizes the plan with the visible-words share and is unchanged.
+
 ## 2026-10-20: H2O keeps a fixed cache (fix)
 
 The 0-3-4 run of 2026-10-19 gave perplexity about 398 for every row that forgets with H2O's rule (rtn_kv, QuaRot KV
