@@ -164,6 +164,7 @@ def _capture_worker(monkeypatch):
         return SimpleNamespace(returncode=0, stdout=json.dumps({"vllm_ppl_val": 1.0}), stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("sdf.eval.worker.run_killing_group", lambda cmd, timeout, **kw: subprocess.run(cmd, **kw))  # it uses Popen
     return seen
 
 

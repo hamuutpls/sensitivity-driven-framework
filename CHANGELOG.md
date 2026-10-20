@@ -8,7 +8,8 @@ How results are judged (Mohammad's 09:17 choice, 2026-10-20 findings 21 and 30):
   that re-rounded file, not the method. The columns stay in the tables, now named "... perplexity of the re-rounded
   file". Perplexity now counts once in every verdict (Hugging Face validation and held-out halves agreeing).
 - Excel colours follow the verdict (2026-10-19 #16); the held-out perplexity half is coloured with the validation
-  half, and one-off costs are red.
+  half when it was itself judged the same way (not when it is missing or a tie), and one-off costs are red. A row
+  compared only on backend perplexity says no measure could be compared.
 
 Runs and measurements:
 - Stage 3 (22): rtn_kv and KVQuant standard rows run the same attention code as their Our rows (versions 2 and 3).
@@ -17,14 +18,17 @@ Runs and measurements:
 - AQLM (29): no longer computes input statistics it never used, and calibration settings leave its cache key;
   same weights.
 - Runner (2026-10-19 #1, #2, #4, #5, #9, #13, #14, #15, #18): a backend failure for a passing reason (busy card, out
-  of memory) is not saved to the cache; the FP16 row keeps its Hugging Face numbers when a backend fails; Stage 2
+  of memory, a failed or timed-out program) is not saved to the cache, while one that repeats on every run (no
+  llama.cpp program, a plan the backend's format cannot hold) is saved with the row; the FP16 row keeps its Hugging Face numbers when a backend fails; Stage 2
   levels come from the plan's own share; standard rows' cache keys hold the plan's bits and pruning only, not the
   sensitivity scores; exposure is measured against Stage 0's reference; rows of BiLLM, whose bits are fixed, drop the
   predicted size of a plan it does not follow; duplicate capped levels are skipped with a note; the export group size
-  enters a key only when something is rounded.
+  enters a key only when something is rounded; settings a method never reads (`weight_zero_point` for SqueezeLLM, SpQR,
+  AQLM, QuIP#, PB-LLM, BiLLM and bitsandbytes; `act_group_size` for RPTQ) stay out of its key.
 - Backends (#3): vLLM and TensorRT-LLM programs time out after 4 h, each llama.cpp program after 2 h, with the
-  backend's normal error, and the program's child processes are killed with it. Timings record the latency mode that
-  ran and rows timed in different modes are not compared (#7). Timing settings are checked when the config is built
+  backend's normal error, and the program's child processes are killed with it (also when the run is interrupted). Timings record the latency
+  mode that ran and rows timed in different modes are not compared (#7); a row cached before the mode was recorded is
+  compared with a CUDA graph row but not with an eager one. Timing settings are checked when the config is built
   (#17).
 - Stage 0 (#6, #10, #12): pruning tests leave timing settings out of their keys; sweeps that round nothing predict
   sizes at baseline bits and their text names those bits; report text follows the scaling, guard and bit settings,
@@ -32,10 +36,13 @@ Runs and measurements:
 - Low-rank (15, lean): the unreachable factor rounding and the group size in its key are gone.
 
 Colab (26, 27, #8):
-- The notebook no longer uses Google Drive (no sign-in box); results and caches go to `/content/thesis_compression/`.
+- The notebook no longer uses Google Drive (no sign-in box); results and caches go to `/content/thesis_compression/`,
+  and its last cell packs the results into `/content/thesis_results.tgz`, which the host PC session copies to
+  `D:\Thesis` (on a local runtime on the PC they go to `D:\Thesis\thesis_compression\` directly; `sdf.utils.colab`).
   Step 1 says the runtime type matters only on a free plan.
 - `scripts/colab_stage1.py` runs the methods given after it (`%run colab_stage1.py rtn gptq`), saves where the notebook
-  saves, and writes its result lines to `stage1_summary.txt` in the run folder.
+  saves, writes its result lines to `stage1_summary.txt` in the run folder (closed even on an error), and packs the
+  results the same way.
 - The notebook drops loaded `sdf` modules before reloading `main`, so a fresh pull takes effect.
 
 Figures (28) are redrawn for Stages 3 and 4. Lean: unused `CALIB`, the duplicate `share_removed` and the bits-only KV
@@ -43,7 +50,8 @@ plan in Stages 1-3 are gone.
 
 Numbers that change: standard weight and joint WxAy rows of Stages 1 and 2, and 16-bit pruning rows, get new cache
 keys (measured again once; same values);
-rtn_kv and KVQuant standard rows' speed and memory; SpinQuant rows; exposure columns; verdict lines and colours
+rtn_kv and KVQuant standard rows' speed and memory, and their perplexity and its difference from the 16-bit model may
+shift slightly (eager attention instead of SDPA); SpinQuant rows; exposure columns; verdict lines and colours
 wherever a backend ran; BiLLM rows lose their predicted size; low-rank and AQLM rows are measured again (same
 values).
 

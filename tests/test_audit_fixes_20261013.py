@@ -416,5 +416,6 @@ def test_run_worker_returns_the_last_json_line(monkeypatch, tmp_path):
 
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
         cmd, 0, 'log line\n{"x_ppl_val": 8.5}\n', ""))
+    monkeypatch.setattr("sdf.eval.worker.run_killing_group", lambda cmd, timeout, **kw: subprocess.run(cmd, **kw))  # it uses Popen
     assert run_worker("python", "vllm_worker.py", {"a": 1}, tmp_path, RuntimeError) == {"x_ppl_val": 8.5}
     assert json.loads((tmp_path / "args.json").read_text()) == {"a": 1}

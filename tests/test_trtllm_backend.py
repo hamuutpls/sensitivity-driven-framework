@@ -87,6 +87,7 @@ def _written_files(monkeypatch, plan):
         return subprocess.CompletedProcess(cmd, 1, "", "stop here")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("sdf.eval.worker.run_killing_group", lambda cmd, timeout, **kw: subprocess.run(cmd, **kw))  # it uses Popen
     monkeypatch.setattr(t.gptq_export, "export", lambda model, tok, plan, g, out: out.mkdir(parents=True))
     ids = torch.zeros(1, 4, dtype=torch.long)
     with pytest.raises(t.TRTLLMError):

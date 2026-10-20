@@ -13,7 +13,7 @@ from sdf.stage0.planner import level_tag, uniform_plan
 from sdf.stage0.run import run_stage0
 from sdf.stages import methods as methods_mod
 from sdf.stages.methods import METHODS
-from sdf.stages.runner import Stage0Plans, _no_passing_error, _plan_key, _ROTATED, run_stage
+from sdf.stages.runner import Stage0Plans, _lasting, _no_passing_error, _plan_key, _ROTATED, run_stage
 from sdf.utils.cache import ArtifactCache
 from conftest import fake_texts
 
@@ -48,7 +48,33 @@ def test_cache_keeps_a_value_only_when_store_accepts_it(tmp_path):
 def test_only_backend_errors_that_always_repeat_are_saved():  # 1
     assert _no_passing_error({"info": {}}) and _no_passing_error({})
     assert _no_passing_error({"info": {"vllm_error": _ROTATED, "llamacpp_activations": "16-bit"}})
-    assert not _no_passing_error({"info": {"vllm_error": "only 0.10 of 40.00 GB of GPU memory free"}})
+    assert not _no_passing_error({"info": {"vllm_error": "only 0.10 of 40.00 GB of GPU memory free"},
+                                  "retry": ["vllm"]})
+
+
+def test_errors_that_repeat_on_every_run_are_told_apart():  # review of PR #75, should-fix 6
+    try:
+        try:
+            raise ValueError("cannot pack 3-bit values in rows of 7")
+        except ValueError as e:
+            raise vllm_backend.VLLMError(f"GPTQ export failed: {e}") from e
+    except vllm_backend.VLLMError as refused:
+        assert _lasting(refused)
+    assert _lasting(FileNotFoundError("llama-quantize")) and _lasting(ValueError("the plan has 3 layers"))
+    assert not _lasting(vllm_backend.VLLMError("vllm_worker failed (1): CUDA out of memory"))
+    assert not _lasting(RuntimeError("llama-perplexity timed out after 7200 s"))
+
+
+def test_a_standard_row_a_backend_can_never_run_is_saved(stage0_dir, tiny_llama, tokenizer, small_cfg,
+                                                         monkeypatch):  # review of PR #75, should-fix 6
+    def measure(*a, **kw):
+        raise vllm_backend.VLLMError("GPTQ export failed: cannot pack") from ValueError("cannot pack")
+
+    monkeypatch.setattr(vllm_backend, "measure", measure)
+    cfg = small_cfg.with_overrides({"eval.vllm_python": "vp"})
+    _run(cfg, 1, ["rtn"], stage0_dir, tiny_llama, tokenizer, measure_fp16=False)
+    again = _run(cfg, 1, ["rtn"], stage0_dir, tiny_llama, tokenizer, measure_fp16=False)["rtn/original"]
+    assert again["info"]["cached"] is True and again["info"]["vllm_error"] == "GPTQ export failed: cannot pack"
 
 
 def test_a_one_off_backend_failure_on_a_standard_row_is_measured_again(stage0_dir, tiny_llama, tokenizer,

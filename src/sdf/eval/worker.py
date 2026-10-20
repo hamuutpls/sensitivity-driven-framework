@@ -3,6 +3,7 @@ installed, and read its JSON result."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -20,17 +21,19 @@ TIMEOUT_S = 4 * 3600
 
 
 def run_killing_group(cmd: list[str], timeout: float, **kw) -> subprocess.CompletedProcess:
-    """subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw), but a timeout kills the program's
-    whole process group, not only the program: vLLM's engine process or TensorRT-LLM's MPI workers would otherwise
-    keep holding graphics-card memory (on Windows, which has no process groups, only the program is killed)."""
+    """subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw), but a timeout or an interrupt
+    (Ctrl-C, Colab's stop button) kills the program's whole process group, not only the program: vLLM's engine
+    process or TensorRT-LLM's MPI workers would otherwise keep holding graphics-card memory (on Windows, which has no
+    process groups, only the program is killed)."""
     group = hasattr(os, "killpg")
     with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=group,
                           **kw) as p:
         try:
             out, err = p.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
+        except BaseException:
             if group:
-                os.killpg(p.pid, signal.SIGKILL)
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(p.pid, signal.SIGKILL)
             else:
                 p.kill()
             p.communicate()

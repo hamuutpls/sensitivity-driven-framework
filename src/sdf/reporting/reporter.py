@@ -204,26 +204,8 @@ class StageReporter:
             return None
         wins, losses, one_off = [], [], []
         for m in (m for m in self.main_metrics if m not in NOT_IN_VERDICT):
-            a, b = fw.metrics.get(m), orig.metrics.get(m)
-            if not (is_number(a) and is_number(b)):
-                continue
-            # eager timing is ~10x slower than CUDA graph replay: rows timed differently are not compared (a row
-            # saved before the mode was recorded has none and is compared as before)
-            modes = (fw.metrics.get("latency_mode"), orig.metrics.get("latency_mode"))
-            if m.startswith(("prefill_", "decode_")) and None not in modes and modes[0] != modes[1]:
-                continue
-            better = is_better(m, a - b)
-            if better is None:
-                continue
-            spread = [x for x in (fw.metrics.get(m.removesuffix("_mean") + "_std"),
-                                  orig.metrics.get(m.removesuffix("_mean") + "_std")) if is_number(x)]
-            if spread and abs(a - b) <= max(spread):
-                continue  # inside the measurement noise
-            if m in ONE_OFF_COSTS:
-                if not better:
-                    one_off.append(m)
-                continue
-            (wins if better else losses).append(m)
+            if judged := self.judge(fw, orig, m):
+                {"win": wins, "loss": losses, "one_off": one_off}[judged].append(m)
         # validation and held-out perplexity are one measure on two halves of the data: count it once, and only
         # when both halves agree (a disagreement is a tie)
         if "ppl_val" in wins + losses and "ppl_heldout" in wins + losses:
@@ -231,6 +213,30 @@ class StageReporter:
             wins, losses = ([m for m in ms if m != "ppl_heldout" and (agree or m != "ppl_val")]
                             for ms in (wins, losses))
         return wins, losses, one_off
+
+    def judge(self, fw: ComparisonRow, orig: ComparisonRow, m: str) -> str | None:
+        """One metric of `fw` against its original row `orig`: "win", "loss", "one_off" (a one-off cost that is
+        higher) or None (missing, not comparable, or inside the measurement noise). Perplexity's two halves are
+        each judged here; verdict() counts them once."""
+        a, b = fw.metrics.get(m), orig.metrics.get(m)
+        if not (is_number(a) and is_number(b)):
+            return None
+        # eager timing is ~10x slower than CUDA graph replay: rows timed differently are not compared. A row
+        # saved before the mode was recorded has none; it was most likely timed with the default CUDA graphs,
+        # so it is compared with a CUDA graph row (or another row without a mode) but not with an eager one
+        modes = (fw.metrics.get("latency_mode"), orig.metrics.get("latency_mode"))
+        if m.startswith(("prefill_", "decode_")) and modes[0] != modes[1] and (None not in modes or "eager" in modes):
+            return None
+        better = is_better(m, a - b)
+        if better is None:
+            return None
+        spread = [x for x in (fw.metrics.get(m.removesuffix("_mean") + "_std"),
+                              orig.metrics.get(m.removesuffix("_mean") + "_std")) if is_number(x)]
+        if spread and abs(a - b) <= max(spread):
+            return None  # inside the measurement noise
+        if m in ONE_OFF_COSTS:
+            return None if better else "one_off"
+        return "win" if better else "loss"
 
     def comparison_summary(self) -> list[str]:
         """Framework-vs-original findings, one line per method, with the size of each difference."""
@@ -240,7 +246,7 @@ class StageReporter:
             if v is None:
                 lines.append(f"**{fw.method}**: no original-method row to compare against.")
                 continue
-            if not any("vs_original_abs" in fw.deltas.get(m, {}) for m in self.main_metrics):
+            if not any("vs_original_abs" in fw.deltas.get(m, {}) for m in self.main_metrics if m not in NOT_IN_VERDICT):
                 lines.append(f"**{fw.method}**: no measure could be compared with the original method.")
                 continue
             wins, losses, one_off = ([self._delta_text(fw, m) for m in ms] for ms in v)

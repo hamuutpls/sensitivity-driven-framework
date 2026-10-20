@@ -90,11 +90,14 @@ def _summary(ws, rep: "StageReporter") -> None:
         ws.append(line)
 
     # Green / red where the verdict counts a win / loss (or a one-off cost) against the original method; a tie (noise)
-    # stays plain. A counted perplexity means both halves agreed, so the held-out half is coloured with it.
+    # stays plain. The verdict counts perplexity once, as ppl_val; the held-out half is coloured with it when it was
+    # itself judged the same way (not when it is missing or a tie).
     for i, r in enumerate(rep.rows, start=2):
         v = r.verdict
-        for fill, ms in ((GREEN, v.get("wins", [])), (RED, v.get("losses", []) + v.get("one_off", []))):
-            for m in ms + (["ppl_heldout"] if "ppl_val" in ms else []):
+        orig = rep.find_original(r) if v else None
+        for fill, ms, same in ((GREEN, v.get("wins", []), "win"),
+                               (RED, v.get("losses", []) + v.get("one_off", []), "loss")):
+            for m in ms + (["ppl_heldout"] if "ppl_val" in ms and rep.judge(r, orig, "ppl_heldout") == same else []):
                 for key in ("vs_original_abs", "vs_original_pct"):
                     if (m, key) in col_of:
                         ws.cell(row=i, column=col_of[(m, key)]).fill = fill

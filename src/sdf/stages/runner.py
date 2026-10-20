@@ -227,9 +227,10 @@ _KIND_SETTINGS = {"weights": ("weight_zero_point", "baseline_bits"), "activation
                   "joint": ("weight_zero_point", "act_group_size", "baseline_bits")}
 
 
-def _setting_key(kind: str, s0) -> dict[str, Any]:
+def _setting_key(m: Method, s0) -> dict[str, Any]:
     default = type(s0)()
-    return {k: getattr(s0, k) for k in _KIND_SETTINGS[kind] if getattr(s0, k) != getattr(default, k)}
+    return {k: getattr(s0, k) for k in _KIND_SETTINGS[kind_of(m)]
+            if k not in m.unused_settings and getattr(s0, k) != getattr(default, k)}
 
 
 def plan_metrics(plan: Any, plans: Stage0Plans, cfg, candidate: dict[str, Any],
@@ -409,8 +410,9 @@ def run_stage(
         return {f"{name}_error": _KV_NOT_ON_BACKENDS for name in ["llamacpp"] * use_llamacpp + list(serving)}
 
     def on_backends(model: nn.Module, method: Method, plan: Any, metrics: dict[str, Any], info: dict[str, str],
-                    val: torch.Tensor, held: torch.Tensor) -> None:
-        """llama.cpp and the serving backends on `model` (built with `method` and `plan`), into metrics and info."""
+                    val: torch.Tensor, held: torch.Tensor, retry: list[str]) -> None:
+        """llama.cpp and the serving backends on `model` (built with `method` and `plan`), into metrics and info;
+        backends that failed for a reason that may pass are added to `retry`."""
         joint = isinstance(plan, JointPlan)
         weights, acts = (plan.weights, plan.acts) if joint else (plan, None)
         rotated = has_online_rotation(model)  # QuaRot/SpinQuant: no saved file can hold the rotation
@@ -426,6 +428,7 @@ def run_stage(
                 except Exception as e:  # noqa: BLE001 - a missing program or file too, not only a failed run
                     log.warning("llama.cpp could not measure %s: %s", method.name, e)
                     info["llamacpp_error"] = str(e)
+                    retry += [] if _lasting(e) else ["llamacpp"]
         for name, (mod, err, _) in serving.items() if be_on(method) else ():
             if rotated:
                 info[f"{name}_error"] = _ROTATED
@@ -438,6 +441,7 @@ def run_stage(
             except err as e:  # a plan the backend cannot load (e.g. 3-bit GPTQ in vLLM): keep the row,
                 log.warning("%s could not measure %s: %s", name, method.name, e)  # record why
                 info[f"{name}_error"] = str(e)
+                retry += [] if _lasting(e) else [name]
                 continue
             if joint:
                 info[f"{name}_activations"] = (_rounded_by_backend(name, method, cfg.stage0.act_group_size)
@@ -446,6 +450,7 @@ def run_stage(
     def build_and_measure(method: Method, plan: Any, variant: str) -> dict[str, Any]:
         model = model_factory()
         info: dict[str, str] = {}
+        retry: list[str] = []
         try:
             t0 = time.perf_counter()  # a chained row's build time includes the earlier stage's build
             with ExitStack() as stack:
@@ -454,7 +459,7 @@ def run_stage(
                     first, first_plan = before[variant]
                     stack.enter_context(first.apply(MethodCall(model, first_plan, candidate, cfg, batches)))
                     if lc_on(first) or be_on(first):  # the backends cannot run the KV technique: they measure the
-                        on_backends(model, first, first_plan, prior, info, *windows())  # model it was built on
+                        on_backends(model, first, first_plan, prior, info, *windows(), retry)  # model it was built on
                         info["backends"] = _BACKENDS_BEFORE
                 extra = stack.enter_context(method.apply(MethodCall(model, plan, candidate, cfg, batches)))
                 build_s = time.perf_counter() - t0
@@ -463,7 +468,7 @@ def run_stage(
                 metrics.update(tasks(model))
                 if kind_of(method) in ("weights", "joint"):
                     metrics["zero_weight_share"] = zero_weight_share(model)
-                on_backends(model, method, plan, metrics, info, val, held)
+                on_backends(model, method, plan, metrics, info, val, held, retry)
                 metrics.update(prior)
         finally:
             del model
@@ -472,7 +477,7 @@ def run_stage(
         metrics["build_time_s"] = build_s
         if (method.simulated and stage in (1, 2)) or (before and before[variant][0].simulated):
             metrics.pop("model_size_gb", None)  # still FP16 in memory; predicted_weight_memory_gb is the size
-        return {"metrics": metrics, "raw": raw, "info": info}
+        return {"metrics": metrics, "raw": raw, "info": info, **({"retry": retry} if retry else {})}
 
     # --- FP16: the same cache entry Stage 0 measured ------------------------------------------------------------
     with rep.method("baseline", "fp16", description="uncompressed model") as row:
@@ -574,14 +579,15 @@ def run_stage(
                     key["before"] = {"method": first.name, "label": first.label,  # the label names the Stage 1 method
                                      "version": first.version, "plan": first_plan.to_dict(),
                                      "params": {p: candidate[p] for p in first.params},
-                                     "settings": _setting_key(kind_of(first), s0)}
-                if settings := _setting_key(kind_of(m), s0):
+                                     "settings": _setting_key(first, s0)}
+                if settings := _setting_key(m, s0):
                     key["settings"] = settings
                 if m.calibrated or before and before["original"][0].calibrated:
                     key["calibration"] = {"dataset": candidate["calib_dataset"], "samples": candidate["calib_samples"],
                                           "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size,
                                           **source_key(cfg, candidate["calib_dataset"])}
-                # a backend that failed for a passing reason (busy card, out of memory) is tried again next run
+                # a backend that failed for a passing reason (busy card, out of memory, a crash) is tried again next
+                # run; one that cannot run this row at all (no llama.cpp, a plan it cannot load) is saved with it
                 result, cached = ctx.cache.get_or_compute(f"stage{stage}_original", key,
                                                           lambda: build_and_measure(m, orig, "original"),
                                                           store=_no_passing_error)
@@ -655,12 +661,20 @@ def _plan_key(plan: Any) -> Any:
 
 
 def _no_passing_error(result: dict[str, Any]) -> bool:
-    """Whether a standard row's result may be saved: not when a backend failed, except for reasons that always
-    repeat (the model rotates its inputs)."""
-    errors = {k: v for k, v in result.get("info", {}).items() if k.endswith("_error") and v != _ROTATED}
-    if errors:  # a setup error (no llama.cpp, a width a backend cannot load) repeats: the row is rebuilt every run
-        log.warning("not caching this row, so the failed backends are tried again next run: %s", errors)
-    return not errors
+    """Whether a standard row's result may be saved: not when a backend failed for a reason that may pass
+    (on_backends' `retry`); reasons that always repeat (the model rotates its inputs, no llama.cpp program, a plan
+    the backend's format cannot hold) are saved with the row."""
+    if retry := result.get("retry"):
+        log.warning("not caching this row, so the failed backends are tried again next run: %s",
+                    {k: result["info"].get(f"{k}_error") for k in retry})
+    return not retry
+
+
+def _lasting(e: BaseException) -> bool:
+    """Whether a backend error repeats on every run: a missing program or file (FileNotFoundError), or a plan the
+    export format cannot hold (ValueError, raised as is or as the cause of the backend's own error). A failed or
+    timed-out backend program (out of memory, a busy card) may pass."""
+    return isinstance(e, (FileNotFoundError, ValueError)) or isinstance(e.__cause__, ValueError)
 
 
 def _before_metrics(row, before: dict[str, tuple[Method, Any]] | None, variant: str, plans: Stage0Plans, cfg,

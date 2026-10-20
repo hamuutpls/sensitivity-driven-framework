@@ -94,6 +94,8 @@ class Method:
     # ("activations" or "joint_acts"); its plans are then JointPlan, the weight half carrying the pruning
     act_plan: str = ""
     joint_bits: tuple[int | None, int | None] | None = None  # and that method's standard (weight, activation) bits
+    # Stage 0 settings of its kind that the method never reads (runner._KIND_SETTINGS), kept out of its cache key
+    unused_settings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -246,6 +248,9 @@ _ACT_EXTRA: dict[str, Callable[[MethodCall], dict[str, Any]]] = {
     "quarot": lambda c: {"seed": c.cfg.run.seed}, "spinquant": lambda c: {"seed": c.cfg.run.seed},
     "rptq": lambda c: {"seed": c.cfg.run.seed}}
 _ACT_VERSION = {"spinquant": 2}  # 2: calibration rows sampled per batch (a different sample)
+# codebooks, binarization or their own fixed grids: no integer-or-float zero point choice (int_zero unused)
+_NO_INT_ZERO = {"squeezellm", "spqr", "aqlm", "quipsharp", "pbllm", "billm", "bitsandbytes"}
+_UNUSED_ACT_SETTINGS = {"rptq": ("act_group_size",)}  # RPTQ rounds per reordered cluster, not per group
 
 
 def _fork_methods() -> list[Method]:
@@ -258,14 +263,16 @@ def _fork_methods() -> list[Method]:
                                                 + ([_SIZE_NOTE] if takes_bits else [])),
                 fixed_bits="" if takes_bits else "it binarizes every layer the same way (about 1 bit), so its "
                 "standard row runs at its own width and the plan-following row is not possible",
-                overhead=SIZE_OVERHEAD.get(name)))
+                overhead=SIZE_OVERHEAD.get(name),
+                unused_settings=("weight_zero_point",) if name in _NO_INT_ZERO else ()))
     out += [Method(name, 1, label, _WEIGHT_PLANS, library=reason, unavailable=reason)
             for name, label, reason in (("qtip", "QTIP", _UNAVAILABLE["qtip"]), ("abqllm", "ABQ-LLM", _UNAVAILABLE["abqllm"]))]
     for name, (fn, label, library, simplified) in ACTIVATION_METHODS.items():
         out.append(Method(name, 1, label, ("activations",), _transformed_activations(fn, _ACT_EXTRA[name]),
                           params=("smoothquant_alpha",) if name == "smoothquant" else (), calibrated=True,
                           library=library, note=_SIMPLIFIED + simplified + "; weights stay unquantized in this stage",
-                          version=_ACT_VERSION.get(name, 1)))
+                          version=_ACT_VERSION.get(name, 1),
+                          unused_settings=_UNUSED_ACT_SETTINGS.get(name, ())))
     return out
 
 METHODS: dict[str, Method] = {m.name: m for m in [
@@ -367,7 +374,8 @@ def joint(weights: Method, acts: str, standard_w8a8: bool = False) -> Method:
                   params=tuple(dict.fromkeys(weights.params + (("smoothquant_alpha",) if acts == "smoothquant" else ()))),
                   calibrated=True, library=weights.library, note=weights.note,
                   fixed_bits=weights.fixed_bits, unavailable=weights.unavailable, overhead=weights.overhead,
-                  joint=(8, 8) if standard_w8a8 else (None, None))
+                  joint=(8, 8) if standard_w8a8 else (None, None),
+                  unused_settings=weights.unused_settings + _UNUSED_ACT_SETTINGS.get(acts, ()))
 
 
 def series(quant: Method, prune: Method, quant_plan: str = "quant") -> Method:
