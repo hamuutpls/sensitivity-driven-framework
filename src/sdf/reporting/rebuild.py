@@ -14,11 +14,12 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
 from sdf.reporting.master import load_stages, write_master
-from sdf.reporting.reporter import VARIANT_PLAIN, ComparisonRow, StageReporter, _known
+from sdf.reporting.reporter import VARIANT_PLAIN, StageReporter
 from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -33,7 +34,8 @@ def rebuild(folder: str | Path, out: str | Path | None = None) -> list[Path]:
     before writing anything, when `out` is not a new empty folder or a results.json cannot be read."""
     folder = Path(folder).resolve()
     out = Path(out).resolve() if out else folder.with_name(f"{folder.name}-rebuilt-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}")
-    if out == folder or folder.is_relative_to(out) or (out.exists() and (not out.is_dir() or any(out.iterdir()))):
+    if (out == folder or folder.is_relative_to(out) or any(p.is_file() for p in (out, *out.parents))
+            or (out.exists() and any(out.iterdir()))):
         raise ValueError(f"{out} must be a new or empty folder outside {folder}: a rebuild never overwrites reports")
     skip = [m.parent for m in folder.rglob(MARKER) if m.parent != folder]  # earlier rebuilds kept inside the folder
     paths = [p for p in sorted(folder.rglob("results.json"))
@@ -74,12 +76,13 @@ def _read(path: Path) -> dict:
         raise ValueError(f"{path} is not a results.json: it holds a JSON {type(d).__name__}, not an object")
     if d.get("stage") in (1, 2, 3):
         try:
-            for r in (ComparisonRow(**_known(ComparisonRow, r)) for r in d["rows"]):
+            with tempfile.TemporaryDirectory() as tmp:  # a trial load, writing nowhere that stays
+                rep = StageReporter.load(path, Path(tmp) / "stage")
+            for r in rep.rows:
                 if not (isinstance(r.metrics, dict) and isinstance(r.info, dict)):
                     raise TypeError(f"row {r.method!r}: metrics and info must be objects")
-        except (KeyError, TypeError, AttributeError) as e:
-            raise ValueError(f"{path} is not a results.json the report writer can read: no usable rows ({e!r})") \
-                from None
+        except (KeyError, TypeError, AttributeError, ValueError) as e:
+            raise ValueError(f"{path} is not a results.json the report writer can read: {e!r}") from None
     return d
 
 

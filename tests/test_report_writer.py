@@ -193,15 +193,16 @@ def test_rebuild_writes_a_new_folder_and_never_overwrites(tmp_path, capsys):
     rebuild_main([str(new), "--out", str(tmp_path / "of_a_rebuild")])  # a rebuild folder itself is rebuilt
     assert (tmp_path / "of_a_rebuild" / "stage_2" / "report.md").exists()
     (tmp_path / "a_file").write_text("x")
-    with pytest.raises(SystemExit):
-        rebuild_main([str(tmp_path / "run"), "--out", str(tmp_path / "a_file")])
-    assert "never overwrites" in capsys.readouterr().err
+    for out in ("a_file", "a_file/sub"):
+        with pytest.raises(SystemExit):
+            rebuild_main([str(tmp_path / "run"), "--out", str(tmp_path / out)])
+        assert "never overwrites" in capsys.readouterr().err
 
 
 def test_rebuild_fails_cleanly_on_a_file_that_is_not_a_results_object(tmp_path, capsys):
     bad = [b"[1, 2]", b"{not json", b"\xff\xfe", b'{"stage": 2}', b'{"stage": 2, "rows": [1]}',
            b'{"stage": 2, "rows": [{"variant": "fp16"}]}', b'{"stage": 2, "rows": [{"method": "m", "variant": "fp16", '
-           b'"metrics": [1]}]}']
+           b'"metrics": [1]}]}', b'{"stage": 2, "rows": [], "requirement": 5}']
     for i, data in enumerate(bad):
         (tmp_path / str(i)).mkdir()
         (tmp_path / str(i) / "results.json").write_bytes(data)
