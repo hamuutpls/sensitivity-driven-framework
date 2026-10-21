@@ -16,17 +16,10 @@ from typing import Literal
 ONE_OFF_COSTS = frozenset({"build_time_s"})
 
 
-# Stored size: what the compressed model takes on disk or in memory for its numbers. A larger Our method value is never
-# a drawback (owner's rule); peak and runtime memory are running costs and are judged like any measure.
-SIZE_METRICS = frozenset({"model_size_gb", "predicted_weight_memory_gb", "predicted_kv_memory_gb",
-                          "avg_bits_per_weight", "avg_activation_bits", "avg_kv_bits", "decoder_weight_bits",
-                          "vllm_size_gb", "vllm_weight_memory_gb", "llamacpp_size_gb", "trtllm_engine_gb"})
-SIZE_TOLERANCE = 0.005  # a size difference under 0.5% is neither a win nor a loss
-
-# Hugging Face timings: meaningless for a simulated row (kept in the uncompressed format), so not judged there.
-HF_TIMINGS = frozenset({"prefill_ms_mean", "decode_ms_per_token_mean", "prefill_tokens_per_s", "decode_tokens_per_s"})
-# Measured on a simulated row's uncompressed stand-in, so not the compressed model's: never judged for such a row.
-SIMULATED_UNREAL = HF_TIMINGS | {"peak_memory_gb"}
+# Stored size: what the compressed model's numbers take on disk or in memory. A larger Our method value is never a
+# drawback (owner's rule); running memory (peak, KV cache, loaded weights) is judged like any measure.
+SIZE_METRICS = frozenset({"model_size_gb", "predicted_weight_memory_gb", "avg_bits_per_weight", "decoder_weight_bits",
+                          "vllm_size_gb", "llamacpp_size_gb", "trtllm_engine_gb"})
 
 BACKENDS = {"vllm": "vLLM", "llamacpp": "llama.cpp", "trtllm": "TensorRT-LLM"}  # metric-name prefix -> name
 

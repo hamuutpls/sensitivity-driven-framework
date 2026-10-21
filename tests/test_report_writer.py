@@ -45,9 +45,9 @@ def test_metric_kinds():
     assert not is_backend_ppl("ppl_val") and not is_backend_ppl("ppl_heldout")
     assert backend("trtllm_engine_gb") == "TensorRT-LLM" and backend("predicted_weight_memory_gb") is None
     assert {"predicted_weight_memory_gb", "avg_bits_per_weight", "vllm_size_gb", "trtllm_engine_gb"} <= SIZE_METRICS
-    # running costs are judged like any measure
-    assert not {"peak_memory_gb", "vllm_kv_cache_reserved_gb", "vllm_peak_memory_gb",
-                "trtllm_gpu_memory_loaded_gb"} & SIZE_METRICS
+    # running memory is judged like any measure
+    assert not {"peak_memory_gb", "predicted_kv_memory_gb", "avg_kv_bits", "avg_activation_bits", "vllm_weight_memory_gb",
+                "vllm_kv_cache_reserved_gb", "vllm_peak_memory_gb", "trtllm_gpu_memory_loaded_gb"} & SIZE_METRICS
 
 
 def test_standard_row_is_quantization_only_in_stages_0_and_1(tmp_path):
@@ -90,19 +90,17 @@ def test_verdict_ignores_backend_perplexity_and_never_counts_a_larger_size(tmp_p
     rep.rows[1].metrics["predicted_weight_memory_gb"] = 0.5
     assert rep.verdict(rep.rows[1]) == (["ppl_val", "predicted_weight_memory_gb"], [], [])  # smaller still wins
     rep.rows[1].metrics["predicted_weight_memory_gb"] = 0.996
-    assert rep.verdict(rep.rows[1]) == (["ppl_val"], [], [])  # 0.4% smaller is within the 0.5% tolerance
+    assert rep.verdict(rep.rows[1]) == (["ppl_val", "predicted_weight_memory_gb"], [], [])  # no tolerance band
 
 
-def test_verdict_skips_simulated_speed_and_peak_memory(tmp_path):
-    rep = _stage(tmp_path, 1, ["ppl_val", "peak_memory_gb", "decode_ms_per_token_mean", "decode_tokens_per_s"])
+def test_verdict_judges_running_memory_and_simulated_rows_like_any_row(tmp_path):
+    rep = _stage(tmp_path, 3, ["ppl_val", "predicted_kv_memory_gb", "peak_memory_gb", "decode_ms_per_token_mean"])
     with rep.method("m", "original", simulated=True) as r:
-        r.metrics.update(ppl_val=10.0, peak_memory_gb=1.0, decode_ms_per_token_mean=5.0, decode_tokens_per_s=200.0)
+        r.metrics.update(ppl_val=10.0, predicted_kv_memory_gb=0.10, peak_memory_gb=1.0, decode_ms_per_token_mean=5.0)
     with rep.method("m", "framework", simulated=True) as r:
-        r.metrics.update(ppl_val=9.0, peak_memory_gb=1.2, decode_ms_per_token_mean=4.0, decode_tokens_per_s=250.0)
-    assert rep.verdict(rep.rows[1]) == (["ppl_val"], [], [])  # measured on the uncompressed stand-in
-    rep.rows[0].info["simulated"] = rep.rows[1].info["simulated"] = False
-    assert rep.verdict(rep.rows[1]) == (["ppl_val", "decode_ms_per_token_mean", "decode_tokens_per_s"],
-                                        ["peak_memory_gb"], [])  # a real row's peak memory is a running cost
+        r.metrics.update(ppl_val=9.0, predicted_kv_memory_gb=0.12, peak_memory_gb=1.2, decode_ms_per_token_mean=4.0)
+    assert rep.verdict(rep.rows[1]) == (["ppl_val", "decode_ms_per_token_mean"],
+                                        ["predicted_kv_memory_gb", "peak_memory_gb"], [])
 
 
 def test_summary_is_a_small_table_per_technique_and_big_tables_go_at_the_back(tmp_path):
@@ -113,8 +111,7 @@ def test_summary_is_a_small_table_per_technique_and_big_tables_go_at_the_back(tm
     assert "> **What this shows:**" in summary and "> **What it means:** Our method beat the standard method in 2 " \
                                                     "of 2 comparisons" in summary
     assert "vLLM) is not part of the verdict" in summary and "never counted against our method" in summary
-    assert "It most often won on prediction error on test text (validation half) (2 times)." in summary
-    assert "Warning: 1 version(s) are badly damaged" in summary  # 40 > 3 x 10
+    assert "most often" not in summary and "badly damaged" not in summary
     # one or two versions per technique: one table, a line per version
     assert "| Unstructured pruning (Wanda) | Our method, level 30% | 1.7 GB vs 1.4 GB | Better | prediction error" \
         in summary
@@ -173,11 +170,35 @@ def test_rebuild_from_an_older_results_json(tmp_path):
     assert "Standard method, level 30%" in md and "Standard quantization" not in md
     assert (tmp_path / "out" / "stage_2" / "stage_2_comparison.xlsx").exists()
     assert (tmp_path / "out" / "stage_2" / "results.json").read_bytes() == before
-    assert not (rep.dir / "report.md").exists()  # --out leaves the run alone
+    assert not (rep.dir / "report.md").exists() and path.read_bytes() == before  # the run is left alone
 
-    rebuild_main([str(tmp_path / "run")])  # in place: the report comes back, results.json is not rewritten
-    assert path.read_bytes() == before
-    assert (rep.dir / "report.md").read_text(encoding="utf-8") == md
+
+def test_rebuild_writes_a_new_folder_and_never_overwrites(tmp_path, capsys):
+    rep = _pruning(tmp_path / "run")
+    rep.finalize()
+    old = rep.report_path.read_bytes()
+    rebuild_main([str(tmp_path / "run")])  # default: a new folder next to the run
+    (new,) = [p for p in tmp_path.iterdir() if p.name.startswith("run-rebuilt-")]
+    assert (new / "stage_2" / "report.md").exists() and (new / "master_report.md").exists()
+    assert rep.report_path.read_bytes() == old
+    for out in (tmp_path / "run", new, tmp_path):  # the input itself, a used folder, a folder holding the input
+        with pytest.raises(SystemExit):
+            rebuild_main([str(tmp_path / "run"), "--out", str(out)])
+        assert "never overwrites" in capsys.readouterr().err
+    inside = tmp_path / "run" / "rebuilt"
+    rebuild_main([str(tmp_path / "run"), "--out", str(inside)])  # inside the input: allowed, and skipped later
+    assert not (inside / "rebuilt").exists()
+    rebuild_main([str(tmp_path / "run"), "--out", str(tmp_path / "again")])
+    assert not (tmp_path / "again" / "rebuilt").exists()  # the earlier rebuild folder was not rebuilt again
+
+
+def test_rebuild_fails_cleanly_on_a_file_that_is_not_a_results_object(tmp_path, capsys):
+    for i, text in enumerate(("[1, 2]", "{not json")):
+        (tmp_path / str(i)).mkdir()
+        (tmp_path / str(i) / "results.json").write_text(text)
+        with pytest.raises(SystemExit):
+            rebuild_main([str(tmp_path / str(i))])
+        assert "results.json" in capsys.readouterr().err
 
 
 def _stage1(tmp_path, techniques=("GPTQ",), metrics=METRICS):
@@ -213,19 +234,6 @@ def test_stage_1_report_names_techniques_and_says_standard_quantization(tmp_path
     assert "Backend perplexity" not in plain
 
 
-def test_wxay():
-    from sdf.reporting.markdown import _wxay
-    from sdf.reporting.reporter import ComparisonRow
-
-    row = lambda method, **m: ComparisonRow(method, "original", metrics=m)  # noqa: E731
-    assert _wxay(row("x_with_y", decoder_weight_bits=4, avg_bits_per_weight=5.6, avg_activation_bits=8)) == "W4A8"
-    assert _wxay(row("x_with_y", avg_bits_per_weight=5.65, avg_activation_bits=8)) == "W5.65A8"
-    assert _wxay(row("x_with_y", avg_bits_per_weight=5.65)) == "W5.65A?"  # missing, not "not rounded"
-    assert _wxay(row("gptq", avg_bits_per_weight=5.65)) == "W5.65A16"  # weight-only
-    assert _wxay(row("smoothquant", avg_activation_bits=8)) == "W16A8"  # activation-only
-    assert _wxay(row("gptq")) == "W?A?"
-
-
 def test_a_chart_error_does_not_stop_the_report(tmp_path, monkeypatch):
     from sdf.reporting import charts
 
@@ -235,31 +243,31 @@ def test_a_chart_error_does_not_stop_the_report(tmp_path, monkeypatch):
     assert "## Summary" in outputs["report"].read_text(encoding="utf-8")
 
 
-def test_no_memory_chart_for_more_than_twelve_techniques(tmp_path):
+def test_more_than_seven_techniques_split_each_chart_and_never_repeat_a_colour(tmp_path):
     pytest.importorskip("matplotlib")
     from sdf.reporting.charts import PALETTE
 
-    assert "#F0E442" not in PALETTE  # yellow is hard to see
-    names = [c.path.name for c in write_charts(_stage1(tmp_path, [f"T{i}" for i in range(13)]))]
-    assert names == ["chart_perplexity.png"]
+    assert "#F0E442" not in PALETTE and len(set(PALETTE)) == len(PALETTE) == 7  # yellow is hard to see
+    charts = write_charts(_stage1(tmp_path, [f"T{i}" for i in range(13)]))
+    assert [c.path.name for c in charts] == ["chart_perplexity_part1.png", "chart_perplexity_vs_memory_part1.png",
+                                             "chart_perplexity_part2.png", "chart_perplexity_vs_memory_part2.png"]
+    assert "Part 1 of 2: 7 of the 13 techniques" in charts[0].shows
+    assert "Part 2 of 2: 6 of the 13 techniques" in charts[2].shows
 
 
 def test_rebuild_paths_stage_1_and_master(tmp_path, monkeypatch):
     rep = _stage1(tmp_path / "run")
     rep.finalize()
     before = rep.json_path.read_bytes()
-    rep.report_path.unlink()
     monkeypatch.chdir(rep.dir)
-    rebuild_main(["."])  # from inside the stage folder: in place, not into stage_1/stage_1
-    assert rep.report_path.exists() and not (rep.dir / "stage_1").exists()
-    rebuild_main([str(rep.dir), "--out", str(rep.dir)])  # --out the same folder: no copy onto itself
-    assert rep.json_path.read_bytes() == before
-    md = rep.report_path.read_text(encoding="utf-8")
+    rebuild_main([".", "--out", "../rebuilt_stage"])  # relative paths from inside the stage folder
+    md = (tmp_path / "run" / "rebuilt_stage" / "report.md").read_text(encoding="utf-8")
     assert "Standard quantization" in md and "Standard method" not in md
-    assert not (tmp_path / "run" / "master_report.md").exists()  # a stage folder: the master is not touched
+    assert not (tmp_path / "run" / "rebuilt_stage" / "master_report.md").exists()  # a stage folder: no master
     rebuild_main([str(tmp_path / "run"), "--out", str(tmp_path / "out")])  # a run folder: the master too
     master = (tmp_path / "out" / "master_report.md").read_text(encoding="utf-8")
     assert "beats the original method" in master and (tmp_path / "out" / "all_stages_comparison.xlsx").exists()
+    assert not (tmp_path / "out" / "rebuilt_stage").exists()  # an earlier rebuild inside the run is skipped
     assert rep.json_path.read_bytes() == before
 
 

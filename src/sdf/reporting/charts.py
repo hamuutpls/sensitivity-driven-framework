@@ -1,6 +1,7 @@
 """PNG charts for the Stage 1-3 reports, written next to report.md and embedded in it with captions.
 
 One colour per technique (Okabe-Ito, colour-blind safe), one marker per condition (standard method, our method...).
+With more techniques than colours, each chart is split into parts of at most seven techniques.
 Perplexity is the Hugging Face measurement only: a backend's perplexity is its re-rounded file and stays in the tables.
 """
 
@@ -10,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sdf.reporting.metrics import METRICS, is_number
+from sdf.reporting.metrics import METRICS, SIZE_METRICS, is_number
 from sdf.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -20,7 +21,6 @@ log = get_logger(__name__)
 
 PALETTE = ("#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00", "#000000")  # Okabe-Ito, no yellow
 MARKERS = ("o", "s", "^", "D", "v", "P", "X", "*")
-_LEGEND_MAX = 12  # more techniques than this: the legend lists the conditions only, and no memory chart
 
 
 @dataclass
@@ -54,14 +54,23 @@ def write_charts(rep: "StageReporter") -> list[Chart]:
         return []
     fp16 = next((r for r in ok if r.variant == "fp16"), None)
     techniques = list(dict.fromkeys(rep.technique(r) for r in rows))
-    # ponytail: colours repeat after seven techniques; the caption says so
-    colour = {t: PALETTE[i % len(PALETTE)] for i, t in enumerate(techniques)}
+    parts = [techniques[i:i + len(PALETTE)] for i in range(0, len(techniques), len(PALETTE))]
     marker = {c: MARKERS[i % len(MARKERS)] for i, c in enumerate(dict.fromkeys(condition(r) for r in rows))}
-    style = dict(rep=rep, plt=plt, colour=colour, marker=marker, fp16=fp16)
-    key = ("Each colour is a technique" + (f" (colours repeat after {len(PALETTE)})" if len(techniques) > len(PALETTE) else "")
-           + ", each marker a version" + ("; the dashed line is the original, uncompressed model." if fp16 else ".")
-           + (" With this many techniques the legend lists the versions only; the perplexity chart names every "
-              "technique." if len(techniques) > _LEGEND_MAX else ""))
+    out = []
+    for n, part in enumerate(parts, start=1):
+        colour = {t: PALETTE[i] for i, t in enumerate(part)}
+        which = (f"_part{n}", f" Part {n} of {len(parts)}: {len(part)} of the {len(techniques)} techniques.") \
+            if len(parts) > 1 else ("", "")
+        out += _charts(rep, [r for r in rows if rep.technique(r) in colour], which,
+                       dict(rep=rep, plt=plt, colour=colour, marker=marker, fp16=fp16))
+    return out
+
+
+def _charts(rep: "StageReporter", rows: list["ComparisonRow"], which: tuple[str, str], style: dict) -> list[Chart]:
+    """The charts of one part: `which` is the file-name suffix and the caption's part note."""
+    suffix, part = which
+    key = ("Each colour is a technique, each marker a version"
+           + ("; the dashed line is the original, uncompressed model." if style["fp16"] else ".") + part)
     out = []
 
     # older runs have only the share of the whole model removed
@@ -72,30 +81,31 @@ def write_charts(rep: "StageReporter") -> list[Chart]:
         whole = ("" if removed == "decoder_weights_removed" else " This counts the whole model, including parts "
                  "pruning never touches, so it reads lower than the level in the row names.")
         path, notes = _scatter(rows, removed, f"Share of the {what} removed (%)",
-                               rep.dir / "chart_perplexity_vs_share_removed.png", lines=True, **style)
+                               rep.dir / f"chart_perplexity_vs_share_removed{suffix}.png", lines=True, **style)
         out.append(Chart(path, "Prediction error (perplexity, measured in Hugging Face) against the share of the "
                                f"{what} each version really removes.{whole} " + key,
                          "Lower is better: a line that stays low further to the right keeps the model accurate while "
                          "removing more. " + notes))
     else:
-        path, notes = _dots(rows, rep.dir / "chart_perplexity.png", **style)
+        path, notes = _dots(rows, rep.dir / f"chart_perplexity{suffix}.png", **style)
         out.append(Chart(path, "Prediction error (perplexity, measured in Hugging Face) of every version, one line per "
                                "technique. " + key, "Lower (further left) is better. " + notes))
 
     memory = "predicted_kv_memory_gb" if rep.stage == 3 else "predicted_weight_memory_gb"
     have = [r for r in rows if is_number(r.metrics.get(memory))]
-    if have and len(techniques) <= _LEGEND_MAX:  # with more, the points cannot be told apart
+    if have:
         plain = METRICS[memory].plain
         path, notes = _scatter(have, memory, f"{plain[:1].upper() + plain[1:]} (GB)",
-                               rep.dir / "chart_perplexity_vs_memory.png", **style)
+                               rep.dir / f"chart_perplexity_vs_memory{suffix}.png", **style)
         out.append(Chart(path, f"Prediction error (perplexity) against the {plain}, for every version. " + key,
-                         "Lower on both is better, so the best versions sit bottom-left. A version further right is "
-                         "larger; that is shown, not counted against our method. " + notes))
+                         "Lower on both is better, so the best versions sit bottom-left. "
+                         + ("A version further right is larger; that is shown, not counted against our method. "
+                            if memory in SIZE_METRICS else "") + notes))
 
     real = [r for r in rows if not r.info.get("simulated") and is_number(r.metrics.get("decode_tokens_per_s"))]
     if real:
         path, notes = _scatter(real, "decode_tokens_per_s", "Writing speed (word-pieces per second)",
-                               rep.dir / "chart_perplexity_vs_speed.png", **style)
+                               rep.dir / f"chart_perplexity_vs_speed{suffix}.png", **style)
         out.append(Chart(path, "Prediction error (perplexity) against writing speed in Hugging Face, for every version "
                                "that is not simulated (a simulated version's speed is not a real compressed model's). "
                                "The time per word-piece is in the Results table. " + key,
@@ -146,9 +156,8 @@ def _finish(ax, plt, ppl: list[float], fp16, colour, marker, horizontal: bool) -
     log_scale = max(ppl) > 10 * min(ppl)
     (ax.set_yscale if horizontal else ax.set_xscale)("log" if log_scale else "linear")
     (ax.set_ylabel if horizontal else ax.set_xlabel)("Perplexity (lower is better)" + (", log scale" if log_scale else ""))
-    handles = [Line2D([], [], color="grey", marker=m, ls="", label=c) for c, m in marker.items()]
-    if len(colour) <= _LEGEND_MAX:
-        handles = [Line2D([], [], color=c, lw=4, label=t) for t, c in colour.items()] + handles
+    handles = ([Line2D([], [], color=c, lw=4, label=t) for t, c in colour.items()]
+               + [Line2D([], [], color="grey", marker=m, ls="", label=c) for c, m in marker.items()])
     if fp16 is not None:
         handles.append(Line2D([], [], color="grey", ls="--", label="Original model (uncompressed)"))
     ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.02, 1), fontsize=7, frameon=False)

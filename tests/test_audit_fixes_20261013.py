@@ -214,25 +214,24 @@ def _pair(rep, original, framework):
 
 
 def test_findings_and_plain_summary_give_the_same_verdict_and_noise_is_a_tie(tmp_path):
-    rep = _reporter(tmp_path, ["ppl_val", "decode_ms_per_token_mean", "prefill_ms_mean", "build_time_s"])
-    # the audit's case: better perplexity, 0.001 ms faster (std 0.2), 1% slower prompt reading (the audit had 1% more
-    # peak memory, which is no longer a loss: a larger size never is)
+    rep = _reporter(tmp_path, ["ppl_val", "decode_ms_per_token_mean", "peak_memory_gb", "build_time_s"])
+    # the audit's case: better perplexity, 0.001 ms faster (std 0.2), 1% more peak memory
     _pair(rep, {"ppl_val": 10.0, "decode_ms_per_token_mean": 5.000, "decode_ms_per_token_std": 0.2,
-                "prefill_ms_mean": 1.00, "decode_tokens_per_s": 200.0, "build_time_s": 10.0},
+                "peak_memory_gb": 1.00, "decode_tokens_per_s": 200.0, "build_time_s": 10.0},
           {"ppl_val": 9.0, "decode_ms_per_token_mean": 4.999, "decode_ms_per_token_std": 0.2,
-           "prefill_ms_mean": 1.01, "decode_tokens_per_s": 200.04, "build_time_s": 25.0})
+           "peak_memory_gb": 1.01, "decode_tokens_per_s": 200.04, "build_time_s": 25.0})
     technical, plain = rep.comparison_summary()[0], _plain_verdicts(rep)[0]
     assert "trades off" in technical and "trade-off" in plain
     assert "Decode latency" not in technical and "throughput" not in technical.lower()  # noise; not a main metric
-    assert rep.verdict(rep.rows[1]) == (["ppl_val"], ["prefill_ms_mean"], ["build_time_s"])
+    assert rep.verdict(rep.rows[1]) == (["ppl_val"], ["peak_memory_gb"], ["build_time_s"])
     assert "One-off cost: Build time (+15" in technical and "paid once" in plain
 
 
 def test_validation_and_held_out_perplexity_count_as_one_measure(tmp_path):
-    rep = _reporter(tmp_path, ["ppl_val", "ppl_heldout", "prefill_ms_mean"])
-    _pair(rep, {"ppl_val": 10.0, "ppl_heldout": 10.0, "prefill_ms_mean": 1.0},
-          {"ppl_val": 9.0, "ppl_heldout": 9.5, "prefill_ms_mean": 1.1})
-    assert rep.verdict(rep.rows[1]) == (["ppl_val"], ["prefill_ms_mean"], [])  # one win, not two: a trade-off
+    rep = _reporter(tmp_path, ["ppl_val", "ppl_heldout", "peak_memory_gb"])
+    _pair(rep, {"ppl_val": 10.0, "ppl_heldout": 10.0, "peak_memory_gb": 1.0},
+          {"ppl_val": 9.0, "ppl_heldout": 9.5, "peak_memory_gb": 1.1})
+    assert rep.verdict(rep.rows[1]) == (["ppl_val"], ["peak_memory_gb"], [])  # one win, not two: a trade-off
     assert "trades off" in rep.comparison_summary()[0] and "trade-off" in _plain_verdicts(rep)[0]
     rep = _reporter(tmp_path, ["ppl_val", "ppl_heldout"])
     _pair(rep, {"ppl_val": 10.0, "ppl_heldout": 10.0}, {"ppl_val": 9.0, "ppl_heldout": 10.5})

@@ -44,7 +44,7 @@ _NOTE = (" Measured in llama.cpp, the program people use to run models on their 
          "model in its file format at the plan's bits.")
 METRICS.update({
     "llamacpp_size_gb": MetricSpec(
-        "llama.cpp file size", "GB", "lower", "real file size of the compressed model",
+        "llama.cpp file size", "GB", "lower", "file size of the model in llama.cpp's format",
         "The size of the model file, in gigabytes." + _NOTE),
     "llamacpp_prefill_tokens_per_s": MetricSpec(
         "llama.cpp prefill throughput", "tok/s", "higher", "prompt-reading speed (llama.cpp)",

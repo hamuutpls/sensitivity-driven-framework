@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from collections import Counter
 
 from sdf.reporting.metrics import BACKENDS, METRICS, MetricSpec, backend, is_backend_ppl, is_number, label
 from sdf.utils.cache import atomic_write_text
@@ -50,7 +49,6 @@ _HEADS = {"better": "beat the {std} on every measure compared",
           "mixed": "is a trade-off against the {std}: better on some measures, worse on others",
           "even": "showed no clear difference from the {std} on the measures compared"}
 _SHORT = {"better": "Better", "worse": "Worse", "mixed": "Trade-off", "even": "No clear difference"}
-WITH = "_with_"  # sdf.stages.methods.WITH: a Stage 1 row rounding weights and activations together
 W8A8 = "_w8a8"  # sdf.stages.methods.W8A8
 
 # Words a reader may not know, added to Key terms when the report uses them (term -> (shown when, meaning)).
@@ -59,7 +57,7 @@ _TERMS = {
                     "this report are measured there unless a column names another program.",
     "Simulated": "the numbers are rounded or removed exactly as the compressed model would have them, but kept in the "
                  "uncompressed format: the accuracy is real, the size is the plan's prediction, and the speed and peak "
-                 "graphics-card memory are not those of a real compressed model, so they are left out of the verdict.",
+                 "graphics-card memory are measured on the uncompressed format, not on a real compressed model.",
     "Perplexity": "how unsure the model is when predicting the next word of real text (called prediction error "
                   "here); lower means more accurate.",
     "llama.cpp": "a program that runs models on ordinary computers and laptops, from its own file format.",
@@ -130,25 +128,12 @@ def _box(shows: str, means: str) -> list[str]:
     return [f"> **What this shows:** {shows}", ">", f"> **What it means:** {means}", ""]
 
 
-def _wxay(r: "ComparisonRow") -> str:
-    """WxAy: decoder-layer weight bits when known, else whole-model; "?" when missing, 16 for the half a weight-only
-    or activation-only row does not round."""
-    w = r.metrics.get("decoder_weight_bits", r.metrics.get("avg_bits_per_weight"))
-    a = r.metrics.get("avg_activation_bits")
-    single = WITH not in r.method
-    bits = lambda v, other: f"{v:.3g}" if is_number(v) else "16" if single and is_number(other) else "?"  # noqa: E731
-    return f"W{bits(w, a)}A{bits(a, w)}"
-
-
 def _size(rep: "StageReporter", r: "ComparisonRow | None") -> str:
-    """A row's bits (Stage 1: WxAy) and memory, for the summary."""
+    """A row's memory, for the summary."""
     if r is None:
         return "–"
     memory = "predicted_kv_memory_gb" if rep.stage == 3 else "predicted_weight_memory_gb"
-    parts = [_wxay(r)] if rep.stage == 1 else []
-    if is_number(r.metrics.get(memory)):
-        parts.append(f"{r.metrics[memory]:.3g} GB")
-    return ", ".join(parts) or "–"
+    return f"{r.metrics[memory]:.3g} GB" if is_number(r.metrics.get(memory)) else "–"
 
 
 def _compared(rep: "StageReporter") -> list["ComparisonRow"]:
@@ -165,7 +150,6 @@ def _summary(rep: "StageReporter") -> list[str]:
     """Per technique, a small table: each Our method version's size against the standard one's, and the verdict."""
     groups: dict[str, list[list[str]]] = {}
     counts = dict.fromkeys(_SHORT, 0)
-    won, lost = Counter(), Counter()
     std = _std(rep)
     for fw in (r for r in rep.rows if r.variant == "framework" and r.status == "ok"):
         j = _judge(rep, fw)
@@ -173,8 +157,6 @@ def _summary(rep: "StageReporter") -> list[str]:
             continue
         kind, wins, losses, _ = j
         counts[kind] += 1
-        won.update(wins)
-        lost.update(losses)
         t = rep.technique(fw)
         groups.setdefault(t, []).append([fw.plain_name.removeprefix(t + ": "),
                                          f"{_size(rep, fw)} vs {_size(rep, rep.find_original(fw))}",
@@ -185,39 +167,18 @@ def _summary(rep: "StageReporter") -> list[str]:
     backends = _backends(rep)
     means = (f"Our method beat the {std} in {counts['better']} of {n} comparisons, lost in {counts['worse']}, "
              f"was a trade-off in {counts['mixed']} and showed no clear difference in {counts['even']}.")
-    if won or lost:
-        means += " It most often " + " and most often ".join(
-            f"{verb} on {c.most_common(1)[0][0]} ({c.most_common(1)[0][1]} times)"
-            for verb, c in (("won", won), ("lost", lost)) if c) + "."
-    fp16 = next((r for r in rep.rows if r.variant == "fp16" and r.status == "ok"
-                 and is_number(r.metrics.get("ppl_val"))), None)
-    damaged = [r for r in _compared(rep) if fp16 and is_number(r.metrics.get("ppl_val"))
-               and r.metrics["ppl_val"] > 3 * fp16.metrics["ppl_val"]]
-    if damaged:
-        means += (f" Warning: {len(damaged)} version(s) are badly damaged, with a prediction error (perplexity) more "
-                  "than three times the original model's, for example " + "; ".join(_named(rep, r)
-                                                                                    for r in damaged[:3]) + ".")
     lines = _box(
         f"For each technique and each version of our method, whether it beat the {std} on the measures "
         "that decide it (accuracy measured in Hugging Face, memory, speed). "
         + (f"Backend perplexity ({', '.join(backends)}) is not part of the verdict: those programs re-round the saved "
            "file, so it is only shown in the Results table. " if backends else "")
-        + "A larger stored size is shown but never counted against our method, and a size difference under 0.5% "
-          "counts as none.", means)
-    head = ["Version", f"Bits (WxAy) and memory, ours vs {std}" if rep.stage == 1 else f"Memory, ours vs {std}",
-            "Result", "Better on", "Worse on"]
+        + "A larger stored size is shown but never counted against our method.", means)
+    head = ["Version", f"Memory, ours vs {std}", "Result", "Better on", "Worse on"]
     if max(map(len, groups.values())) <= 3:  # a version or two per technique: one table, a line per technique
         lines += [_table(["Technique"] + head, [[t] + row for t, table in groups.items() for row in table]), ""]
     else:
         for t, table in groups.items():
             lines += [f"**{t}**", "", _table(head, table), ""]
-    if rep.stage == 1:
-        whole = any("decoder_weight_bits" not in r.metrics for r in _compared(rep))
-        lines += [("WxAy: average bits per weight over the whole model (the input and output word tables stay at 16 "
-                   "bits, so a 4-bit model reads about W5.4 to W5.9 depending on the method's storage overhead)"
-                   if whole else "WxAy: average bits per weight in the decoder layers")
-                  + " and average bits per number passed between layers; A16 means those numbers are not rounded, "
-                    "and ? that the value was not recorded.", ""]
     return lines
 
 
@@ -291,7 +252,7 @@ def _plain_part(rep: "StageReporter", charts: list["Chart"]) -> list[str]:
         lines += ["## Charts", ""]
         for c in charts:
             lines += [f"![{c.path.stem.replace('_', ' ')}]({c.path.name})", ""] + _box(c.shows, c.means)
-        if not any(c.path.stem.endswith("speed") for c in charts):
+        if not any("vs_speed" in c.path.stem for c in charts):
             lines += ["There is no speed chart: every version here is simulated (kept in the uncompressed format), or "
                       "has no speed measurement, so its speed would not be that of a real compressed model.", ""]
 

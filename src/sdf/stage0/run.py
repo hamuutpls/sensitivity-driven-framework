@@ -365,7 +365,8 @@ def run_stage0(
     # --- original method: uniform allocation, no Stage 0 guidance ------------------------------------------
     uniform = uniform_plan(scores, s0.uniform_bits, s0.uniform_prune_ratio)
     with rep.method(METHOD, "original",
-                    description=f"uniform {s0.uniform_bits}-bit, prune {s0.uniform_prune_ratio} on every layer") as row:
+                    description=f"uniform {s0.uniform_bits}-bit, prune {s0.uniform_prune_ratio} on every layer",
+                    **({"label": "Standard quantization and pruning"} if s0.uniform_prune_ratio else {})) as row:
         row.metrics.update(_cost_metrics(predict(uniform)))
         row.metrics["protected_layers"] = 0
         row.metrics["build_time_s"] = 0.0  # needs no profiling

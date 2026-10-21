@@ -8,12 +8,11 @@ from typing import TYPE_CHECKING, Any
 
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
-from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from sdf.reporting.markdown import requirement_cell
-from sdf.reporting.metrics import METRICS, SIZE_METRICS, is_backend_ppl, is_number, label as metric_label
+from sdf.reporting.metrics import METRICS, is_number, label as metric_label
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -90,21 +89,14 @@ def _summary(ws, rep: "StageReporter") -> None:
         line.append(r.error or "")
         ws.append(line)
 
-    # Highlight where the framework wins (green) or loses (red) against the original method.
-    last = len(rep.rows) + 1
-    if last < 2:
-        return
-    for m in metrics:
-        better = METRICS[m].better if m in METRICS else None
-        if better is None or is_backend_ppl(m):  # a backend's re-rounded file is never a win or a loss
-            continue
-        win_op, lose_op = ("lessThan", "greaterThan") if better == "lower" else ("greaterThan", "lessThan")
-        for key in ("vs_original_abs", "vs_original_pct"):
-            col = get_column_letter(col_of[(m, key)])
-            rng = f"{col}2:{col}{last}"
-            ws.conditional_formatting.add(rng, CellIsRule(operator=win_op, formula=["0"], fill=GREEN))
-            if m not in SIZE_METRICS:  # a larger Our method size is never a drawback (owner's rule)
-                ws.conditional_formatting.add(rng, CellIsRule(operator=lose_op, formula=["0"], fill=RED))
+    # Colour exactly what verdict() calls a win (green) or a loss (red) against the row's original method.
+    for i, r in enumerate(rep.rows, start=2):
+        v = rep.verdict(r) if r.variant == "framework" else None
+        for fill, ms in zip((GREEN, RED), v[:2] if v else ()):
+            for m in ms:
+                for key in ("vs_original_abs", "vs_original_pct"):
+                    if (m, key) in col_of:
+                        ws.cell(row=i, column=col_of[(m, key)]).fill = fill
 
 
 def _flatten(prefix: str, d: Any, out: list[tuple[str, Any]]) -> None:
