@@ -13,7 +13,7 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from sdf.reporting.markdown import requirement_cell
-from sdf.reporting.metrics import METRICS, is_number, is_size, label as metric_label
+from sdf.reporting.metrics import METRICS, SIZE_METRICS, is_backend_ppl, is_number, label as metric_label
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -96,14 +96,14 @@ def _summary(ws, rep: "StageReporter") -> None:
         return
     for m in metrics:
         better = METRICS[m].better if m in METRICS else None
-        if better is None:
+        if better is None or is_backend_ppl(m):  # a backend's re-rounded file is never a win or a loss
             continue
         win_op, lose_op = ("lessThan", "greaterThan") if better == "lower" else ("greaterThan", "lessThan")
         for key in ("vs_original_abs", "vs_original_pct"):
             col = get_column_letter(col_of[(m, key)])
             rng = f"{col}2:{col}{last}"
             ws.conditional_formatting.add(rng, CellIsRule(operator=win_op, formula=["0"], fill=GREEN))
-            if not is_size(m):  # a larger Our method size is never a drawback (owner's rule)
+            if m not in SIZE_METRICS:  # a larger Our method size is never a drawback (owner's rule)
                 ws.conditional_formatting.add(rng, CellIsRule(operator=lose_op, formula=["0"], fill=RED))
 
 

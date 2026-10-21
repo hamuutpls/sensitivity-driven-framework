@@ -18,9 +18,9 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
-PALETTE = ("#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00", "#F0E442", "#000000")
+PALETTE = ("#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00", "#000000")  # Okabe-Ito, no yellow
 MARKERS = ("o", "s", "^", "D", "v", "P", "X", "*")
-_LEGEND_MAX = 12  # more techniques than this: the legend lists the conditions only
+_LEGEND_MAX = 12  # more techniques than this: the legend lists the conditions only, and no memory chart
 
 
 @dataclass
@@ -54,11 +54,11 @@ def write_charts(rep: "StageReporter") -> list[Chart]:
         return []
     fp16 = next((r for r in ok if r.variant == "fp16"), None)
     techniques = list(dict.fromkeys(rep.technique(r) for r in rows))
-    # ponytail: colours repeat after eight techniques; the caption says so
+    # ponytail: colours repeat after seven techniques; the caption says so
     colour = {t: PALETTE[i % len(PALETTE)] for i, t in enumerate(techniques)}
     marker = {c: MARKERS[i % len(MARKERS)] for i, c in enumerate(dict.fromkeys(condition(r) for r in rows))}
     style = dict(rep=rep, plt=plt, colour=colour, marker=marker, fp16=fp16)
-    key = ("Each colour is a technique" + (" (colours repeat after eight)" if len(techniques) > len(PALETTE) else "")
+    key = ("Each colour is a technique" + (f" (colours repeat after {len(PALETTE)})" if len(techniques) > len(PALETTE) else "")
            + ", each marker a version" + ("; the dashed line is the original, uncompressed model." if fp16 else ".")
            + (" With this many techniques the legend lists the versions only; the perplexity chart names every "
               "technique." if len(techniques) > _LEGEND_MAX else ""))
@@ -69,10 +69,12 @@ def write_charts(rep: "StageReporter") -> list[Chart]:
                     if all(is_number(r.metrics.get(m)) for r in rows)), None) if rep.stage == 2 else None
     if removed:
         what = "decoder layers' weights" if removed == "decoder_weights_removed" else "model's numbers"
+        whole = ("" if removed == "decoder_weights_removed" else " This counts the whole model, including parts "
+                 "pruning never touches, so it reads lower than the level in the row names.")
         path, notes = _scatter(rows, removed, f"Share of the {what} removed (%)",
                                rep.dir / "chart_perplexity_vs_share_removed.png", lines=True, **style)
         out.append(Chart(path, "Prediction error (perplexity, measured in Hugging Face) against the share of the "
-                               f"{what} each version really removes. " + key,
+                               f"{what} each version really removes.{whole} " + key,
                          "Lower is better: a line that stays low further to the right keeps the model accurate while "
                          "removing more. " + notes))
     else:
@@ -82,7 +84,7 @@ def write_charts(rep: "StageReporter") -> list[Chart]:
 
     memory = "predicted_kv_memory_gb" if rep.stage == 3 else "predicted_weight_memory_gb"
     have = [r for r in rows if is_number(r.metrics.get(memory))]
-    if have:
+    if have and len(techniques) <= _LEGEND_MAX:  # with more, the points cannot be told apart
         plain = METRICS[memory].plain
         path, notes = _scatter(have, memory, f"{plain[:1].upper() + plain[1:]} (GB)",
                                rep.dir / "chart_perplexity_vs_memory.png", **style)

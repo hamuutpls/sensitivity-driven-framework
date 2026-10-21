@@ -8,7 +8,7 @@ import pytest
 from sdf.eval import vllm_backend  # noqa: F401 - registers the vLLM metrics
 from sdf.reporting.charts import write_charts
 from sdf.reporting.markdown import _plain_verdicts
-from sdf.reporting.metrics import is_backend_ppl, is_size
+from sdf.reporting.metrics import SIZE_METRICS, backend, is_backend_ppl
 from sdf.reporting.rebuild import main as rebuild_main
 from sdf.reporting.reporter import StageReporter
 from sdf.requirements import DeploymentRequirement
@@ -20,7 +20,7 @@ def _stage(tmp_path, stage, metrics=METRICS):
     return StageReporter(stage, tmp_path, "t", {}, {}, {}, DeploymentRequirement(), list(metrics))
 
 
-def _pruning(tmp_path, levels=((0.3, 12.0, 11.0), (0.5, 30.0, 14.0))):
+def _pruning(tmp_path, levels=((0.3, 12.0, 11.0), (0.5, 40.0, 14.0))):
     """A Stage 2 report shaped like the runner's: levels (share, standard ppl, our ppl) of one technique, labelled
     as _label_level does."""
     rep = _stage(tmp_path, 2)
@@ -43,12 +43,16 @@ def _pruning(tmp_path, levels=((0.3, 12.0, 11.0), (0.5, 30.0, 14.0))):
 def test_metric_kinds():
     assert is_backend_ppl("vllm_ppl_val") and is_backend_ppl("llamacpp_ppl_heldout")
     assert not is_backend_ppl("ppl_val") and not is_backend_ppl("ppl_heldout")
-    assert is_size("predicted_weight_memory_gb") and is_size("avg_bits_per_weight") and is_size("vllm_size_gb")
-    assert not is_size("ppl_val") and not is_size("decode_ms_per_token_mean")
+    assert backend("trtllm_engine_gb") == "TensorRT-LLM" and backend("predicted_weight_memory_gb") is None
+    assert {"predicted_weight_memory_gb", "avg_bits_per_weight", "vllm_size_gb", "trtllm_engine_gb"} <= SIZE_METRICS
+    # running costs are judged like any measure
+    assert not {"peak_memory_gb", "vllm_kv_cache_reserved_gb", "vllm_peak_memory_gb",
+                "trtllm_gpu_memory_loaded_gb"} & SIZE_METRICS
 
 
-def test_standard_row_is_quantization_only_in_stage_1(tmp_path):
-    for stage, name in ((1, "Standard quantization"), (2, "Standard method"), (3, "Standard method")):
+def test_standard_row_is_quantization_only_in_stages_0_and_1(tmp_path):
+    for stage, name in ((0, "Standard quantization"), (1, "Standard quantization"), (2, "Standard method"),
+                        (3, "Standard method")):
         rep = _stage(tmp_path / str(stage), stage)
         with rep.method("m", "original") as r:
             r.metrics["ppl_val"] = 10.0
@@ -62,6 +66,19 @@ def test_standard_row_is_quantization_only_in_stage_1(tmp_path):
     assert terms.count("- **Our method**") == 1  # one entry per version, not per level
 
 
+def test_stage_1_w8a8_row_is_its_own_version_of_the_technique(tmp_path):
+    rep = _stage(tmp_path, 1)
+    for method, variant, desc in (("gptq_with_quarot", "original", "GPTQ + QuaRot, standard settings: x"),
+                                  ("gptq_with_quarot_w8a8", "original",
+                                   "GPTQ + QuaRot, every layer W8A8, standard settings: x"),
+                                  ("gptq_with_quarot", "framework", "GPTQ + QuaRot, Stage 0 weights")):
+        with rep.method(method, variant, description=desc) as r:
+            r.metrics["ppl_val"] = 10.0
+    assert [r.plain_name for r in rep.rows] == ["Standard quantization", "Standard quantization, every layer W8A8",
+                                                "Our method"]
+    assert {rep.technique(r) for r in rep.rows} == {"GPTQ + QuaRot"}
+
+
 def test_verdict_ignores_backend_perplexity_and_never_counts_a_larger_size(tmp_path):
     rep = _stage(tmp_path, 1)
     with rep.method("m", "original") as r:
@@ -69,9 +86,23 @@ def test_verdict_ignores_backend_perplexity_and_never_counts_a_larger_size(tmp_p
     with rep.method("m", "framework") as r:
         r.metrics.update(ppl_val=9.0, predicted_weight_memory_gb=1.5, vllm_ppl_val=12.0)
     assert rep.verdict(rep.rows[1]) == (["ppl_val"], [], [])  # bigger, and worse in vLLM: neither is a loss
-    assert "beat the standard method" in _plain_verdicts(rep)[0]
+    assert "beat the standard quantization" in _plain_verdicts(rep)[0]
     rep.rows[1].metrics["predicted_weight_memory_gb"] = 0.5
     assert rep.verdict(rep.rows[1]) == (["ppl_val", "predicted_weight_memory_gb"], [], [])  # smaller still wins
+    rep.rows[1].metrics["predicted_weight_memory_gb"] = 0.996
+    assert rep.verdict(rep.rows[1]) == (["ppl_val"], [], [])  # 0.4% smaller is within the 0.5% tolerance
+
+
+def test_verdict_judges_peak_memory_and_skips_simulated_speed(tmp_path):
+    rep = _stage(tmp_path, 1, ["ppl_val", "peak_memory_gb", "decode_ms_per_token_mean", "decode_tokens_per_s"])
+    with rep.method("m", "original", simulated=True) as r:
+        r.metrics.update(ppl_val=10.0, peak_memory_gb=1.0, decode_ms_per_token_mean=5.0, decode_tokens_per_s=200.0)
+    with rep.method("m", "framework", simulated=True) as r:
+        r.metrics.update(ppl_val=9.0, peak_memory_gb=1.2, decode_ms_per_token_mean=4.0, decode_tokens_per_s=250.0)
+    assert rep.verdict(rep.rows[1]) == (["ppl_val"], ["peak_memory_gb"], [])  # peak memory is a running cost
+    rep.rows[0].info["simulated"] = rep.rows[1].info["simulated"] = False
+    assert rep.verdict(rep.rows[1]) == (["ppl_val", "decode_ms_per_token_mean", "decode_tokens_per_s"],
+                                        ["peak_memory_gb"], [])
 
 
 def test_summary_is_a_small_table_per_technique_and_big_tables_go_at_the_back(tmp_path):
@@ -82,6 +113,8 @@ def test_summary_is_a_small_table_per_technique_and_big_tables_go_at_the_back(tm
     assert "> **What this shows:**" in summary and "> **What it means:** Our method beat the standard method in 2 " \
                                                     "of 2 comparisons" in summary
     assert "vLLM) is not part of the verdict" in summary and "never counted against our method" in summary
+    assert "It most often won on prediction error on test text (validation half) (2 times)." in summary
+    assert "Warning: 1 version(s) are badly damaged" in summary  # 40 > 3 x 10
     # one or two versions per technique: one table, a line per version
     assert "| Unstructured pruning (Wanda) | Our method, level 30% | 1.7 GB vs 1.4 GB | Better | prediction error" \
         in summary
@@ -92,7 +125,7 @@ def test_summary_is_a_small_table_per_technique_and_big_tables_go_at_the_back(tm
     assert "re-rounded file, not in the verdict" in plain.split("## Results")[1]
     # more versions per technique: a small table under each technique's name
     md = _pruning(tmp_path / "sweep", [(x / 10, 20.0, 15.0) for x in range(1, 5)]).finalize()["report"].read_text()
-    assert "**Unstructured pruning (Wanda)**\n\n| Version | Memory, ours vs standard |" in md
+    assert "**Unstructured pruning (Wanda)**\n\n| Version | Memory, ours vs standard method |" in md
 
 
 def test_charts_are_written_and_embedded_with_captions(tmp_path):
@@ -106,7 +139,7 @@ def test_charts_are_written_and_embedded_with_captions(tmp_path):
     md = outputs["report"].read_text(encoding="utf-8")
     assert "![chart perplexity vs share removed](chart_perplexity_vs_share_removed.png)" in md
     assert "Lower is better" in md and "does not start at 0" in md
-    assert "logarithmic" not in md  # perplexity spans 10 to 30: a linear axis
+    assert "logarithmic" not in md  # perplexity spans 10 to 40: a linear axis
     rep = _stage(tmp_path / "s1", 1)
     with rep.method("gptq", "original", description="GPTQ, standard settings: x") as r:
         r.metrics.update(ppl_val=10.0)
@@ -145,3 +178,96 @@ def test_rebuild_from_an_older_results_json(tmp_path):
     rebuild_main([str(tmp_path / "run")])  # in place: the report comes back, results.json is not rewritten
     assert path.read_bytes() == before
     assert (rep.dir / "report.md").read_text(encoding="utf-8") == md
+
+
+def _stage1(tmp_path, techniques=("GPTQ",), metrics=METRICS):
+    rep = _stage(tmp_path, 1, metrics)
+    with rep.method("baseline", "fp16") as r:
+        r.metrics.update(ppl_val=10.0, vllm_ppl_val=10.0)
+    for t in techniques:
+        with rep.method(t, "original", description=f"{t}, standard settings: x", simulated=True) as r:
+            r.metrics.update(ppl_val=12.0, predicted_weight_memory_gb=0.7, avg_bits_per_weight=5.65)
+        with rep.method(t, "framework", description=f"{t}, Stage 0 sensitivity plan", simulated=True) as r:
+            r.metrics.update(ppl_val=11.0, predicted_weight_memory_gb=0.8, avg_bits_per_weight=7.4)
+    return rep
+
+
+def test_stage_1_report_names_techniques_and_says_standard_quantization(tmp_path):
+    rep = _stage1(tmp_path, ("GPTQ", "OmniQuant (LWC)"))
+    with rep.method("awq", "original", description="AWQ, standard settings: x"):
+        raise RuntimeError("no kernel")
+    md = rep.finalize()["report"].read_text(encoding="utf-8")
+    plain = md.split("# Technical details")[0]
+    assert "whether it beat the standard quantization" in plain and "ours vs standard quantization" in plain
+    assert "- **GPTQ: Our method** beat the standard quantization on every measure compared" in plain
+    assert "- 1 run(s) failed: AWQ: Standard quantization." in plain
+    assert "| GPTQ: Our method |" in plain.split("## Results")[1]  # the Results table names the technique
+    assert "how the standard quantization and our method differ" not in plain  # no intro set here
+    terms = plain.split("## Key terms")[1].split("\n## ")[0]
+    assert "- **Standard quantization**: Every layer at 4-bit weights and 8-bit activations (W4A8)" in terms
+    assert "- **Our method**: Our method, following the Stage 0 plan" in terms
+    for t in ("Hugging Face", "Simulated", "Perplexity", "LWC"):
+        assert f"- **{t}**:" in terms, t
+    assert "- **vLLM**" not in terms and "Re-rounded file" not in terms  # only the uncompressed row has vLLM
+    assert "vLLM" not in plain.split("## Results")[1].split("**What each column means**")[0]  # no empty column
+    assert "Backend perplexity" not in plain
+
+
+def test_wxay():
+    from sdf.reporting.markdown import _wxay
+    from sdf.reporting.reporter import ComparisonRow
+
+    row = lambda method, **m: ComparisonRow(method, "original", metrics=m)  # noqa: E731
+    assert _wxay(row("x_with_y", decoder_weight_bits=4, avg_bits_per_weight=5.6, avg_activation_bits=8)) == "W4A8"
+    assert _wxay(row("x_with_y", avg_bits_per_weight=5.65, avg_activation_bits=8)) == "W5.65A8"
+    assert _wxay(row("x_with_y", avg_bits_per_weight=5.65)) == "W5.65A?"  # missing, not "not rounded"
+    assert _wxay(row("gptq", avg_bits_per_weight=5.65)) == "W5.65A16"  # weight-only
+    assert _wxay(row("smoothquant", avg_activation_bits=8)) == "W16A8"  # activation-only
+    assert _wxay(row("gptq")) == "W?A?"
+
+
+def test_a_chart_error_does_not_stop_the_report(tmp_path, monkeypatch):
+    from sdf.reporting import charts
+
+    monkeypatch.setattr(charts, "write_charts", lambda rep: 1 / 0)
+    outputs = _pruning(tmp_path).finalize()
+    assert outputs["report"].exists() and outputs["xlsx"].exists()
+    assert "## Summary" in outputs["report"].read_text(encoding="utf-8")
+
+
+def test_no_memory_chart_for_more_than_twelve_techniques(tmp_path):
+    pytest.importorskip("matplotlib")
+    from sdf.reporting.charts import PALETTE
+
+    assert "#F0E442" not in PALETTE  # yellow is hard to see
+    names = [c.path.name for c in write_charts(_stage1(tmp_path, [f"T{i}" for i in range(13)]))]
+    assert names == ["chart_perplexity.png"]
+
+
+def test_rebuild_paths_stage_1_and_master(tmp_path, monkeypatch):
+    rep = _stage1(tmp_path / "run")
+    rep.finalize()
+    before = rep.json_path.read_bytes()
+    rep.report_path.unlink()
+    monkeypatch.chdir(rep.dir)
+    rebuild_main(["."])  # from inside the stage folder: in place, not into stage_1/stage_1
+    assert rep.report_path.exists() and not (rep.dir / "stage_1").exists()
+    rebuild_main([str(rep.dir), "--out", str(rep.dir)])  # --out the same folder: no copy onto itself
+    assert rep.json_path.read_bytes() == before
+    md = rep.report_path.read_text(encoding="utf-8")
+    assert "Standard quantization" in md and "Standard method" not in md
+    assert not (tmp_path / "run" / "master_report.md").exists()  # a stage folder: the master is not touched
+    rebuild_main([str(tmp_path / "run"), "--out", str(tmp_path / "out")])  # a run folder: the master too
+    master = (tmp_path / "out" / "master_report.md").read_text(encoding="utf-8")
+    assert "beats the original method" in master and (tmp_path / "out" / "all_stages_comparison.xlsx").exists()
+    assert rep.json_path.read_bytes() == before
+
+
+def test_load_tolerates_missing_and_unknown_keys(tmp_path):
+    path = tmp_path / "stage_2" / "results.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"stage": 2, "requirement": {"target_ppl": 11.0, "new_target": 1},
+                                "rows": [{"method": "m", "variant": "fp16", "status": "ok", "metrics": {"ppl_val": 10.0},
+                                          "added_later": True}]}))
+    rep = StageReporter.load(path)
+    assert rep.requirement.target_ppl == 11.0 and rep.rows[0].metrics == {"ppl_val": 10.0} and rep.sections == []

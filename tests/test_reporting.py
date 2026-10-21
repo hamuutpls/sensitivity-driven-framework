@@ -79,7 +79,7 @@ def test_report_has_plain_language_part(tmp_path):
         assert heading in plain
     assert plain.index("## Summary") < plain.index("## Key terms") < plain.index("## Findings") \
         < plain.index("## Results")  # the big table goes at the back
-    assert "beat the standard method on every measure compared" in plain  # larger, never a loss
+    assert "beat the standard quantization on every measure compared" in plain  # larger, never a loss
     assert "Perplexity measures how well the model predicts" in plain  # metric defined
     assert "| Version | Prediction error on test text (validation half) (lower is better) |" in plain
     assert "It kept the fragile parts intact." in plain

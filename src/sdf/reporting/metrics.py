@@ -16,16 +16,28 @@ from typing import Literal
 ONE_OFF_COSTS = frozenset({"build_time_s"})
 
 
+# Stored size: what the compressed model takes on disk or in memory for its numbers. A larger Our method value is never
+# a drawback (owner's rule); peak and runtime memory are running costs and are judged like any measure.
+SIZE_METRICS = frozenset({"model_size_gb", "predicted_weight_memory_gb", "predicted_kv_memory_gb",
+                          "avg_bits_per_weight", "avg_activation_bits", "avg_kv_bits", "decoder_weight_bits",
+                          "vllm_size_gb", "vllm_weight_memory_gb", "llamacpp_size_gb", "trtllm_engine_gb"})
+SIZE_TOLERANCE = 0.005  # a size difference under 0.5% is neither a win nor a loss
+
+# Hugging Face timings: meaningless for a simulated row (kept in the uncompressed format), so not judged there.
+HF_TIMINGS = frozenset({"prefill_ms_mean", "decode_ms_per_token_mean", "prefill_tokens_per_s", "decode_tokens_per_s"})
+
+BACKENDS = {"vllm": "vLLM", "llamacpp": "llama.cpp", "trtllm": "TensorRT-LLM"}  # metric-name prefix -> name
+
+
+def backend(metric: str) -> str | None:
+    """The serving program a metric was measured in (vLLM, llama.cpp, TensorRT-LLM), None for Hugging Face."""
+    return BACKENDS.get(metric.split("_")[0])
+
+
 def is_backend_ppl(metric: str) -> bool:
     """A backend's perplexity (vllm_ppl_val, llamacpp_ppl_heldout...): measured on the backend's re-rounded file, so
     shown in tables but never part of the win/loss verdict (owner's rule)."""
-    return metric.endswith(("_ppl_val", "_ppl_heldout"))
-
-
-def is_size(metric: str) -> bool:
-    """Memory or storage per number (GB or bits): a larger Our method value is never a drawback (owner's rule)."""
-    spec = METRICS.get(metric)
-    return spec is not None and spec.unit in ("GB", "bits")
+    return backend(metric) is not None and metric.endswith(("_ppl_val", "_ppl_heldout"))
 
 
 @dataclass(frozen=True)

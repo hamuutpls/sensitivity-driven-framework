@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sdf.reporting.metrics import METRICS, MetricSpec, is_backend_ppl, is_number, label
+from collections import Counter
+
+from sdf.reporting.metrics import BACKENDS, METRICS, MetricSpec, backend, is_backend_ppl, is_number, label
 from sdf.utils.cache import atomic_write_text
 
 if TYPE_CHECKING:
@@ -43,11 +45,47 @@ def _value(v: Any, spec: MetricSpec | None) -> str:
     return f"{text} {unit}".strip()
 
 
-_HEADS = {"better": "beat the standard method on every measure compared",
-          "worse": "lost to the standard method on every measure compared",
-          "mixed": "is a trade-off against the standard method: better on some measures, worse on others",
-          "even": "showed no clear difference from the standard method on the measures compared"}
+_HEADS = {"better": "beat the {std} on every measure compared",
+          "worse": "lost to the {std} on every measure compared",
+          "mixed": "is a trade-off against the {std}: better on some measures, worse on others",
+          "even": "showed no clear difference from the {std} on the measures compared"}
 _SHORT = {"better": "Better", "worse": "Worse", "mixed": "Trade-off", "even": "No clear difference"}
+WITH = "_with_"  # sdf.stages.methods.WITH: a Stage 1 row rounding weights and activations together
+W8A8 = "_w8a8"  # sdf.stages.methods.W8A8
+
+# Words a reader may not know, added to Key terms when the report uses them (term -> (shown when, meaning)).
+_TERMS = {
+    "Hugging Face": "the standard library the model is tested in (Hugging Face Transformers). Accuracy and speed in "
+                    "this report are measured there unless a column names another program.",
+    "Simulated": "the numbers are rounded or removed exactly as the compressed model would have them, but kept in the "
+                 "uncompressed format: the accuracy is real, the size is the plan's prediction, and the speed is not "
+                 "that of a real compressed model.",
+    "Perplexity": "how unsure the model is when predicting the next word of real text (called prediction error "
+                  "here); lower means more accurate.",
+    "llama.cpp": "a program that runs models on ordinary computers and laptops, from its own file format.",
+    "vLLM": "a program that serves models from graphics-card servers to many users at once.",
+    "TensorRT-LLM": "NVIDIA's program that compiles a model into a fast engine for its graphics cards.",
+    "Re-rounded file": "the file a backend program (llama.cpp, vLLM, TensorRT-LLM) loads: the model saved again in "
+                       "that program's format, which rounds its numbers once more its own way. Its perplexity is "
+                       "compared only between rows of the same program and is never part of the verdict.",
+    "LWC": "learnable weight clipping: the method learns how far to cut off extreme weights before rounding.",
+    "Block-AP": "block-wise training of all parameters: after rounding, each block of layers is briefly retrained.",
+    "NF4 / int8": "4-bit \"normal float\" and 8-bit integer, the number formats of the bitsandbytes library.",
+}
+
+
+def _std(rep: "StageReporter") -> str:
+    from sdf.reporting.reporter import standard_name
+
+    return standard_name(rep.stage, prose=True)
+
+
+def _named(rep: "StageReporter", r: "ComparisonRow") -> str:
+    """The row's name with its technique in front when the name does not say it (Stage 1 and 3 rows are all
+    "Our method" or "Standard ...")."""
+    if rep.stage not in (1, 2, 3) or r.variant == "fp16" or ": " in r.plain_name:
+        return r.plain_name
+    return f"{rep.technique(r)}: {r.plain_name}"
 
 
 def _judge(rep: "StageReporter", fw: "ComparisonRow") -> tuple[str, list[str], list[str], list[str]] | None:
@@ -70,8 +108,8 @@ def _plain_verdicts(rep: "StageReporter") -> list[str]:
     for fw in (r for r in rep.rows if r.variant == "framework" and r.status == "ok"):
         j = _judge(rep, fw)
         if j is None:
-            out.append(f"There is no working standard-method result for {fw.method}, "
-                       "so the framework could not be compared against it.")
+            out.append(f"There is no working {_std(rep)} result for {_named(rep, fw)}, "
+                       "so our method could not be compared against it.")
             continue
         kind, wins, losses, one_off = j
         detail = []
@@ -79,7 +117,8 @@ def _plain_verdicts(rep: "StageReporter") -> list[str]:
             detail.append("better on " + ", ".join(wins))
         if losses:
             detail.append("worse on " + ", ".join(losses))
-        text = f"**{fw.plain_name}** {_HEADS[kind]}" + (" (" + "; ".join(detail) + ")." if detail else ".")
+        text = (f"**{_named(rep, fw)}** {_HEADS[kind].format(std=_std(rep))}"
+                + (" (" + "; ".join(detail) + ")." if detail else "."))
         if one_off:
             text += " It costs more to prepare: " + "; ".join(one_off) + "."
         out.append(text)
@@ -92,8 +131,13 @@ def _box(shows: str, means: str) -> list[str]:
 
 
 def _wxay(r: "ComparisonRow") -> str:
-    w, a = r.metrics.get("avg_bits_per_weight"), r.metrics.get("avg_activation_bits")
-    return f"W{w if is_number(w) else 16:.3g}A{a if is_number(a) else 16:.3g}"
+    """WxAy: decoder-layer weight bits when known, else whole-model; "?" when missing, 16 for the half a weight-only
+    or activation-only row does not round."""
+    w = r.metrics.get("decoder_weight_bits", r.metrics.get("avg_bits_per_weight"))
+    a = r.metrics.get("avg_activation_bits")
+    single = WITH not in r.method
+    bits = lambda v, other: f"{v:.3g}" if is_number(v) else "16" if single and is_number(other) else "?"  # noqa: E731
+    return f"W{bits(w, a)}A{bits(a, w)}"
 
 
 def _size(rep: "StageReporter", r: "ComparisonRow | None") -> str:
@@ -107,16 +151,30 @@ def _size(rep: "StageReporter", r: "ComparisonRow | None") -> str:
     return ", ".join(parts) or "–"
 
 
+def _compared(rep: "StageReporter") -> list["ComparisonRow"]:
+    return [r for r in rep.rows if r.status == "ok" and r.variant != "fp16"]
+
+
+def _backends(rep: "StageReporter") -> list[str]:
+    """Backends with values in some compared row (an empty backend gets no column and no mention)."""
+    have = {backend(k) for r in _compared(rep) for k, v in r.metrics.items() if is_number(v)}
+    return [b for b in BACKENDS.values() if b in have]
+
+
 def _summary(rep: "StageReporter") -> list[str]:
     """Per technique, a small table: each Our method version's size against the standard one's, and the verdict."""
     groups: dict[str, list[list[str]]] = {}
     counts = dict.fromkeys(_SHORT, 0)
+    won, lost = Counter(), Counter()
+    std = _std(rep)
     for fw in (r for r in rep.rows if r.variant == "framework" and r.status == "ok"):
         j = _judge(rep, fw)
         if j is None:
             continue
         kind, wins, losses, _ = j
         counts[kind] += 1
+        won.update(wins)
+        lost.update(losses)
         t = rep.technique(fw)
         groups.setdefault(t, []).append([fw.plain_name.removeprefix(t + ": "),
                                          f"{_size(rep, fw)} vs {_size(rep, rep.find_original(fw))}",
@@ -124,18 +182,29 @@ def _summary(rep: "StageReporter") -> list[str]:
     if not groups:
         return []
     n = sum(counts.values())
-    backends = [m for m in rep.main_metrics if is_backend_ppl(m)]
+    backends = _backends(rep)
+    means = (f"Our method beat the {std} in {counts['better']} of {n} comparisons, lost in {counts['worse']}, "
+             f"was a trade-off in {counts['mixed']} and showed no clear difference in {counts['even']}.")
+    if won or lost:
+        means += " It most often " + " and most often ".join(
+            f"{verb} on {c.most_common(1)[0][0]} ({c.most_common(1)[0][1]} times)"
+            for verb, c in (("won", won), ("lost", lost)) if c) + "."
+    fp16 = next((r for r in rep.rows if r.variant == "fp16" and r.status == "ok"
+                 and is_number(r.metrics.get("ppl_val"))), None)
+    damaged = [r for r in _compared(rep) if fp16 and is_number(r.metrics.get("ppl_val"))
+               and r.metrics["ppl_val"] > 3 * fp16.metrics["ppl_val"]]
+    if damaged:
+        means += (f" Warning: {len(damaged)} version(s) are badly damaged, with a prediction error (perplexity) more "
+                  "than three times the original model's, for example " + "; ".join(_named(rep, r)
+                                                                                    for r in damaged[:3]) + ".")
     lines = _box(
-        "For each technique and each version of our method, whether it beat the standard method on the measures "
+        f"For each technique and each version of our method, whether it beat the {std} on the measures "
         "that decide it (accuracy measured in Hugging Face, memory, speed). "
-        + ("Backend perplexity (" + ", ".join(METRICS[m].label.split(" perplexity")[0]
-                                              for m in backends if m.endswith("_ppl_val") and m in METRICS)
-           + ") is not part of the verdict: those programs re-round the saved file, so it is only shown in the "
-             "Results table. " if backends else "")
-        + "A larger size is shown but never counted against our method.",
-        f"Our method beat the standard method in {counts['better']} of {n} comparisons, lost in {counts['worse']}, "
-        f"was a trade-off in {counts['mixed']} and showed no clear difference in {counts['even']}.")
-    head = ["Version", "Bits (WxAy) and memory, ours vs standard" if rep.stage == 1 else "Memory, ours vs standard",
+        + (f"Backend perplexity ({', '.join(backends)}) is not part of the verdict: those programs re-round the saved "
+           "file, so it is only shown in the Results table. " if backends else "")
+        + "A larger stored size is shown but never counted against our method, and a size difference under 0.5% "
+          "counts as none.", means)
+    head = ["Version", f"Bits (WxAy) and memory, ours vs {std}" if rep.stage == 1 else f"Memory, ours vs {std}",
             "Result", "Better on", "Worse on"]
     if max(map(len, groups.values())) <= 3:  # a version or two per technique: one table, a line per technique
         lines += [_table(["Technique"] + head, [[t] + row for t, table in groups.items() for row in table]), ""]
@@ -143,10 +212,41 @@ def _summary(rep: "StageReporter") -> list[str]:
         for t, table in groups.items():
             lines += [f"**{t}**", "", _table(head, table), ""]
     if rep.stage == 1:
-        lines += ["WxAy: average bits per weight over the whole model (the input and output word tables stay at 16 "
-                  "bits, so a 4-bit model reads about W5.7) and average bits per number passed between layers; A16 "
-                  "means those numbers are not rounded.", ""]
+        whole = any("decoder_weight_bits" not in r.metrics for r in _compared(rep))
+        lines += [("WxAy: average bits per weight over the whole model (the input and output word tables stay at 16 "
+                   "bits, so a 4-bit model reads about W5.4 to W5.9 depending on the method's storage overhead)"
+                   if whole else "WxAy: average bits per weight in the decoder layers")
+                  + " and average bits per number passed between layers; A16 means those numbers are not rounded, "
+                    "and ? that the value was not recorded.", ""]
     return lines
+
+
+def _variant_desc(rep: "StageReporter", r: "ComparisonRow") -> str:
+    """Key terms text of a row's version."""
+    from sdf.reporting.reporter import VARIANT_PLAIN
+
+    if r.info.get("plain_desc"):
+        return r.info["plain_desc"]
+    if rep.stage == 1 and r.variant == "original":
+        s0 = rep.config.get("stage0", {})
+        w, a = (8, 8) if r.method.endswith(W8A8) else (s0.get("uniform_bits", 4), s0.get("act_uniform_bits", 8))
+        return (f"every layer at {w}-bit weights and {a}-bit activations (W{w}A{a}); a technique that rounds only the "
+                "weights or only the activations leaves the other at 16 bits.")
+    if rep.stage == 1 and r.variant == "framework":
+        return ("our method, following the Stage 0 plan: it measured which layers are fragile, and gives the robust "
+                "layers fewer bits and the fragile ones more.")
+    return VARIANT_PLAIN[r.variant][1]
+
+
+def _terms(rep: "StageReporter", text: str) -> list[str]:
+    """Key terms entries for the words in _TERMS this report uses (`text`: the report's row and technique names)."""
+    used = {"Hugging Face", "Perplexity", *_backends(rep)}
+    if any(r.info.get("simulated") for r in rep.rows):
+        used.add("Simulated")
+    if any(b in used for b in BACKENDS.values()):
+        used.add("Re-rounded file")
+    used |= {t for t in ("LWC", "Block-AP", "NF4 / int8") if t in text}
+    return [f"- **{t}**: {_cap(m)}" for t, m in _TERMS.items() if t in used and t not in rep.glossary]
 
 
 def requirement_cell(req: dict[str, Any]) -> str:
@@ -174,7 +274,6 @@ def _plain_part(rep: "StageReporter", charts: list["Chart"]) -> list[str]:
     """Plain-language part: a short summary, charts, key terms, then the long findings and the big results table at
     the back (owner's rule: big tables go at the back)."""
     from sdf.reporting.charts import condition
-    from sdf.reporting.reporter import VARIANT_PLAIN
 
     ok = [r for r in rep.rows if r.status == "ok"]
 
@@ -204,17 +303,19 @@ def _plain_part(rep: "StageReporter", charts: list["Chart"]) -> list[str]:
         if condition(r) in seen or r.info.get("key_term") is False:  # rows explained by a glossary entry
             continue
         seen.add(condition(r))
-        lines.append(f"- **{condition(r)}**: {_cap(r.info.get('plain_desc') or VARIANT_PLAIN[r.variant][1])}")
-    metrics = [m for m in rep.main_metrics if m in METRICS and any(m in r.metrics for r in ok)]
+        lines.append(f"- **{condition(r)}**: {_cap(_variant_desc(rep, r))}")
+    metrics = [m for m in rep.main_metrics if m in METRICS and any(m in r.metrics for r in ok)  # a backend column
+               and (backend(m) is None or any(is_number(r.metrics.get(m)) for r in _compared(rep)))]  # when filled
     lines += [f"- **{term}**: {text}" for term, text in rep.glossary.items()]
+    lines += _terms(rep, " ".join(rep.technique(r) for r in rep.rows) if rep.stage in (1, 2, 3) else "")
     lines.append("")
 
     model = original_model_lines(rep.original_model)
     lines += model[:2] + _box("The uncompressed model every version starts from.",
-                              "Every size and accuracy below is measured against this reference.") + model[2:]
+                              "Every size and accuracy in this report is measured against this reference.") + model[2:]
     if rep.plain_intro:
-        lines += ["## How this stage works", ""] + _box("What this stage changes in the model, and how the standard "
-                                                        "method and our method differ.",
+        lines += ["## How this stage works", ""] + _box(f"What this stage changes in the model, and how the "
+                                                        f"{_std(rep)} and our method differ.",
                                                         "The comparisons above only differ in that change.")
         lines += [rep.plain_intro, ""]
 
@@ -239,10 +340,10 @@ def _plain_part(rep: "StageReporter", charts: list["Chart"]) -> list[str]:
         for r in ok:
             req = _requirement_plain(r)
             if req:
-                lines.append(f"- {r.plain_name} {req}.")
+                lines.append(f"- {_named(rep, r)} {req}.")
     failed = [r for r in rep.rows if r.status != "ok"]
     if failed:
-        lines.append(f"- {len(failed)} run(s) failed: {', '.join(r.plain_name for r in failed)}. The error "
+        lines.append(f"- {len(failed)} run(s) failed: {'; '.join(_named(rep, r) for r in failed)}. The error "
                      "messages are under *Anomalies and failures* below.")
     lines.append("")
 
@@ -255,7 +356,7 @@ def _plain_part(rep: "StageReporter", charts: list["Chart"]) -> list[str]:
         + (" A backend's perplexity column is that program's re-rounded file and is not part of the verdict."
            if any(is_backend_ppl(m) for m in metrics) else ""))
     headers = ["Version"] + [_headline(METRICS[m], m) for m in metrics]
-    table = [[r.plain_name] + [_value(r.metrics.get(m), None) if m in r.metrics else "–" for m in metrics]
+    table = [[_named(rep, r)] + [_value(r.metrics.get(m), None) if m in r.metrics else "–" for m in metrics]
              for r in ok]
     lines += [_table(headers, table), ""]
     lines += _column_notes([(headers[0], "Which version of the model the row describes (see Key terms above).")]
@@ -357,7 +458,7 @@ def _headline(spec: MetricSpec, metric: str = "") -> str:
     if spec.better:
         bits.append(f"{spec.better} is better")
     if is_backend_ppl(metric):
-        bits.append(f"{spec.label.split(' perplexity')[0]}'s re-rounded file, not in the verdict")
+        bits.append(f"{backend(metric)}'s re-rounded file, not in the verdict")
     return _cap(spec.plain or spec.label) + (f" ({', '.join(bits)})" if bits else "")
 
 
