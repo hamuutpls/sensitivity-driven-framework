@@ -89,11 +89,15 @@ def _summary(ws, rep: "StageReporter") -> None:
         line.append(r.error or "")
         ws.append(line)
 
-    # Colour exactly what verdict() calls a win (green) or a loss (red) against the row's original method.
+    # Green / red where the verdict counts a win / loss (or a one-off cost) against the original method; a tie (noise)
+    # stays plain. The verdict counts perplexity once, as ppl_val; the held-out half is coloured with it when it was
+    # itself judged the same way (not when it is missing or a tie).
     for i, r in enumerate(rep.rows, start=2):
-        v = rep.verdict(r) if r.variant == "framework" else None
-        for fill, ms in zip((GREEN, RED), v[:2] if v else ()):
-            for m in ms:
+        v = r.verdict
+        orig = rep.find_original(r) if v else None
+        for fill, ms, same in ((GREEN, v.get("wins", []), "win"),
+                               (RED, v.get("losses", []) + v.get("one_off", []), "loss")):
+            for m in ms + (["ppl_heldout"] if "ppl_val" in ms and rep.judge(r, orig, "ppl_heldout") == same else []):
                 for key in ("vs_original_abs", "vs_original_pct"):
                     if (m, key) in col_of:
                         ws.cell(row=i, column=col_of[(m, key)]).fill = fill

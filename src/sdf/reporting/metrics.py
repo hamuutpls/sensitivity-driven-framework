@@ -14,6 +14,10 @@ from typing import Literal
 # One-off costs (paid once, before the model is used) do not decide whether the framework beat the original;
 # reports state them separately so a framework row is not called a trade-off just for needing profiling.
 ONE_OFF_COSTS = frozenset({"build_time_s"})
+# Shown in the tables but not won or lost in the verdict: each backend loads only its own file format, so every
+# method's weights are rounded a second time onto a plain grid at the plan's bits, and this perplexity measures that
+# re-rounded file, not the method (audit 2026-10-20, findings 21 and 30; owner's rule)
+NOT_IN_VERDICT = frozenset(f"{b}_ppl_{half}" for b in ("llamacpp", "vllm", "trtllm") for half in ("val", "heldout"))
 
 
 # Stored size: what the compressed model's numbers take on disk or in memory. A larger Our method value is never a
@@ -30,9 +34,8 @@ def backend(metric: str) -> str | None:
 
 
 def is_backend_ppl(metric: str) -> bool:
-    """A backend's perplexity (vllm_ppl_val, llamacpp_ppl_heldout...): measured on the backend's re-rounded file, so
-    shown in tables but never part of the win/loss verdict (owner's rule)."""
-    return backend(metric) is not None and metric.endswith(("_ppl_val", "_ppl_heldout"))
+    """A backend's perplexity (vllm_ppl_val, llamacpp_ppl_heldout...): its re-rounded file's, see NOT_IN_VERDICT."""
+    return metric in NOT_IN_VERDICT
 
 
 @dataclass(frozen=True)

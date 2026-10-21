@@ -83,6 +83,14 @@ class EvalConfig:
     downstream_limit: int | None = None  # questions per task (None = all)
     downstream_batch_size: int = 8
 
+    def __post_init__(self) -> None:
+        # checked here, not after the perplexity run: a typo would time eagerly, a 0 would crash at the end
+        if self.latency_mode not in ("cuda_graph", "eager"):
+            raise ValueError(f"eval.latency_mode must be cuda_graph or eager, got {self.latency_mode!r}")
+        for name in ("latency_repeats", "latency_decode_tokens"):
+            if getattr(self, name) < 1:
+                raise ValueError(f"eval.{name} must be at least 1, got {getattr(self, name)}")
+
 
 @dataclass
 class Stage0Config:

@@ -27,6 +27,7 @@ from torch import nn
 
 from sdf.config import EvalConfig
 from sdf.reporting.metrics import METRICS, MetricSpec
+from sdf.eval.worker import run_killing_group
 from sdf.stage0.planner import CompressionPlan
 from sdf.utils.logging import get_logger
 
@@ -35,6 +36,10 @@ log = get_logger(__name__)
 # Bump when a change alters the measured numbers, so cached llama.cpp results are not reused.
 # 2: the GGUF keeps the SentencePiece tokenizer (version 1 had flat token scores and wrong perplexity).
 VERSION = 2
+
+# shortcut: one fixed limit per llama.cpp program run, not configurable; make it an eval setting if a bigger
+# model needs longer
+TIMEOUT_S = 2 * 3600
 
 # Plan bits -> llama.cpp tensor type. K-quants (256-weight blocks, scale and minimum) are closest to the plan's
 # asymmetric groups; 8 bits has no K-quant.
@@ -56,12 +61,12 @@ METRICS.update({
         "llama.cpp decode throughput (std)", "tok/s", None, "spread of writing speeds (llama.cpp)",
         "How much the writing speed varied between repeated runs."),
     "llamacpp_ppl_val": MetricSpec(
-        "llama.cpp perplexity (validation half)", "", "lower", "prediction error in llama.cpp (validation half)",
+        "llama.cpp perplexity of the re-rounded file (validation half)", "", "lower", "prediction error of the re-rounded llama.cpp file (validation half)",
         "Prediction error of the llama.cpp file on the validation half of the test text (lower is better). "
         "llama.cpp rounds the numbers its own way and scores only the second half of each window, so compare it "
         "between rows, not with the other perplexity columns."),
     "llamacpp_ppl_heldout": MetricSpec(
-        "llama.cpp perplexity (held-out half)", "", "lower", "prediction error in llama.cpp (held-out half)",
+        "llama.cpp perplexity of the re-rounded file (held-out half)", "", "lower", "prediction error of the re-rounded llama.cpp file (held-out half)",
         "As the validation-half value, on the held-out half of the test text (lower is better)."),
 })
 MAIN_METRICS = ["llamacpp_size_gb", "llamacpp_decode_tokens_per_s", "llamacpp_ppl_val"]
@@ -101,7 +106,10 @@ def _save_tokenizer(tokenizer: Any, out: Path) -> None:
 def _run(cmd: list[Any]) -> str:
     cmd = [str(c) for c in cmd]
     log.info("llama.cpp: %s", " ".join(cmd))
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        r = run_killing_group(cmd, TIMEOUT_S, encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired:  # a hung program must not stall the run; the row keeps its HF numbers
+        raise RuntimeError(f"{Path(cmd[0]).name} timed out after {TIMEOUT_S} s") from None
     if r.returncode:
         raise RuntimeError(f"{Path(cmd[0]).name} failed ({r.returncode}): {(r.stderr or r.stdout)[-2000:]}")
     return r.stdout + r.stderr

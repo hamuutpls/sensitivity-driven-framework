@@ -43,9 +43,15 @@ def test_series_methods_pair_a_pruning_method_with_a_stage1_weight_method():
             methods_for(2, [bad])
 
 
+def test_low_rank_key_and_size_note_name_only_what_they_use():
+    assert METHODS["low_rank"].params == ()  # it rounds nothing, so the group size is not part of its key
+    assert "unrounded factors" in methods_for(2, ["low_rank_after_gptq"])[0].unavailable
+    assert "outliers assumed at 0.45% for SqueezeLLM" in METHODS["squeezellm"].note  # its size counts them
+
+
 def test_stage0_plans_load(stage0_dir):
     plans = Stage0Plans.load(stage0_dir)
-    assert {"quant", "prune", "prune_same_size", "activations", "kv", "kv_bits_only", "joint_weights",
+    assert {"quant", "prune", "prune_same_size", "activations", "kv", "joint_weights",
             "joint_acts"} <= set(plans.plans)
     assert all(lp.pruning_ratio == 0 for lp in plans.plans["quant"].layers)
     assert all(lp.bit_width == 16 for k in ("prune", "prune_same_size") for lp in plans.plans[k].layers)
@@ -103,9 +109,12 @@ def test_run_stage_end_to_end(stage0_dir, tiny_llama, tokenizer, small_cfg, stag
     if stage in (1, 2) and method not in ACTIVATION_METHODS_1 and not spec.fixed_bits:
         assert "model_size_gb" not in rows[f"{method}/framework"]["metrics"]  # simulated: FP16 in memory
     if stage == 1 and method not in ACTIVATION_METHODS_1:
-        # AQLM stores 256-codeword codebooks per Linear: on this 32-wide toy model they outweigh the weights
-        # (on TinyLlama they add under 0.05 bits per weight, test_audit_fixes_first.py)
-        assert rows[f"{method}/original"]["metrics"]["avg_bits_per_weight"] < (16 if method != "aqlm" else 200)
+        if spec.fixed_bits:  # BiLLM's bits are not the plan's, so its rows carry no predicted size
+            assert "avg_bits_per_weight" not in rows[f"{method}/original"]["metrics"]
+        else:
+            # AQLM stores 256-codeword codebooks per Linear: on this 32-wide toy model they outweigh the weights
+            # (on TinyLlama they add under 0.05 bits per weight, test_audit_fixes_first.py)
+            assert rows[f"{method}/original"]["metrics"]["avg_bits_per_weight"] < (16 if method != "aqlm" else 200)
         # Stage 1 removes nothing, in any row; the zero share is reported next to the FP16 row's
         assert all(r["metrics"].get("sparsity", 0) == 0 for r in rows.values() if r["status"] == "ok")
         assert "zero_weight_share" in rows["baseline/fp16"]["metrics"]
@@ -285,7 +294,7 @@ def test_pruning_and_low_rank_methods_remove_what_the_plan_says(tiny_llama):
         assert torch.linalg.matrix_rank(l.weight.float()) <= int(0.5 * out * inp / (out + inp))
 
 
-def test_pruning_methods_round_nothing_except_the_low_rank_factors(tiny_llama):
+def test_pruning_methods_round_nothing(tiny_llama):
     from sdf.stage0.planner import uniform_plan
     from sdf.stages.pruning import low_rank_, wanda_
 
@@ -300,6 +309,10 @@ def test_pruning_methods_round_nothing_except_the_low_rank_factors(tiny_llama):
     m = copy.deepcopy(tiny_llama)
     low_rank_(m, zero_ratio, batches, -1, 16)
     assert all(torch.equal(v, tiny_llama.state_dict()[k]) for k, v in m.state_dict().items())
+    at4, at16 = copy.deepcopy(tiny_llama), copy.deepcopy(tiny_llama)  # low-rank factors are not rounded either
+    low_rank_(at4, plan, batches, -1, 16)
+    low_rank_(at16, uniform_plan([0.0] * 4, 16, 0.5), batches, -1, 16)
+    assert all(torch.equal(v, at16.state_dict()[k]) for k, v in at4.state_dict().items())
 
 
 def test_stage_settings_join_the_cache_key_only_when_changed():
@@ -307,11 +320,30 @@ def test_stage_settings_join_the_cache_key_only_when_changed():
     from sdf.stages.runner import _setting_key
 
     s0 = Stage0Config()
-    kinds = ("weights", "activations", "prune", "kv")
-    assert all(_setting_key(k, s0) == {} for k in kinds)  # defaults: existing cache entries stay valid
+    ms = {n: METHODS[n] for n in ("rtn", "rtn_act", "unstructured_prune", "rtn_kv")}
+    assert all(_setting_key(m, s0) == {} for m in ms.values())  # defaults: existing cache entries stay valid
     s0.weight_zero_point, s0.act_group_size = "float", 64
-    assert _setting_key("weights", s0) == {"weight_zero_point": "float"} == _setting_key("prune", s0)
-    assert _setting_key("activations", s0) == {"act_group_size": 64} and _setting_key("kv", s0) == {}
+    assert _setting_key(ms["rtn"], s0) == {"weight_zero_point": "float"} == _setting_key(ms["unstructured_prune"], s0)
+    assert _setting_key(ms["rtn_act"], s0) == {"act_group_size": 64} and _setting_key(ms["rtn_kv"], s0) == {}
+
+
+def test_settings_a_method_never_reads_stay_out_of_its_key():
+    from sdf.config import Stage0Config
+    from sdf.stages.runner import _setting_key
+
+    s0 = Stage0Config()
+    s0.weight_zero_point, s0.act_group_size = "float", 64
+    for name in ("squeezellm", "spqr", "aqlm", "quipsharp", "pbllm", "billm", "bitsandbytes"):
+        assert _setting_key(METHODS[name], s0) == {}, name
+    assert _setting_key(METHODS["quip"], s0) == {"weight_zero_point": "float"}  # QuIP rounds with GPTQ's grid
+    assert _setting_key(METHODS["rptq"], s0) == {}
+    (both,) = methods_for(1, ["squeezellm_with_rptq"])  # vLLM rounds its activations with act_group_size
+    assert _setting_key(both, s0) == {"act_group_size": 64}
+    (both,) = methods_for(1, ["gptq_with_rptq"])
+    assert _setting_key(both, s0) == {"weight_zero_point": "float", "act_group_size": 64}
+    from sdf.stages.methods import joint, series
+    series_ = series(joint(METHODS["gptq"], "quarot"), METHODS["unstructured_prune"])  # still rounds activations
+    assert _setting_key(series_, s0) == {"weight_zero_point": "float", "act_group_size": 64}
 
 
 def test_removed_channels_and_factors_need_no_mask_in_the_predicted_size(stage0_dir, small_cfg):

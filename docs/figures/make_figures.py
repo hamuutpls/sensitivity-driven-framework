@@ -72,12 +72,12 @@ def fig1_pipeline():
     arrow(ax, (15.5, 44), (20.5, 44))
     stages = [("Stage 1  (done)\nQuantization: weights and the\nnumbers passed between layers\nGPTQ, AWQ, SmoothQuant, QuaRot", 56, True),
               ("Stage 2  (done)\nPruning: removing weights\nWanda, structured channels,\nlow-rank", 31, True),
-              ("Stage 3  (planned)\nKV cache: short-term memory\nwhile writing\nQuaRot KV, KVQuant, H2O, SnapKV", 6, False)]
+              ("Stage 3  (done)\nKV cache: short-term memory\nwhile writing\nQuaRot KV, KVQuant, H2O, SnapKV", 6, True)]
     for text, y, done in stages:
         box(ax, 46, y, 26, 20, text, DONE if done else PLANNED, dashed=not done, fs=8.8)
         arrow(ax, (38.5, 44), (45.5, y + 10))
         arrow(ax, (72.5, y + 10), (79.5, 44), dashed=not done, color=NOTE if done else PLANNED)
-    box(ax, 80, 31, 19, 26, "Stage 4  (planned)\nEvaluation on real\nsoftware: HF, llama.cpp,\nvLLM, TensorRT-LLM", PLANNED, dashed=True)
+    box(ax, 80, 31, 19, 26, "Stage 4  (done)\nEvaluation on real\nsoftware: HF, llama.cpp,\nvLLM, TensorRT-LLM", DONE)
     box(ax, 21, 83, 78, 12, "Search  (planned)\nTries many settings (threshold, share removed, group size, ...) with\nMOBO, MFBO and NSGA-III; keeps the best trade-offs of accuracy, memory, speed",
         PLANNED, dashed=True, fs=8.8)
     arrow(ax, (29.5, 82.5), (29.5, 57.5), dashed=True, color=PLANNED)
@@ -100,7 +100,7 @@ def fig2_stage0_method():
             "2. Measure the damage\nRise in perplexity\n(how surprised the model\nis by real text)",
             "3. Rank the layers\nScore 0 (least fragile)\nto 1 (most fragile)",
             "4. Decide per layer\nScore >= 0.5: 8 bits, keep all\nBelow: 4 bits (Stage 1),\nremove 30% (Stage 2)\nTop 5 by damage:\nnever thinned out"],
-         "compression_plan.json"),
+         "quant_plan.json (Stage 1)\nprune_plan.json (Stage 2)"),
         (40, "Activations  (for Stage 1)", [
             "1. Round the inputs\nRound one layer's inputs\nto 4 bits, then to 8 bits",
             "2. Measure the damage\nRise in perplexity\nat each bit width",
@@ -213,15 +213,17 @@ def fig5_kv_plan():
     ax.text(0, -26, "Bits: keys 4 everywhere; values 4 everywhere except layer 0 (2 bits, no measurable cost).",
             fontsize=8.8, color=NOTE, transform=ax.transData)
 
-    names, mb = ["Standard\n4-bit", "Plan,\nbits only", "Plan, bits +\nforgetting"], [13.0, 12.8, 3.2]
-    ax2.bar(range(3), mb, color=[PLANNED, DONE, DONE])
+    names = ["Standard,\nrounding\n(4-bit)", "Standard,\nforgetting\n(16-bit, 20%)", "Plan,\nbits only",
+             "Plan, bits +\nforgetting"]
+    mb = [13.0, 9.2, 12.8, 3.2]
+    ax2.bar(range(4), mb, color=[PLANNED, PLANNED, DONE, DONE])
     for i, v in enumerate(mb):
         ax2.text(i, v + 0.3, f"{v} MB", ha="center", fontsize=9)
-    ax2.set(xticks=range(3), ylabel="Predicted cache for one 2,048-token text\n(MB, smaller is better)", ylim=(0, 16))
+    ax2.set(xticks=range(4), ylabel="Predicted cache for one 2,048-token text\n(MB, smaller is better)", ylim=(0, 16))
     ax2.set_xticklabels(names, fontsize=8.6)
     ax2.set_title("Predicted memory", fontsize=10.5, loc="left")
     ax2.annotate("4x smaller, mostly\nfrom forgetting;\nkept words still get\n96.7% of attention",
-                 (2, 4.4), (2, 8.5), fontsize=8.6, ha="center", arrowprops=dict(arrowstyle="->", color=NOTE))
+                 (3, 4.4), (3, 8.5), fontsize=8.6, ha="center", arrowprops=dict(arrowstyle="->", color=NOTE))
     fig.text(0.02, -0.04, "Smaller memory is better. The KV cache is the model's notes on every earlier word, kept while it writes. Choosing bits "
              "per layer predicts no accuracy gain at a 4-bit average; Stage 3 must confirm the forgetting with a real "
              "method (H2O, SnapKV).", fontsize=8.8, color=NOTE)
@@ -234,7 +236,7 @@ def fig6_handoff():
                      "Every plan is a JSON file next to the Stage 0 report; later stages load it instead of measuring again.")
     box(ax, 36, 40, 28, 22, "Stage 0 results\nTinyLlama, 22 layers\nPerplexity 10.18 (tuning half)\n10.62 (held-out half, never tuned on)", DONE)
     targets = [
-        (2, 72, "Stage 1: weights (bits), Stage 2: pruning\ncompression_plan.json\n11 layers protected at 8 bits;\n0, 1, 2, 7, 21 never pruned\n1,003 MB plan vs 777 MB standard", (36, 56)),
+        (2, 72, "Stage 1: weights (bits), Stage 2: pruning\nquant_plan.json, prune_plan.json\n11 layers protected at 8 bits;\n0, 1, 2, 7, 21 never pruned\n1,003 MB plan vs 777 MB standard", (36, 56)),
         (66, 72, "Stage 1: activations\nactivation_plan.json\n8 or 4 bits per layer, average 6\nPredicted rise 0.56 vs 0.67 copied\nLayer 1 most fragile", (64, 56)),
         (2, 6, "Stage 3: KV cache\nkv_cache_plan.json\nKeys/values 4 bits (layer 0 values 2)\nWords kept 10-100% per layer\n13.0 MB -> 3.2 MB predicted", (36, 46)),
         (66, 6, "Stage 4 and search\nresults.json, sensitivity_profile.json\nReference: 47 ms to read a prompt,\n33-46 ms per word (overhead-bound),\n2.45 GB peak memory\nCached profile: trials re-plan in ms", (64, 46)),

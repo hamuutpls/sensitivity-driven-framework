@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import json
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -52,6 +53,7 @@ from sdf.stage0.sensitivity import (
     profile_sensitivity,
     zero_key,
 )
+from sdf.utils.cache import atomic_write_text
 from sdf.utils.env import environment_info, resolve_device
 from sdf.utils.model_info import count_parameters, describe_model
 from sdf.utils.logging import get_logger
@@ -316,7 +318,7 @@ def load_guard(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
 _PLAN_OUTPUTS = ("joint_weight_plan.json", "joint_activation_plan.json", "joint_profile.json", "quant_plan.json",
                  "prune_plan.json", "prune_plan_same_size.json", "kv_profile.json", "kv_cache_plan.json",
                  "kv_cache_plan_bits_only.json", "activation_plan.json", "activation_profile.json",
-                 "compression_plan.json", "sensitivity_profile.json")
+                 "compression_plan.json", "sensitivity_profile.json", "exposure_reference.json")
 
 
 def run_stage0(
@@ -356,6 +358,8 @@ def run_stage0(
     reference = (normalize(load_profile(ctx, candidate, handle, text_loader, score="layer_removal")[0].raw_scores,
                            s0.normalization) if profile.method != "layer_removal" and s0.guard_top_k else None)
     predict = weight_cost(profile, candidate["gptq_groupsize"], s0, reference)
+    if reference is not None:  # Stages 1-3 score exposure against the same reference
+        atomic_write_text(rep.dir / "exposure_reference.json", json.dumps(reference))
 
     # --- FP16 baseline: measured once per (model, eval settings, hardware) and cached ----------------------
     with rep.method("baseline", "fp16", description="uncompressed model") as row:
@@ -710,11 +714,11 @@ def _add_stage0_details(rep: StageReporter, profile: SensitivityProfile, plan: C
 
     # sanity checks
     if len(plan.protected_layers) == n:
-        rep.anomalies.append("Every layer is protected: the plan compresses nothing beyond 8-bit. "
-                             "Lower sensitive_threshold.")
+        rep.anomalies.append("Every layer is protected: the plan compresses nothing beyond "
+                             f"{rep.config['stage0']['protected_bits']}-bit. Lower sensitive_threshold.")
     elif not plan.protected_layers:
-        rep.anomalies.append("No layer is protected: the plan is uniform 4-bit plus pruning. "
-                             "Raise sensitive_threshold.")
+        rep.anomalies.append(f"No layer is protected: the plan is uniform {rep.config['stage0']['compressed_bits']}"
+                             "-bit plus pruning. Raise sensitive_threshold.")
     if len(set(profile.raw_scores)) == 1:
         rep.anomalies.append("All raw sensitivity scores are identical; the profile carries no signal.")
     if fw_cost.weight_memory_gb >= baseline_cost(profile, baseline_bits).weight_memory_gb:
@@ -735,6 +739,7 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
     s0 = rep.config["stage0"]
     hp = rep.config["hyperparams"]
     n, n_prot = len(plan.layers), len(plan.protected_layers)
+    rank, t = s0["normalization"] == "rank", hp["sensitive_threshold"]
     rep.plain_intro = (
         "Compressing a language model is like shrinking a photo: done carefully, you save a lot of space and "
         "barely notice the difference; done carelessly, the picture turns to mush. The catch is that not every "
@@ -744,14 +749,18 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         f"1. **Measure.** The model reads {hp['calib_samples']} short passages of ordinary text "
         f"({hp['calib_dataset']}) and tries to predict each next word. " + _MEASURE_PLAIN[profile.method]
         + f" This is done for each of the {n} layers.\n"
-        f"2. **Rank.** The {n} raw scores are put in order and turned into a 0-to-1 scale: the least "
-        "sensitive layer gets 0, the most sensitive gets 1, and the rest are spaced evenly between by their "
-        "position in the order. Using the order rather than the raw values stops one unusual layer from "
-        "squashing all the others together.\n"
-        f"3. **Choose.** Every layer at or above the threshold ({hp['sensitive_threshold']:.2f}) is "
-        f"**protected**; the rest are **compressed**. A threshold of {hp['sensitive_threshold']:.2f} "
-        f"protects roughly the most sensitive {1 - hp['sensitive_threshold']:.0%} of layers.\n"
-        f"4. **Allocate.** Protected layers keep {s0['protected_bits']} bits per number and lose nothing. "
+        + (f"2. **Rank.** The {n} raw scores are put in order and turned into a 0-to-1 scale: the least "
+           "sensitive layer gets 0, the most sensitive gets 1, and the rest are spaced evenly between by their "
+           "position in the order. Using the order rather than the raw values stops one unusual layer from "
+           "squashing all the others together.\n" if rank else
+           f"2. **Scale.** The {n} raw scores are turned into a 0-to-1 scale: the least sensitive layer gets 0, "
+           "the most sensitive gets 1, and the rest are placed in proportion to their raw scores, so one unusual "
+           "layer can squash all the others together.\n")
+        + f"3. **Choose.** Every layer at or above the threshold ({t:.2f}) is "
+        f"**protected**; the rest are **compressed**. "
+        + (f"A threshold of {t:.2f} protects roughly the most sensitive {1 - t:.0%} of layers.\n" if rank else
+           f"Here that protects {n_prot} of the {n} layers.\n")
+        + f"4. **Allocate.** Protected layers keep {s0['protected_bits']} bits per number and lose nothing. "
         f"Compressed layers get {s0['compressed_bits']} bits per number and have "
         f"{hp['prune_ratio_aggressive']:.0%} of their numbers removed.\n\n"
         "The idea being tested is simple: spend the memory where damage hurts most. Whether it works is "
@@ -767,8 +776,10 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         "Protected layer": f"A sensitive layer that the plan keeps at {s0['protected_bits']} bits and does not "
                            "trim.",
         "Pruning": "Deleting the numbers that matter least, like cutting unimportant words from an essay.",
-        "Threshold": f"The cut-off for protecting a layer. With {hp['sensitive_threshold']:.2f}, roughly the "
-                     f"most sensitive {1 - hp['sensitive_threshold']:.0%} of layers are protected.",
+        "Threshold": (f"The cut-off for protecting a layer. With {t:.2f}, roughly the most sensitive "
+                      f"{1 - t:.0%} of layers are protected." if rank else
+                      f"The cut-off for protecting a layer: layers at or above {t:.2f} on the 0-to-1 scale are "
+                      "protected."),
         "Calibration text": "A small sample of ordinary text used only to measure sensitivity. It is kept "
                             "separate from the text used to test accuracy.",
     })
@@ -833,7 +844,8 @@ def _add_plain_explanation(rep: StageReporter, profile: SensitivityProfile, plan
         "before it is put on that scale. \"Protected\" layers keep high precision; the others are compressed "
         "and have the listed share of their numbers removed.",
         [("layer", "Layer", "The layer's position in the model, counting from 0 at the input end."),
-         ("sensitivity", "Sensitivity (0 to 1)", "The layer's rank among all layers: 0 is the least sensitive "
+         ("sensitivity", "Sensitivity (0 to 1)", ("The layer's rank among all layers" if rank else
+          "The layer's raw score rescaled so the lowest is 0 and the highest 1") + ": 0 is the least sensitive "
           "layer, 1 the most. The plans compare this with the threshold."),
          ("raw_score", "Raw score", _RAW_SCORE_MEANING.get(profile.method, "The measurement before it is put on "
           "the 0 to 1 scale.")),
@@ -980,7 +992,7 @@ def _add_kv_details(rep: StageReporter, prof: KVProfile, plan: KVPlan, bits_only
         "two notes (a *key* and a *value*) about every earlier word in every layer, so it doesn't have to "
         "reread the whole text for each new word. For long texts these notes can take more memory than the "
         "model itself. The same idea is applied to them: each layer's keys, then its values, are rounded to "
-        f"fewer bits one at a time to see how much that hurts, and each layer's attention is checked to see "
+        "fewer bits one at a time to see how much that hurts, and each layer's attention is checked to see "
         "whether it only looks at a few earlier words. The plan then gives fragile notes more bits, robust "
         "ones fewer, and lets layers that focus on few words forget the rest.")
     rep.glossary.update({
