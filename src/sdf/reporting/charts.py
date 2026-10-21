@@ -59,23 +59,32 @@ def write_charts(rep: "StageReporter") -> list[Chart]:
     out = []
     for n, part in enumerate(parts, start=1):
         colour = {t: PALETTE[i] for i, t in enumerate(part)}
-        which = (f"_part{n}", f" Part {n} of {len(parts)}: {len(part)} of the {len(techniques)} techniques.") \
-            if len(parts) > 1 else ("", "")
-        out += _charts(rep, [r for r in rows if rep.technique(r) in colour], which,
-                       dict(rep=rep, plt=plt, colour=colour, marker=marker, fp16=fp16))
+        suffix = f"_part{n}" if len(parts) > 1 else ""
+
+        def styled(rs, n=n, colour=colour):
+            """The style and caption key of a chart of rows `rs`: its legend and technique count hold only theirs."""
+            have = {rep.technique(r) for r in rs}
+            conditions = {condition(r) for r in rs}
+            style = dict(rep=rep, plt=plt, fp16=fp16, colour={t: c for t, c in colour.items() if t in have},
+                         marker={c: m for c, m in marker.items() if c in conditions})
+            key = ("Each colour is a technique, each marker a version"
+                   + ("; the dashed line is the original, uncompressed model." if fp16 else ".")
+                   + (f" Part {n} of {len(parts)}: {len(have)} of the {len(techniques)} techniques."
+                      if len(parts) > 1 else ""))
+            return style, key
+
+        out += _charts(rep, [r for r in rows if rep.technique(r) in colour], suffix, styled)
     return out
 
 
-def _charts(rep: "StageReporter", rows: list["ComparisonRow"], which: tuple[str, str], style: dict) -> list[Chart]:
-    """The charts of one part: `which` is the file-name suffix and the caption's part note."""
-    suffix, part = which
-    key = ("Each colour is a technique, each marker a version"
-           + ("; the dashed line is the original, uncompressed model." if style["fp16"] else ".") + part)
+def _charts(rep: "StageReporter", rows: list["ComparisonRow"], suffix: str, styled) -> list[Chart]:
+    """The charts of one part; `suffix` ends their file names, `styled(rows)` gives each chart's style and key."""
     out = []
 
     # older runs have only the share of the whole model removed
     removed = next((m for m in ("decoder_weights_removed", "sparsity")
                     if all(is_number(r.metrics.get(m)) for r in rows)), None) if rep.stage == 2 else None
+    style, key = styled(rows)
     if removed:
         what = "decoder layers' weights" if removed == "decoder_weights_removed" else "model's numbers"
         whole = ("" if removed == "decoder_weights_removed" else " This counts the whole model, including parts "
@@ -94,6 +103,7 @@ def _charts(rep: "StageReporter", rows: list["ComparisonRow"], which: tuple[str,
     memory = "predicted_kv_memory_gb" if rep.stage == 3 else "predicted_weight_memory_gb"
     have = [r for r in rows if is_number(r.metrics.get(memory))]
     if have:
+        style, key = styled(have)
         plain = METRICS[memory].plain
         path, notes = _scatter(have, memory, f"{plain[:1].upper() + plain[1:]} (GB)",
                                rep.dir / f"chart_perplexity_vs_memory{suffix}.png", **style)
@@ -104,6 +114,7 @@ def _charts(rep: "StageReporter", rows: list["ComparisonRow"], which: tuple[str,
 
     real = [r for r in rows if not r.info.get("simulated") and is_number(r.metrics.get("decode_tokens_per_s"))]
     if real:
+        style, key = styled(real)
         path, notes = _scatter(real, "decode_tokens_per_s", "Writing speed (word-pieces per second)",
                                rep.dir / f"chart_perplexity_vs_speed{suffix}.png", **style)
         out.append(Chart(path, "Prediction error (perplexity) against writing speed in Hugging Face, for every version "

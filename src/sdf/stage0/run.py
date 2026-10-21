@@ -229,6 +229,11 @@ def load_fp16(ctx: RunContext, handle: _ModelHandle,
     return ctx.cache.get_or_compute("fp16_baseline", fp16_key(ctx, handle.device), compute)
 
 
+def standard_label(prune_ratio: float) -> str:
+    """The Stage 0 standard row's name: it is quantization, and pruning too when it removes weights."""
+    return "Standard quantization and pruning" if prune_ratio else "Standard quantization"
+
+
 def _cost_metrics(cost: PlanCost) -> dict[str, float]:
     return {"predicted_weight_memory_gb": cost.weight_memory_gb, "avg_bits_per_weight": cost.avg_bits_per_weight,
             "sparsity": cost.sparsity, "sensitivity_exposure": cost.sensitivity_exposure}
@@ -366,7 +371,7 @@ def run_stage0(
     uniform = uniform_plan(scores, s0.uniform_bits, s0.uniform_prune_ratio)
     with rep.method(METHOD, "original",
                     description=f"uniform {s0.uniform_bits}-bit, prune {s0.uniform_prune_ratio} on every layer",
-                    **({"label": "Standard quantization and pruning"} if s0.uniform_prune_ratio else {})) as row:
+                    label=standard_label(s0.uniform_prune_ratio)) as row:
         row.metrics.update(_cost_metrics(predict(uniform)))
         row.metrics["protected_layers"] = 0
         row.metrics["build_time_s"] = 0.0  # needs no profiling

@@ -22,7 +22,8 @@ from sdf.reporting.reporter import StageReporter
 from sdf.run import RunContext
 from sdf.stage0.planner import baseline_cost, plan_compression, uniform_plan
 from sdf.stage0.prune_sweep import METRICS, make_evaluator
-from sdf.stage0.run import _cost_metrics, load_fp16, load_guard, load_profile, setup, stage_reporter, weight_cost
+from sdf.stage0.run import (_cost_metrics, load_fp16, load_guard, load_profile, setup, stage_reporter, standard_label,
+                            weight_cost)
 from sdf.stage0.sensitivity import normalize
 
 
@@ -64,7 +65,7 @@ def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, 
         r.metrics.update({k: fp16["metrics"][k] for k in ("ppl_val", "ppl_heldout")})
         r.metrics.update(_cost_metrics(baseline_cost(profile, s0.baseline_bits)), protected_layers=0)
     uniform = uniform_plan(scores, s0.uniform_bits, s0.uniform_prune_ratio)
-    row("standard", "original", uniform, label="Standard quantization",
+    row("standard", "original", uniform, label=standard_label(s0.uniform_prune_ratio),
         description=f"every layer at {s0.uniform_bits} bits, {s0.uniform_prune_ratio:.0%} removed")
     for k in guards:
         guarded, _ = load_guard(ctx, candidate, handle, text_loader, profile, k)

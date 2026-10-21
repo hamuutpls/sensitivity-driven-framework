@@ -190,15 +190,32 @@ def test_rebuild_writes_a_new_folder_and_never_overwrites(tmp_path, capsys):
     assert not (inside / "rebuilt").exists()
     rebuild_main([str(tmp_path / "run"), "--out", str(tmp_path / "again")])
     assert not (tmp_path / "again" / "rebuilt").exists()  # the earlier rebuild folder was not rebuilt again
+    rebuild_main([str(new), "--out", str(tmp_path / "of_a_rebuild")])  # a rebuild folder itself is rebuilt
+    assert (tmp_path / "of_a_rebuild" / "stage_2" / "report.md").exists()
+    (tmp_path / "a_file").write_text("x")
+    with pytest.raises(SystemExit):
+        rebuild_main([str(tmp_path / "run"), "--out", str(tmp_path / "a_file")])
+    assert "never overwrites" in capsys.readouterr().err
 
 
 def test_rebuild_fails_cleanly_on_a_file_that_is_not_a_results_object(tmp_path, capsys):
-    for i, text in enumerate(("[1, 2]", "{not json")):
+    bad = [b"[1, 2]", b"{not json", b"\xff\xfe", b'{"stage": 2}', b'{"stage": 2, "rows": [1]}',
+           b'{"stage": 2, "rows": [{"variant": "fp16"}]}', b'{"stage": 2, "rows": [{"method": "m", "variant": "fp16", '
+           b'"metrics": [1]}]}']
+    for i, data in enumerate(bad):
         (tmp_path / str(i)).mkdir()
-        (tmp_path / str(i) / "results.json").write_text(text)
+        (tmp_path / str(i) / "results.json").write_bytes(data)
         with pytest.raises(SystemExit):
-            rebuild_main([str(tmp_path / str(i))])
-        assert "results.json" in capsys.readouterr().err
+            rebuild_main([str(tmp_path / str(i)), "--out", str(tmp_path / f"out{i}")])
+        assert str(tmp_path / str(i) / "results.json") in capsys.readouterr().err, data
+        assert not (tmp_path / f"out{i}").exists()  # nothing is written
+
+
+def test_stage_0_standard_label():
+    from sdf.stage0.run import standard_label
+
+    assert standard_label(0.0) == "Standard quantization"
+    assert standard_label(0.2) == "Standard quantization and pruning"
 
 
 def _stage1(tmp_path, techniques=("GPTQ",), metrics=METRICS):
@@ -253,6 +270,17 @@ def test_more_than_seven_techniques_split_each_chart_and_never_repeat_a_colour(t
                                              "chart_perplexity_part2.png", "chart_perplexity_vs_memory_part2.png"]
     assert "Part 1 of 2: 7 of the 13 techniques" in charts[0].shows
     assert "Part 2 of 2: 6 of the 13 techniques" in charts[2].shows
+
+
+def test_a_part_chart_counts_only_its_own_techniques(tmp_path):
+    pytest.importorskip("matplotlib")
+    rep = _stage1(tmp_path, [f"T{i}" for i in range(9)])
+    for r in rep.rows:  # every row has a speed, but only T0's rows are real (_stage1 marks rows simulated)
+        r.metrics["decode_tokens_per_s"] = 100.0
+        r.info["simulated"] = rep.technique(r) != "T0"
+    speed = [c for c in write_charts(rep) if "vs_speed" in c.path.name]
+    assert [c.path.name for c in speed] == ["chart_perplexity_vs_speed_part1.png"]
+    assert "Part 1 of 2: 1 of the 9 techniques" in speed[0].shows  # the simulated techniques are not counted
 
 
 def test_rebuild_paths_stage_1_and_master(tmp_path, monkeypatch):

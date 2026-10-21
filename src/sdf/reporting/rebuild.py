@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from sdf.reporting.master import load_stages, write_master
-from sdf.reporting.reporter import VARIANT_PLAIN, StageReporter
+from sdf.reporting.reporter import VARIANT_PLAIN, ComparisonRow, StageReporter, _known
 from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -29,27 +29,21 @@ MARKER = "REBUILT_FROM.txt"  # written at the top of every rebuild folder, so a 
 
 def rebuild(folder: str | Path, out: str | Path | None = None) -> list[Path]:
     """Rebuild every Stage 1-3 results.json under `folder` into the new folder `out`, then the master files when
-    `folder` is a run folder; returns the paths written (each report.md, then master_report.md). Raises ValueError
-    when `out` is not a new folder or a results.json is not a JSON object."""
+    `folder` is a run folder; returns the paths written (each report.md, then master_report.md). Raises ValueError,
+    before writing anything, when `out` is not a new empty folder or a results.json cannot be read."""
     folder = Path(folder).resolve()
     out = Path(out).resolve() if out else folder.with_name(f"{folder.name}-rebuilt-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}")
-    if out == folder or folder.is_relative_to(out) or (out.exists() and any(out.iterdir())):
+    if out == folder or folder.is_relative_to(out) or (out.exists() and (not out.is_dir() or any(out.iterdir()))):
         raise ValueError(f"{out} must be a new or empty folder outside {folder}: a rebuild never overwrites reports")
-    skip = [m.parent for m in folder.rglob(MARKER)]  # earlier rebuilds kept inside the folder
+    skip = [m.parent for m in folder.rglob(MARKER) if m.parent != folder]  # earlier rebuilds kept inside the folder
     paths = [p for p in sorted(folder.rglob("results.json"))
              if not p.is_relative_to(out) and not any(p.is_relative_to(d) for d in skip)]
+    saved = {p: _read(p) for p in paths}  # every file is checked before anything is written
     written, rebuilt = [], {}
-    for path in paths:
-        try:
-            d = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            raise ValueError(f"{path} is not valid JSON: {e}") from None
-        if not isinstance(d, dict):
-            raise ValueError(f"{path} is not a results.json: it holds a JSON {type(d).__name__}, not an object")
+    for path, d in saved.items():
         if d.get("stage") not in (1, 2, 3):
             continue  # Stage 0 and side studies set report parts that results.json does not keep
         dest = out / path.parent.relative_to(folder)
-        dest.mkdir(parents=True, exist_ok=True)
         rep = StageReporter.load(path, dest)
         if not rep.main_metrics:
             rep.main_metrics = _main_metrics(rep)
@@ -61,13 +55,32 @@ def rebuild(folder: str | Path, out: str | Path | None = None) -> list[Path]:
         log.info("rebuilt %s", written[-1])
     if written:
         (out / MARKER).write_text(f"Rebuilt from {folder} by python -m sdf.reporting.rebuild\n", encoding="utf-8")
-    if saved := load_stages(folder):  # a run folder: the master files, the rebuilt stages in place of the saved ones
-        stages = [rebuilt.get(folder / f"stage_{st['stage']}", st) for st in saved]
+    if stages := load_stages(folder):  # a run folder: the master files, the rebuilt stages in place of the saved ones
+        stages = [rebuilt.get(folder / f"stage_{st['stage']}", st) for st in stages]
         out.mkdir(parents=True, exist_ok=True)
         written.append(write_master(out, stages)["master_report"])
     elif rebuilt:
         print("master_report.md was not rebuilt: rebuild the run folder to get it")
     return written
+
+
+def _read(path: Path) -> dict:
+    """A results.json's contents; ValueError naming the file when it is not one the report writer can read."""
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as e:  # invalid UTF-8 or JSON
+        raise ValueError(f"{path} is not a readable JSON file: {e}") from None
+    if not isinstance(d, dict):
+        raise ValueError(f"{path} is not a results.json: it holds a JSON {type(d).__name__}, not an object")
+    if d.get("stage") in (1, 2, 3):
+        try:
+            for r in (ComparisonRow(**_known(ComparisonRow, r)) for r in d["rows"]):
+                if not (isinstance(r.metrics, dict) and isinstance(r.info, dict)):
+                    raise TypeError(f"row {r.method!r}: metrics and info must be objects")
+        except (KeyError, TypeError, AttributeError) as e:
+            raise ValueError(f"{path} is not a results.json the report writer can read: no usable rows ({e!r})") \
+                from None
+    return d
 
 
 def _main_metrics(rep: StageReporter) -> list[str]:
