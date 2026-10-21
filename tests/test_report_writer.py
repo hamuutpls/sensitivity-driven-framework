@@ -93,16 +93,16 @@ def test_verdict_ignores_backend_perplexity_and_never_counts_a_larger_size(tmp_p
     assert rep.verdict(rep.rows[1]) == (["ppl_val"], [], [])  # 0.4% smaller is within the 0.5% tolerance
 
 
-def test_verdict_judges_peak_memory_and_skips_simulated_speed(tmp_path):
+def test_verdict_skips_simulated_speed_and_peak_memory(tmp_path):
     rep = _stage(tmp_path, 1, ["ppl_val", "peak_memory_gb", "decode_ms_per_token_mean", "decode_tokens_per_s"])
     with rep.method("m", "original", simulated=True) as r:
         r.metrics.update(ppl_val=10.0, peak_memory_gb=1.0, decode_ms_per_token_mean=5.0, decode_tokens_per_s=200.0)
     with rep.method("m", "framework", simulated=True) as r:
         r.metrics.update(ppl_val=9.0, peak_memory_gb=1.2, decode_ms_per_token_mean=4.0, decode_tokens_per_s=250.0)
-    assert rep.verdict(rep.rows[1]) == (["ppl_val"], ["peak_memory_gb"], [])  # peak memory is a running cost
+    assert rep.verdict(rep.rows[1]) == (["ppl_val"], [], [])  # measured on the uncompressed stand-in
     rep.rows[0].info["simulated"] = rep.rows[1].info["simulated"] = False
     assert rep.verdict(rep.rows[1]) == (["ppl_val", "decode_ms_per_token_mean", "decode_tokens_per_s"],
-                                        ["peak_memory_gb"], [])
+                                        ["peak_memory_gb"], [])  # a real row's peak memory is a running cost
 
 
 def test_summary_is_a_small_table_per_technique_and_big_tables_go_at_the_back(tmp_path):

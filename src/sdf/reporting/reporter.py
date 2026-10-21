@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Iterator
 
-from sdf.reporting.metrics import (HF_TIMINGS, ONE_OFF_COSTS, SIZE_METRICS, SIZE_TOLERANCE, is_backend_ppl, is_better,
+from sdf.reporting.metrics import (ONE_OFF_COSTS, SIMULATED_UNREAL, SIZE_METRICS, SIZE_TOLERANCE, is_backend_ppl, is_better,
                                    is_number, label)
 from sdf.requirements import DeploymentRequirement
 from sdf.utils.cache import atomic_write_text
@@ -226,15 +226,15 @@ class StageReporter:
         original row; None when there is no original row. The one judgement behind both the technical findings
         and the plain summary. Perplexity counts once (see below). A difference within the larger of the two rows' std (a repeated timing's `<name>_std`) is a tie.
         Owner's rules: a backend's perplexity (its re-rounded file) is never judged, and a larger stored size is never
-        a loss (a smaller one is still a win; under SIZE_TOLERANCE either way is a tie). Hugging Face timings of a
-        simulated row are not judged: such a model is still uncompressed in memory."""
+        a loss (a smaller one is still a win; under SIZE_TOLERANCE either way is a tie). Hugging Face timings and peak
+        memory of a simulated row are not judged: such a model is still uncompressed in memory."""
         orig = self.find_original(fw)
         if orig is None:
             return None
         wins, losses, one_off = [], [], []
         for m in self.main_metrics:
             simulated = fw.info.get("simulated") or orig.info.get("simulated")
-            if is_backend_ppl(m) or (m in HF_TIMINGS and simulated):
+            if is_backend_ppl(m) or (m in SIMULATED_UNREAL and simulated):
                 continue
             a, b = fw.metrics.get(m), orig.metrics.get(m)
             if not (is_number(a) and is_number(b)):

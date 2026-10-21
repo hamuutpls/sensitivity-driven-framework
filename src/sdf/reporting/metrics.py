@@ -25,6 +25,8 @@ SIZE_TOLERANCE = 0.005  # a size difference under 0.5% is neither a win nor a lo
 
 # Hugging Face timings: meaningless for a simulated row (kept in the uncompressed format), so not judged there.
 HF_TIMINGS = frozenset({"prefill_ms_mean", "decode_ms_per_token_mean", "prefill_tokens_per_s", "decode_tokens_per_s"})
+# Measured on a simulated row's uncompressed stand-in, so not the compressed model's: never judged for such a row.
+SIMULATED_UNREAL = HF_TIMINGS | {"peak_memory_gb"}
 
 BACKENDS = {"vllm": "vLLM", "llamacpp": "llama.cpp", "trtllm": "TensorRT-LLM"}  # metric-name prefix -> name
 

@@ -58,8 +58,8 @@ _TERMS = {
     "Hugging Face": "the standard library the model is tested in (Hugging Face Transformers). Accuracy and speed in "
                     "this report are measured there unless a column names another program.",
     "Simulated": "the numbers are rounded or removed exactly as the compressed model would have them, but kept in the "
-                 "uncompressed format: the accuracy is real, the size is the plan's prediction, and the speed is not "
-                 "that of a real compressed model.",
+                 "uncompressed format: the accuracy is real, the size is the plan's prediction, and the speed and peak "
+                 "graphics-card memory are not those of a real compressed model, so they are left out of the verdict.",
     "Perplexity": "how unsure the model is when predicting the next word of real text (called prediction error "
                   "here); lower means more accurate.",
     "llama.cpp": "a program that runs models on ordinary computers and laptops, from its own file format.",
