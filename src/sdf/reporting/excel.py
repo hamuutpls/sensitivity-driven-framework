@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
-from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -90,20 +89,18 @@ def _summary(ws, rep: "StageReporter") -> None:
         line.append(r.error or "")
         ws.append(line)
 
-    # Highlight where the framework wins (green) or loses (red) against the original method.
-    last = len(rep.rows) + 1
-    if last < 2:
-        return
-    for m in metrics:
-        better = METRICS[m].better if m in METRICS else None
-        if better is None:
-            continue
-        win_op, lose_op = ("lessThan", "greaterThan") if better == "lower" else ("greaterThan", "lessThan")
-        for key in ("vs_original_abs", "vs_original_pct"):
-            col = get_column_letter(col_of[(m, key)])
-            rng = f"{col}2:{col}{last}"
-            ws.conditional_formatting.add(rng, CellIsRule(operator=win_op, formula=["0"], fill=GREEN))
-            ws.conditional_formatting.add(rng, CellIsRule(operator=lose_op, formula=["0"], fill=RED))
+    # Green / red where the verdict counts a win / loss (or a one-off cost) against the original method; a tie (noise)
+    # stays plain. The verdict counts perplexity once, as ppl_val; the held-out half is coloured with it when it was
+    # itself judged the same way (not when it is missing or a tie).
+    for i, r in enumerate(rep.rows, start=2):
+        v = r.verdict
+        orig = rep.find_original(r) if v else None
+        for fill, ms, same in ((GREEN, v.get("wins", []), "win"),
+                               (RED, v.get("losses", []) + v.get("one_off", []), "loss")):
+            for m in ms + (["ppl_heldout"] if "ppl_val" in ms and rep.judge(r, orig, "ppl_heldout") == same else []):
+                for key in ("vs_original_abs", "vs_original_pct"):
+                    if (m, key) in col_of:
+                        ws.cell(row=i, column=col_of[(m, key)]).fill = fill
 
 
 def _flatten(prefix: str, d: Any, out: list[tuple[str, Any]]) -> None:

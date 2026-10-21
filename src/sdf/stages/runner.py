@@ -51,7 +51,6 @@ PLAN_FILES: dict[str, tuple[str, type]] = {
     "prune_same_size": ("prune_plan_same_size.json", CompressionPlan),
     "activations": ("activation_plan.json", ActivationPlan),
     "kv": ("kv_cache_plan.json", KVPlan),
-    "kv_bits_only": ("kv_cache_plan_bits_only.json", KVPlan),
     "joint_weights": ("joint_weight_plan.json", CompressionPlan),  # Stage 1 joint: weight half of the joint plan
     "joint_acts": ("joint_activation_plan.json", ActivationPlan),  # and its activation half
 }
@@ -88,8 +87,9 @@ INTROS = {
        "and speed.",
     2: "This stage makes the model smaller by removing numbers that barely matter (single weights, whole "
        "channels, or the small part of a weight table that a low-rank copy can drop), and rounds nothing. The "
-       "standard way removes the same share from every layer; our method removes more from the layers Stage "
-       "0 found robust and nothing from the fragile ones. Methods run on the uncompressed model, or after a "
+       "standard way removes the same share from every layer; our method removes that share from the layers "
+       "Stage 0 found robust and nothing from the fragile ones, and its same-size row moves the fragile layers' "
+       "share onto the robust ones. Methods run on the uncompressed model, or after a "
        "Stage 1 method (named \"<pruning>_after_<quantization>\").",
     3: "While writing a reply, the model keeps notes on every earlier word (the \"KV cache\"); for long texts these "
        "notes can take more memory than the model itself. This stage stores the notes with fewer bits or forgets "
@@ -109,6 +109,8 @@ class Stage0Plans:
     # Stage 2 pruning levels Stage 0 saved (prune_plan_<level>.json): share -> {"prune": ..., "prune_same_size": ...}
     levels: dict[float, dict[str, CompressionPlan]] = field(default_factory=dict)
     files: dict[str, str] = field(default_factory=lambda: {k: f for k, (f, _) in PLAN_FILES.items()})
+    # scores Stage 0 rated exposure against (exposure_reference.json), so both stages give a plan the same score
+    reference: list[float] | None = None
 
     @property
     def num_layers(self) -> int:
@@ -129,8 +131,11 @@ class Stage0Plans:
                 p = CompressionPlan.load(f)
                 by_tag.setdefault(m[2], {})["prune_same_size" if m[1] else "prune"] = p
                 loaded.append((f.name, p))
-        levels = {int(t) / 100: ps for t, ps in by_tag.items()}
-        out = cls(d, plans, SensitivityProfile.load(d / "sensitivity_profile.json"), kv_prof, levels)
+        # the level is the share the plans were built for; the file name only has it to the whole percent
+        levels = {next(iter(ps.values())).prune_ratio_aggressive: ps for ps in by_tag.values()}
+        ref = d / "exposure_reference.json"
+        out = cls(d, plans, SensitivityProfile.load(d / "sensitivity_profile.json"), kv_prof, levels,
+                  reference=json.loads(ref.read_text()) if ref.exists() else None)
         for k, p in loaded:
             if len(p.layers) != out.num_layers:
                 raise ValueError(f"{out.files.get(k, k)} has {len(p.layers)} layers, the profile {out.num_layers}")
@@ -156,7 +161,7 @@ def sweep(m: Method, plans: Stage0Plans) -> list[tuple[Method, Stage0Plans, floa
 
 # What a plan is about, by plan key: the standard method and the cost prediction differ by kind.
 PLAN_KIND = {"quant": "weights", "prune": "prune", "prune_same_size": "prune",
-             "activations": "activations", "kv": "kv", "kv_bits_only": "kv",
+             "activations": "activations", "kv": "kv",
              "joint_weights": "joint", "joint_acts": "joint"}
 
 
@@ -222,9 +227,11 @@ _KIND_SETTINGS = {"weights": ("weight_zero_point", "baseline_bits"), "activation
                   "joint": ("weight_zero_point", "act_group_size", "baseline_bits")}
 
 
-def _setting_key(kind: str, s0) -> dict[str, Any]:
+def _setting_key(m: Method, s0) -> dict[str, Any]:
     default = type(s0)()
-    return {k: getattr(s0, k) for k in _KIND_SETTINGS[kind] if getattr(s0, k) != getattr(default, k)}
+    # a Stage 2 method after a WxAy method keeps rounding activations (and vLLM rounds them with act_group_size)
+    names = _KIND_SETTINGS[kind_of(m)] + (("act_group_size",) if m.act_plan else ())
+    return {k: getattr(s0, k) for k in names if k not in m.unused_settings and getattr(s0, k) != getattr(default, k)}
 
 
 def plan_metrics(plan: Any, plans: Stage0Plans, cfg, candidate: dict[str, Any],
@@ -235,8 +242,8 @@ def plan_metrics(plan: Any, plans: Stage0Plans, cfg, candidate: dict[str, Any],
     `overhead`: what the method stores besides its bits (Method.overhead)."""
     s0 = cfg.stage0
     if isinstance(plan, CompressionPlan):
-        return _cost_metrics(weight_cost(plans.profile, candidate["gptq_groupsize"], s0, storage=storage,
-                                         overhead=overhead)(plan))
+        return _cost_metrics(weight_cost(plans.profile, candidate["gptq_groupsize"], s0, plans.reference,
+                                         storage=storage, overhead=overhead)(plan))
     if isinstance(plan, ActivationPlan):
         return {"avg_activation_bits": plan.avg_bits}
     if isinstance(plan, JointPlan):
@@ -404,8 +411,9 @@ def run_stage(
         return {f"{name}_error": _KV_NOT_ON_BACKENDS for name in ["llamacpp"] * use_llamacpp + list(serving)}
 
     def on_backends(model: nn.Module, method: Method, plan: Any, metrics: dict[str, Any], info: dict[str, str],
-                    val: torch.Tensor, held: torch.Tensor) -> None:
-        """llama.cpp and the serving backends on `model` (built with `method` and `plan`), into metrics and info."""
+                    val: torch.Tensor, held: torch.Tensor, retry: list[str]) -> None:
+        """llama.cpp and the serving backends on `model` (built with `method` and `plan`), into metrics and info;
+        backends that failed for a reason that may pass are added to `retry`."""
         joint = isinstance(plan, JointPlan)
         weights, acts = (plan.weights, plan.acts) if joint else (plan, None)
         rotated = has_online_rotation(model)  # QuaRot/SpinQuant: no saved file can hold the rotation
@@ -421,6 +429,8 @@ def run_stage(
                 except Exception as e:  # noqa: BLE001 - a missing program or file too, not only a failed run
                     log.warning("llama.cpp could not measure %s: %s", method.name, e)
                     info["llamacpp_error"] = str(e)
+                    if not _lasting(e):
+                        retry.append("llamacpp")
         for name, (mod, err, _) in serving.items() if be_on(method) else ():
             if rotated:
                 info[f"{name}_error"] = _ROTATED
@@ -433,6 +443,8 @@ def run_stage(
             except err as e:  # a plan the backend cannot load (e.g. 3-bit GPTQ in vLLM): keep the row,
                 log.warning("%s could not measure %s: %s", name, method.name, e)  # record why
                 info[f"{name}_error"] = str(e)
+                if not _lasting(e):
+                    retry.append(name)
                 continue
             if joint:
                 info[f"{name}_activations"] = (_rounded_by_backend(name, method, cfg.stage0.act_group_size)
@@ -441,6 +453,7 @@ def run_stage(
     def build_and_measure(method: Method, plan: Any, variant: str) -> dict[str, Any]:
         model = model_factory()
         info: dict[str, str] = {}
+        retry: list[str] = []
         try:
             t0 = time.perf_counter()  # a chained row's build time includes the earlier stage's build
             with ExitStack() as stack:
@@ -449,7 +462,7 @@ def run_stage(
                     first, first_plan = before[variant]
                     stack.enter_context(first.apply(MethodCall(model, first_plan, candidate, cfg, batches)))
                     if lc_on(first) or be_on(first):  # the backends cannot run the KV technique: they measure the
-                        on_backends(model, first, first_plan, prior, info, *windows())  # model it was built on
+                        on_backends(model, first, first_plan, prior, info, *windows(), retry)  # model it was built on
                         info["backends"] = _BACKENDS_BEFORE
                 extra = stack.enter_context(method.apply(MethodCall(model, plan, candidate, cfg, batches)))
                 build_s = time.perf_counter() - t0
@@ -458,7 +471,7 @@ def run_stage(
                 metrics.update(tasks(model))
                 if kind_of(method) in ("weights", "joint"):
                     metrics["zero_weight_share"] = zero_weight_share(model)
-                on_backends(model, method, plan, metrics, info, val, held)
+                on_backends(model, method, plan, metrics, info, val, held, retry)
                 metrics.update(prior)
         finally:
             del model
@@ -467,7 +480,7 @@ def run_stage(
         metrics["build_time_s"] = build_s
         if (method.simulated and stage in (1, 2)) or (before and before[variant][0].simulated):
             metrics.pop("model_size_gb", None)  # still FP16 in memory; predicted_weight_memory_gb is the size
-        return {"metrics": metrics, "raw": raw, "info": info}
+        return {"metrics": metrics, "raw": raw, "info": info, **({"retry": retry} if retry else {})}
 
     # --- FP16: the same cache entry Stage 0 measured ------------------------------------------------------------
     with rep.method("baseline", "fp16", description="uncompressed model") as row:
@@ -487,17 +500,21 @@ def run_stage(
                        "limit": cfg.eval.downstream_limit}
                 acc, _ = ctx.cache.get_or_compute("fp16_downstream", key, lambda: tasks(model_factory()))
                 row.metrics.update(acc)
-            if use_llamacpp:
-                lc, _ = ctx.cache.get_or_compute(
-                    "fp16_llamacpp", {**fp16_key(ctx, device), "llamacpp": lc_key},
-                    lambda: llamacpp.measure(model_factory(), handle.tokenizer, None, *windows(), cfg.eval,
-                                             s0.baseline_bits))
-                row.metrics.update(lc)
-            for name, (mod, _, be_key) in serving.items():
-                be, _ = ctx.cache.get_or_compute(
-                    f"fp16_{name}", {**fp16_key(ctx, device), name: be_key},
-                    lambda mod=mod: mod.measure(model_factory(), handle.tokenizer, None, *windows(), cfg.eval,
-                                                s0.baseline_bits, candidate["gptq_groupsize"]))
+            # a backend failure keeps the row's HF numbers, as on the compressed rows, and is not saved
+            backends = ([("llamacpp", {"llamacpp": lc_key}, Exception,
+                          lambda: llamacpp.measure(model_factory(), handle.tokenizer, None, *windows(), cfg.eval,
+                                                   s0.baseline_bits))] if use_llamacpp else [])
+            backends += [(name, {name: be_key}, err,
+                          lambda mod=mod: mod.measure(model_factory(), handle.tokenizer, None, *windows(), cfg.eval,
+                                                      s0.baseline_bits, candidate["gptq_groupsize"]))
+                         for name, (mod, err, be_key) in serving.items()]
+            for name, key_part, err, measure in backends:
+                try:
+                    be, _ = ctx.cache.get_or_compute(f"fp16_{name}", {**fp16_key(ctx, device), **key_part}, measure)
+                except err as e:  # noqa: BLE001 - llama.cpp: a missing program or file too, as on the other rows
+                    log.warning("%s could not measure the uncompressed model: %s", name, e)
+                    row.info[f"{name}_error"] = str(e)
+                    continue
                 row.metrics.update(be)
 
     @functools.cache
@@ -510,10 +527,13 @@ def run_stage(
             _free_memory()
 
     simulated_any = False
+    # without levels, the standard row removes the share Stage 0 built its pruning plans for, so "same amount
+    # removed" holds even when this run's prune_ratio_aggressive differs
+    default_ratio = next((all_plans.plans[k].prune_ratio_aggressive for k in ("prune_same_size", "prune")
+                          if k in all_plans.plans), candidate["prune_ratio_aggressive"])
     if stage == 2 and not all_plans.levels:
         log.warning("Stage 2: no pruning level plans in %s (stage0.pruning_levels was empty, or an older Stage 0 "
-                    "run); each method runs once, its standard row at %.0f%%", all_plans.dir,
-                    100 * candidate["prune_ratio_aggressive"])
+                    "run); each method runs once, its standard row at %.0f%%", all_plans.dir, 100 * default_ratio)
     def pair(method: Method) -> list[tuple[tuple[Method, Stage0Plans, float | None], Method]]:
         """The row groups of one method, each with the method its Our method rows run (another Stage 1 method
         before it when `after` names different ones for Standard and Our method)."""
@@ -523,10 +543,17 @@ def run_stage(
                      for q, key in (stage1_row(after.get(v) or after[only]) for v in ("original", "framework")))
         return [(row, theirs) for row, (theirs, _, _) in zip(sweep(std, all_plans), sweep(ours, all_plans))]
 
-    for (m, plans, level), mf in (row for method in methods for row in pair(method)):
+    built: dict[tuple[str, Any], float] = {}  # (method, capped standard plan) -> the level that built it
+    for base, ((m, plans, level), mf) in ((b, row) for b in methods for row in pair(b)):
         simulated_any |= m.simulated or mf.simulated
-        orig = original_plan(m, plans, s0, candidate["prune_ratio_aggressive"] if level is None else level,
-                             candidate.get("quarot_k_bits"))
+        orig = original_plan(m, plans, s0, default_ratio if level is None else level, candidate.get("quarot_k_bits"))
+        if level is not None and m.max_ratio is not None:  # above the cap two levels give the same three plans
+            same = (base.name, json.dumps(_plan_key(_capped(m, orig, caps, plans.profile.layer_numel)[0])))
+            if same in built:
+                rep.plain_why.append(f"{m.label} at {level:.0%} was not run: after the cap its plans are the same as "
+                                     f"at {built[same]:.0%}.")
+                continue
+            built[same] = level
         if only != "framework":
             with rep.method(m.name, "original", description=f"{m.label}, standard settings: {_describe(orig)}",
                             simulated=m.simulated) as row:
@@ -536,14 +563,15 @@ def run_stage(
                 _require(m)
                 if note := "; ".join(n for n in (m.note, m.fixed_bits, cap_note) if n):
                     row.info["note"] = note
-                key = {"stage": stage, "method": m.name, "version": m.version, "plan": orig.to_dict(),
+                key = {"stage": stage, "method": m.name, "version": m.version, "plan": _plan_key(orig),
                        "params": {p: candidate[p] for p in m.params}, **fp16_key(ctx, device),
                        "downstream": [list(cfg.eval.downstream_tasks), cfg.eval.downstream_limit],
                        "llamacpp": lc_key if lc_on(m) else None}
                 if be_on(m):  # absent when off, so cached rows from before stay valid
                     key.update({name: be_key for name, (_, _, be_key) in serving.items()})
-                    if "gptq_groupsize" not in m.params:  # the serving export still uses it (e.g. bitsandbytes)
-                        key["export_group_size"] = candidate["gptq_groupsize"]
+                    if "gptq_groupsize" not in m.params and any(lp.bit_width < s0.baseline_bits
+                                                                for lp in _weights(orig).layers):
+                        key["export_group_size"] = candidate["gptq_groupsize"]  # the export still rounds with it
                 if after:  # the rows keep the pruning method's name; the Stage 1 method is in the key
                     key["after"] = after["original"]
                 if before:
@@ -554,19 +582,25 @@ def run_stage(
                     key["before"] = {"method": first.name, "label": first.label,  # the label names the Stage 1 method
                                      "version": first.version, "plan": first_plan.to_dict(),
                                      "params": {p: candidate[p] for p in first.params},
-                                     "settings": _setting_key(kind_of(first), s0)}
-                if settings := _setting_key(kind_of(m), s0):
+                                     "settings": _setting_key(first, s0)}
+                if settings := _setting_key(m, s0):
                     key["settings"] = settings
                 if m.calibrated or before and before["original"][0].calibrated:
                     key["calibration"] = {"dataset": candidate["calib_dataset"], "samples": candidate["calib_samples"],
                                           "seq_len": cfg.calibration.seq_len, "batch_size": cfg.calibration.batch_size,
                                           **source_key(cfg, candidate["calib_dataset"])}
+                # a backend that failed for a passing reason (busy card, out of memory, a crash) is tried again next
+                # run; one whose format cannot hold this row's plan is saved with it
                 result, cached = ctx.cache.get_or_compute(f"stage{stage}_original", key,
-                                                          lambda: build_and_measure(m, orig, "original"))
+                                                          lambda: build_and_measure(m, orig, "original"),
+                                                          store=_no_passing_error)
                 if used is not None:
                     used[(m.name, "original")] = (m, orig, level)
                 _before_metrics(row, before, "original", plans, cfg, candidate)
                 row.metrics.update(plan_metrics(orig, plans, cfg, candidate, m.storage, m.overhead))
+                if m.fixed_bits:  # the plan's bits are not the method's, so its predicted size would be wrong
+                    for k in ("predicted_weight_memory_gb", "avg_bits_per_weight"):
+                        row.metrics.pop(k, None)
                 if stage == 2:
                     row.metrics["decoder_weights_removed"] = decoder_share_removed(_weights(orig), plans.profile.layer_numel)
                 row.metrics.update(result["metrics"])
@@ -617,6 +651,33 @@ def run_stage(
             "but kept in the uncompressed format. Their accuracy is real; their memory is the plan's prediction, "
             "and their speed is not the speed a real compressed model would have.")
     return rep.finalize()
+
+
+def _plan_key(plan: Any) -> Any:
+    """What of a standard plan decides the row: each layer's bits and pruning share. The sensitivity scores and
+    protected/guarded flags are left out, so a Stage 0 rerun with another score keeps the saved standard rows."""
+    if isinstance(plan, JointPlan):
+        return {"weights": _plan_key(plan.weights), "activations": plan.acts.to_dict()}
+    if isinstance(plan, CompressionPlan):
+        return [[lp.bit_width, lp.pruning_ratio] for lp in plan.layers]
+    return plan.to_dict()
+
+
+def _no_passing_error(result: dict[str, Any]) -> bool:
+    """Whether a standard row's result may be saved: not when a backend failed for a reason that may pass
+    (on_backends' `retry`); reasons that always repeat (the model rotates its inputs, a plan the backend's format
+    cannot hold) are saved with the row."""
+    if retry := result.get("retry"):
+        log.warning("not caching this row, so the failed backends are tried again next run: %s",
+                    {k: result["info"].get(f"{k}_error") for k in retry})
+    return not retry
+
+
+def _lasting(e: BaseException) -> bool:
+    """Whether a backend error repeats on every run: a plan the export format cannot hold (the backend's error raised
+    from the exporter's ValueError). Anything else may pass: a failed or timed-out program (out of memory, a busy
+    card), garbled output, a download that failed, or a llama.cpp program built after the run."""
+    return isinstance(e.__cause__, ValueError)
 
 
 def _before_metrics(row, before: dict[str, tuple[Method, Any]] | None, variant: str, plans: Stage0Plans, cfg,

@@ -20,6 +20,7 @@ def test_failed_worker_raises_vllm_error_with_the_cause(monkeypatch, tmp_path):
         return SimpleNamespace(returncode=1, stdout="", stderr=stderr)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("sdf.eval.worker.run_killing_group", lambda cmd, timeout, **kw: subprocess.run(cmd, **kw))  # it uses Popen
 
     class Model:
         def save_pretrained(self, d, safe_serialization=True):
@@ -87,6 +88,7 @@ def test_backend_hands_the_memory_share_setting_to_the_worker(monkeypatch, tmp_p
         return SimpleNamespace(returncode=1, stdout="", stderr="stop")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("sdf.eval.worker.run_killing_group", lambda cmd, timeout, **kw: subprocess.run(cmd, **kw))  # it uses Popen
 
     class Model:
         def save_pretrained(self, d, safe_serialization=True):

@@ -32,7 +32,7 @@ from sdf.data import eval_windows
 from sdf.eval.metrics import perplexity
 from sdf.reporting.markdown import _table
 from sdf.reporting.reporter import StageReporter
-from sdf.stage0.planner import CompressionPlan, LayerPlan, cap_pruning
+from sdf.stage0.planner import CompressionPlan, LayerPlan, cap_pruning, decoder_share_removed
 from sdf.stage0.sensitivity import find_decoder_layers
 from sdf.stages.methods import METHODS
 from sdf.stages.pruning import low_rank_, mlp_linears, structured_prune_, wanda_
@@ -92,13 +92,6 @@ def layer_caps(model: nn.Module, max_ratio: float) -> list[float]:
 def capped_plan(model: nn.Module, plan: CompressionPlan) -> CompressionPlan:
     """`plan` with each layer's ratio capped as Stage 2 caps structured pruning (layer_caps)."""
     return cap_pruning(plan, layer_caps(model, METHODS["structured_prune"].max_ratio))
-
-
-def share_removed(model: nn.Module, plan: CompressionPlan) -> float:
-    """Share of all decoder Linear weights the plan removes (each layer weighted by its size)."""
-    sizes = [sum(m.weight.numel() for m in layer.modules() if isinstance(m, nn.Linear))
-             for layer in find_decoder_layers(model)]
-    return sum(lp.pruning_ratio * n for lp, n in zip(plan.layers, sizes)) / sum(sizes)
 
 
 @contextmanager
@@ -162,6 +155,8 @@ def run_pruning_levels(ctx, candidate: dict[str, Any], handle, text_loader: Call
     key_base = {**fp16_key(ctx, handle.device), "calib_dataset": candidate["calib_dataset"],
                 "calib_samples": candidate["calib_samples"], "calib_seq_len": cfg.calibration.seq_len,
                 "calib_batch_size": cfg.calibration.batch_size, **source_key(cfg, candidate["calib_dataset"])}
+    # only perplexity is measured here, so timing settings must not re-run every row
+    key_base["eval"] = {k: v for k, v in key_base["eval"].items() if not k.startswith("latency_")}
     out: list[dict[str, Any]] = []
     for tech, (fn, tech_label) in TECHNIQUES.items():
         for set_name, layers in sets.items():
@@ -170,7 +165,7 @@ def run_pruning_levels(ctx, candidate: dict[str, Any], handle, text_loader: Call
                 if tech == "structured":
                     plan = capped_plan(model, plan)
                 per_layer = max(lp.pruning_ratio for lp in plan.layers)  # what is really removed (capped)
-                removed = share_removed(model, plan)
+                removed = decoder_share_removed(plan, profile.layer_numel)
                 record = {"technique": tech, "layer_set": set_name, "level": r, "layers_pruned": len(layers),
                           "share_removed_per_pruned_layer": per_layer, "share_of_decoder_weights_removed": removed,
                           "ppl_val": None, "ppl_heldout": None, "status": "failed"}
