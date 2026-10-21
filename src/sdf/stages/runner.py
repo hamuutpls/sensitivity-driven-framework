@@ -64,9 +64,11 @@ _PLAN_ROWS = {
         "our method with each layer's weight bits and activation bits chosen together, from a measurement of "
         "both rounded at once, at the same average bits as the separate plans."),
     "prune_same_size": (
-        "_same_size", "Our method, same amount removed as the standard method",
-        "our method removing exactly as many numbers as the standard method, but taking them from the least "
-        "sensitive layers instead of evenly, so the two can be compared fairly, size for size."),
+        "_same_size", "Our method, aiming at the standard method's amount removed",
+        "our method aiming to remove as many numbers as the standard method, but taking them from the least "
+        "sensitive layers instead of evenly, so the two can be compared at a similar size. The share it really "
+        "removes is in its name: lower than the standard method's when the layers it may prune cannot hold that "
+        "much."),
 }
 
 TITLES = {1: "Quantization (weights and activations)", 2: "Pruning", 3: "KV-cache compression"}

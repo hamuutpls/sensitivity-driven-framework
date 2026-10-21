@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
-from sdf.reporting.metrics import ONE_OFF_COSTS, is_better, is_number, label
+from sdf.reporting.metrics import ONE_OFF_COSTS, is_backend_ppl, is_better, is_number, is_size, label
 from sdf.requirements import DeploymentRequirement
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.logging import get_logger
@@ -36,11 +36,15 @@ VARIANTS = ("fp16", "original", "framework")
 VARIANT_PLAIN = {
     "fp16": ("Original model (uncompressed)", "the model exactly as published, with nothing removed or simplified. It is "
              "the reference point: the best accuracy we can hope for, and the most memory."),
-    "original": ("Standard quantization", "the compression technique applied the usual way, treating every part of "
+    "original": ("Standard method", "the compression technique applied the usual way, treating every part of "
                  "the model the same."),
     "framework": ("Our method", "our approach: first measure which parts of the model are "
                   "fragile, then compress the robust parts hard and leave the fragile parts mostly intact."),
 }
+
+# The standard row's name where "Standard method" is not the owner's word for it (pruning and KV cache are not
+# quantization, so only Stage 1 says quantization).
+STANDARD_NAME = {1: "Standard quantization"}
 
 # Terms every report uses. Stages add their own with `glossary`.
 BASE_GLOSSARY = {
@@ -133,6 +137,7 @@ class StageReporter:
         if variant not in VARIANTS:
             raise ValueError(f"variant must be one of {VARIANTS}, got {variant!r}")
         row = ComparisonRow(method=method, variant=variant, info=dict(info))
+        self._name_standard(row)
         self.rows.append(row)
         log.info("[stage %d] %s: start", self.stage, row.key)
         try:
@@ -149,6 +154,26 @@ class StageReporter:
             log.info("[stage %d] %s: done", self.stage, row.key)
         row.requirement = self.requirement.check(row.metrics).to_dict()
         self.flush()
+
+    def _name_standard(self, row: ComparisonRow) -> None:
+        if row.variant == "original" and self.stage in STANDARD_NAME:
+            row.info.setdefault("label", STANDARD_NAME[self.stage])
+
+    def technique(self, row: ComparisonRow) -> str:
+        """The technique a row belongs to, in words: a pruning level row's label before ":", else its (or its
+        standard row's) description before ", standard settings" / ", Stage 0 ", else the method name."""
+        if row.variant == "fp16":
+            return VARIANT_PLAIN["fp16"][0]
+        for r in (row, self.find_original(row)):
+            if r is None:
+                continue
+            if r.info.get("kind_label") and ": " in r.info.get("label", ""):
+                return r.info["label"].split(": ")[0]
+            desc = r.info.get("description", "")
+            for cut in (", standard settings", ", Stage 0 "):
+                if cut in desc:
+                    return desc.split(cut)[0]
+        return row.compare_to
 
     def add_raw(self, method: str, variant: str, records: list[dict[str, Any]]) -> None:
         self.raw.extend({"method": method, "variant": variant, **r} for r in records)
@@ -190,12 +215,16 @@ class StageReporter:
     def verdict(self, fw: ComparisonRow) -> tuple[list[str], list[str], list[str]] | None:
         """Main metrics on which framework row `fw` beats, loses to, or (one-off costs) costs more than its
         original row; None when there is no original row. The one judgement behind both the technical findings
-        and the plain summary. Perplexity counts once (see below). A difference within the larger of the two rows' std (a repeated timing's `<name>_std`) is a tie."""
+        and the plain summary. Perplexity counts once (see below). A difference within the larger of the two rows' std (a repeated timing's `<name>_std`) is a tie.
+        Owner's rules: a backend's perplexity (its re-rounded file) is never judged, and a larger size is never a loss
+        (a smaller one is still a win)."""
         orig = self.find_original(fw)
         if orig is None:
             return None
         wins, losses, one_off = [], [], []
         for m in self.main_metrics:
+            if is_backend_ppl(m):
+                continue
             a, b = fw.metrics.get(m), orig.metrics.get(m)
             if not (is_number(a) and is_number(b)):
                 continue
@@ -209,6 +238,8 @@ class StageReporter:
             if m in ONE_OFF_COSTS:
                 if not better:
                     one_off.append(m)
+                continue
+            if not better and is_size(m):
                 continue
             (wins if better else losses).append(m)
         # validation and held-out perplexity are one measure on two halves of the data: count it once, and only
@@ -259,6 +290,7 @@ class StageReporter:
         return {
             "stage": self.stage,
             "title": self.title,
+            "main_metrics": self.main_metrics,
             "started": self.started,
             "config": self.config,
             "conditions": self.conditions,
@@ -298,16 +330,42 @@ class StageReporter:
         atomic_write_text(self.json_path, json.dumps(self.to_dict(), indent=2, default=_json_default))
 
     def finalize(self) -> dict[str, Path]:
-        from sdf.reporting.excel import write_workbook
-        from sdf.reporting.markdown import write_report
-
         self.compute_deltas()
         self._auto_findings = self.comparison_summary()
         self.flush()
+        return {**self.write_outputs(), "json": self.json_path}
+
+    def write_outputs(self) -> dict[str, Path]:
+        """report.md, the workbook and the charts from the rows as they are; results.json is left alone."""
+        from sdf.reporting.charts import write_charts
+        from sdf.reporting.excel import write_workbook
+        from sdf.reporting.markdown import write_report
+
+        charts = write_charts(self)
         write_workbook(self, self.xlsx_path)
-        write_report(self, self.report_path)
+        write_report(self, self.report_path, charts)
         log.info("[stage %d] wrote %s", self.stage, self.dir)
-        return {"report": self.report_path, "xlsx": self.xlsx_path, "json": self.json_path}
+        return {"report": self.report_path, "xlsx": self.xlsx_path, **{c.path.stem: c.path for c in charts}}
+
+    @classmethod
+    def load(cls, json_path: str | Path, out_dir: str | Path | None = None) -> "StageReporter":
+        """A reporter holding a saved results.json, writing to `out_dir` (default: the file's folder). main_metrics
+        is empty when the file predates saving them (sdf.reporting.rebuild fills it in)."""
+        d = json.loads(Path(json_path).read_text(encoding="utf-8"))
+        folder = Path(out_dir or Path(json_path).parent)
+        rep = cls(d["stage"], folder.parent, d["title"], d["config"], d["environment"], d["conditions"],
+                  DeploymentRequirement(**d["requirement"]), d.get("main_metrics", []),
+                  d.get("original_model"), subdir=folder.name)
+        rep.started = d["started"]
+        rep.rows = [ComparisonRow(**r) for r in d["rows"]]
+        for r in rep.rows:
+            rep._name_standard(r)
+        rep.per_layer, rep.raw, rep.anomalies, rep.next_steps = d["per_layer"], d["raw"], d["anomalies"], d["next_steps"]
+        rep.sections = [(s["heading"], s["body"]) for s in d["sections"]]
+        p = d["plain"]
+        rep.plain_summary, rep.plain_intro, rep.plain_why, rep.glossary = (p["summary"], p["intro"], p["findings"],
+                                                                           p["glossary"])
+        return rep
 
 
 def _delta(value: float, ref: Any, prefix: str) -> dict[str, float | None]:

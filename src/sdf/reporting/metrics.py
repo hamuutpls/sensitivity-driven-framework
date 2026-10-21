@@ -16,6 +16,18 @@ from typing import Literal
 ONE_OFF_COSTS = frozenset({"build_time_s"})
 
 
+def is_backend_ppl(metric: str) -> bool:
+    """A backend's perplexity (vllm_ppl_val, llamacpp_ppl_heldout...): measured on the backend's re-rounded file, so
+    shown in tables but never part of the win/loss verdict (owner's rule)."""
+    return metric.endswith(("_ppl_val", "_ppl_heldout"))
+
+
+def is_size(metric: str) -> bool:
+    """Memory or storage per number (GB or bits): a larger Our method value is never a drawback (owner's rule)."""
+    spec = METRICS.get(metric)
+    return spec is not None and spec.unit in ("GB", "bits")
+
+
 @dataclass(frozen=True)
 class MetricSpec:
     label: str  # technical name, used in tables

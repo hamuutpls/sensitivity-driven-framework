@@ -31,7 +31,7 @@ def test_deltas_wins_failures_and_outputs(tmp_path):
     assert fw.deltas["model_size_gb"]["vs_fp16_pct"] == -65.0
     assert rep.rows[3].status == "failed" and "kernel missing" in rep.rows[3].error
     assert rep.rows[1].requirement["met"] is False  # ppl 12 > target 11
-    assert any("trades off" in f for f in rep.all_findings)
+    assert any("beats" in f for f in rep.all_findings)  # 0.1 GB larger is never a loss (owner's rule)
 
     data = json.loads(outputs["json"].read_text())
     assert [r["status"] for r in data["rows"]] == ["ok", "ok", "ok", "failed"]
@@ -77,9 +77,9 @@ def test_report_has_plain_language_part(tmp_path):
     for heading in ("## Summary", "## Key terms", "## Results", "## Findings",
                     "## How this stage works"):
         assert heading in plain
-    assert plain.index("## Summary") < plain.index("## Key terms") < plain.index("## Results") \
-        < plain.index("## Findings")
-    assert "is a trade-off against the standard method" in plain
+    assert plain.index("## Summary") < plain.index("## Key terms") < plain.index("## Findings") \
+        < plain.index("## Results")  # the big table goes at the back
+    assert "beat the standard method on every measure compared" in plain  # larger, never a loss
     assert "Perplexity measures how well the model predicts" in plain  # metric defined
     assert "| Version | Prediction error on test text (validation half) (lower is better) |" in plain
     assert "It kept the fragile parts intact." in plain
