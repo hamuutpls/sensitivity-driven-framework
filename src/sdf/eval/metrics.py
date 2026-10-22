@@ -188,7 +188,12 @@ def measure_model(model: nn.Module, validation: torch.Tensor, held_out: torch.Te
 
     ppl_val, nll_val = perplexity(model, validation, device)
     ppl_held, nll_held = perplexity(model, held_out, device)
-    lat = measure_latency(model, cfg, device, model.config.vocab_size, seed=seed)
+    if getattr(model, "sdf_ppl_batch", 1) > 1 and device.type == "cuda":  # batched windows raise the peak: set it
+        torch.cuda.reset_peak_memory_stats(device)  # with one window per pass, as every other row's
+        with torch.no_grad():
+            ids = validation[:1].to(device)
+            model(input_ids=ids, labels=ids)
+    lat =measure_latency(model, cfg, device, model.config.vocab_size, seed=seed)
 
     prefill = [r["prefill_ms"] for r in lat]
     decode = [r["decode_ms_per_token"] for r in lat]

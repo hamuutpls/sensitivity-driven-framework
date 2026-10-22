@@ -1,6 +1,7 @@
 """Stage 3 KV-cache techniques: QuaRot KV, KVQuant (rounding) and H2O, SnapKV, InfiniGen (forgetting words).
 
-Perplexity is measured with one forward pass per text window, so forgetting is simulated per word ("every word",
+Perplexity is measured with whole text windows per forward pass (FORGET_PPL_BATCH of them while a layer forgets),
+so forgetting is simulated per word ("every word",
 Mohammad, 2026-10-18): each word attends only to the past words the technique would still hold at that point, under
 a budget per layer from its share (the Stage 0 plan's share, or H2O's 20% in the standard rows): every forgetting
 rule keeps a fixed cache of ceil(keep_ratio x window) words, filled before anything is forgotten (`cache_budgets`;
@@ -41,6 +42,7 @@ KVQUANT_CALIB_TOKENS = 8192  # calibration tokens per layer for KVQuant's ranges
 # Perplexity windows per forward pass while a layer forgets: H2O's word-by-word loop costs the same per pass whatever
 # the batch, so one window per pass made it ~40 min per model on the A100 (Mohammad, 2026-10-22: speed-up option 1).
 # The same numbers up to float rounding (tests/test_kv_methods.py checks them against one window per pass).
+# shortcut: fixed, ~5 GB peak for TinyLlama at 512 words; lower it for a 7B model or 2048-word windows (out of memory).
 FORGET_PPL_BATCH = 16
 
 

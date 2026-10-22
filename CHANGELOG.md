@@ -7,6 +7,8 @@
   `model.sdf_ppl_batch` (16) and `perplexity` runs that many windows per forward pass. The forgetting rules and the
   rounding already work per window, so the numbers are the same up to float rounding; a test checks them against
   one window per pass for every KV technique. Every other row still runs one window per pass, unchanged.
+  Peak GPU memory is still set by one window per pass (`measure_model` resets it and runs one window after the
+  batched perplexity), so forgetting rows are not charged for the batch.
 
 ## 2026-10-22: Pruned models reach the backends (search and chain fix)
 

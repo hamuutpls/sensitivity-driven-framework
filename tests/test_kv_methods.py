@@ -345,6 +345,14 @@ def test_forgetting_rows_measure_several_windows_per_pass_with_the_same_perplexi
             ppl, nll = perplexity(model, windows, dev)
             assert len(nll) == len(windows)
             assert nll == pytest.approx(ref_nll, rel=1e-4) and ppl == pytest.approx(ref, rel=1e-4)
+        if device == "cuda":  # peak memory is still one window's, so forgetting rows are not charged for the batch
+            from sdf.eval.metrics import measure_model
+
+            peaks = []
+            for b in (1, FORGET_PPL_BATCH):
+                model.sdf_ppl_batch = b
+                peaks.append(measure_model(model, windows, windows, small_cfg.eval, dev)[0]["peak_memory_gb"])
+            assert peaks[1] == pytest.approx(peaks[0], abs=1e-3)
     assert not hasattr(model, "sdf_ppl_batch")
     keep_all = KVPlan(tuple(KVLayerPlan(i, 4, 4, 1.0) for i in range(4)), "sensitivity")
     with METHODS[name].apply(MethodCall(model, keep_all, cand, small_cfg, batches)):
