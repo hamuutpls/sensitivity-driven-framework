@@ -193,7 +193,7 @@ def measure_model(model: nn.Module, validation: torch.Tensor, held_out: torch.Te
         with torch.no_grad():
             ids = validation[:1].to(device)
             model(input_ids=ids, labels=ids)
-    lat =measure_latency(model, cfg, device, model.config.vocab_size, seed=seed)
+    lat = measure_latency(model, cfg, device, model.config.vocab_size, seed=seed)
 
     prefill = [r["prefill_ms"] for r in lat]
     decode = [r["decode_ms_per_token"] for r in lat]
