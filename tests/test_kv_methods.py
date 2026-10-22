@@ -319,3 +319,40 @@ def test_backend_reasons_follow_this_runs_backends_not_the_cache(stage0_dir, tin
     assert rows["rtn_kv/original"]["info"]["cached"]
     assert rows["rtn_kv/original"]["info"]["llamacpp_error"].startswith("not run")
     assert "vllm_error" not in rows["rtn_kv/original"]["info"]
+
+
+DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("name", KV_METHODS)
+def test_forgetting_rows_measure_several_windows_per_pass_with_the_same_perplexity(name, device, tiny_llama,
+                                                                                    small_cfg):
+    from sdf.eval.metrics import perplexity
+    from sdf.stages.kv_methods import FORGET_PPL_BATCH
+
+    model, dev = tiny_llama.to(device), torch.device(device)
+    windows = torch.randint(0, 64, (7, 32), generator=torch.Generator().manual_seed(1))
+    plan = KVPlan(tuple(KVLayerPlan(i, 4, 2 + 2 * (i % 2), 0.4 if i else 1.0) for i in range(4)), "sensitivity")
+    cand = SEARCH_SPACE.make({"calib_samples": 16, "quarot_k_bits": 4})
+    batches = lambda: [torch.randint(0, 64, (2, 32), device=dev)]  # noqa: E731
+    with METHODS[name].apply(MethodCall(model, plan, cand, small_cfg, batches)):
+        assert model.sdf_ppl_batch == FORGET_PPL_BATCH
+        model.sdf_ppl_batch = 1  # the old way: one window per pass
+        ref, ref_nll = perplexity(model, windows, dev)
+        for b in (3, FORGET_PPL_BATCH):  # 3: the last pass holds the one window left over
+            model.sdf_ppl_batch = b
+            ppl, nll = perplexity(model, windows, dev)
+            assert len(nll) == len(windows)
+            assert nll == pytest.approx(ref_nll, rel=1e-4) and ppl == pytest.approx(ref, rel=1e-4)
+    assert not hasattr(model, "sdf_ppl_batch")
+    keep_all = KVPlan(tuple(KVLayerPlan(i, 4, 4, 1.0) for i in range(4)), "sensitivity")
+    with METHODS[name].apply(MethodCall(model, keep_all, cand, small_cfg, batches)):
+        assert not hasattr(model, "sdf_ppl_batch")  # nothing forgotten: one window per pass, as every other row
+
+
+@pytest.mark.parametrize("rule", ["h2o", "snapkv"])
+def test_forgetting_rules_treat_each_window_of_a_batch_on_its_own(rule):
+    s = torch.cat([_scores(seed=i) for i in range(3)])
+    keep = {"h2o": h2o_keep, "snapkv": snapkv_keep}[rule]
+    assert torch.equal(keep(s, 2, 0.4), torch.cat([keep(s[i:i + 1], 2, 0.4) for i in range(3)]))
