@@ -41,6 +41,7 @@ def run_dir(small_cfg):
                 "violation": 0.0 if ok else 1.0, "metrics": metrics, "dir": "x", "time_s": 60.0, "cached": False,
                 "error": "plan over the limit" if over else ("CUDA out of memory" if failed else None)})
     (run / "search" / "trials.json").write_text(json.dumps(trials))
+    (run / "search" / "search_report.md").write_text("the report the search wrote when it ended")  # a finished run
     return run, trials
 
 
@@ -72,6 +73,34 @@ def test_the_report_is_rebuilt_from_saved_tries(run_dir, capsys):
     assert f"{ms:.4g} | {1000 / ms:.4g}" in row and "| W4.5A6 |" in row
     assert "Same speed, tokens per second, higher is better" in text
     assert "predicted weight memory at most 1.1 GB" in text
+    assert "2. Search methods compared\n\n> **What this shows.** How well each search method used the same budget: " \
+           "the best perplexity (validation half) it found" in text
+    # axis notes follow the real limits: perplexity, size and the first try's budget are above zero, hypervolume is not
+    assert text.count("Neither axis starts at zero.") == 3
+    hv = next(r for r in text.splitlines() if r.startswith("*How much of the space"))
+    assert "zero" not in hv
+
+
+def test_a_rebuild_never_rewrites_the_saved_tries_and_keeps_out_of_an_unfinished_run(run_dir):
+    run, _ = run_dir
+    d = run / "search"
+    (d / "search_report.md").unlink()  # the search is still running
+    saved = (d / "trials.json").read_bytes()
+    search_report_main([str(run)])
+    assert sorted(p.name for p in d.iterdir()) == ["partial", "trials.json"]
+    assert (d / "partial" / "search_report.md").exists() and not (d / "partial" / "trials.json").exists()
+    (d / "search_report.md").write_text("the report the search wrote when it ended")
+    search_report_main([str(run)])  # finished: rebuilt in place
+    assert (d / "search_report.md").read_text().startswith("# Settings search")
+    assert (d / "trials.json").read_bytes() == saved
+
+
+def test_more_search_methods_than_colours_fail_loudly(run_dir):
+    run, trials = run_dir
+    extra = [{**trials[0], "searcher": f"s{i}"} for i in range(5)]  # 3 + 5 = 8 methods, 7 colours
+    (run / "search" / "trials.json").write_text(json.dumps(trials + extra))
+    with pytest.raises(ValueError, match="colour-blind-safe"):
+        search_report_main([str(run)])
 
 
 def test_the_report_says_when_no_test_result_was_recorded_or_nothing_met_the_limit(run_dir):

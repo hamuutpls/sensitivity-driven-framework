@@ -123,7 +123,8 @@ sdf-stage0-sweep --profile results/<run>/stage_0/sensitivity_profile.json # plan
 ### Search report
 
 A settings search (`MODE = "search"` in main.py) writes its report itself when it ends. `sdf-search-report` writes
-it again from the saved tries (`search/trials.json`) with no model built, e.g. after a report change:
+it again from the saved tries (`search/trials.json`, only read) with no model built, e.g. after a report change.
+A finished run is rebuilt in place; a run still going is rebuilt into `search/partial/`:
 
 ```bash
 sdf-search-report thesis_compression/results/<run_id> --tests "417 passed, 3 skipped at 5f440dc"

@@ -99,19 +99,23 @@ def best_so_far(trials: list[dict[str, Any]], searcher: str) -> list[tuple[float
 
 
 def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: SearchSpace,
-                        tests: str | None = None) -> dict[str, Path]:
-    """`tests`: the unit-test result of the code that made the numbers, e.g. "417 passed, 3 skipped at 5f440dc"."""
+                        tests: str | None = None, out_dir: Path | None = None) -> dict[str, Path]:
+    """`tests`: the unit-test result of the code that made the numbers, e.g. "417 passed, 3 skipped at 5f440dc".
+    `out_dir`: where a rebuild writes; trials.json is then left alone (only the search itself writes it)."""
     cfg = ctx.cfg
     s = cfg.search
-    d = ctx.run_dir / "search"
+    d = out_dir or ctx.run_dir / "search"
     d.mkdir(parents=True, exist_ok=True)
     comparison = compare_searchers(trials, s.objectives)
+    by_name = {c["Search method"]: c for c in comparison}
     front = sorted(pareto(trials), key=lambda t: t["values"][0])
     best = {o: min((t for t in trials if t["full"] and t["met"]), key=lambda t, i=i: t["values"][i], default=None)
             for i, o in enumerate(s.objectives)}
     names = [p.name for p in space.params]
-    outputs = {"search_trials": d / "trials.json"}
-    atomic_write_text(outputs["search_trials"], json.dumps(trials, indent=2, default=str))
+    outputs = {}
+    if out_dir is None:
+        outputs["search_trials"] = d / "trials.json"
+        atomic_write_text(outputs["search_trials"], json.dumps(trials, indent=2, default=str))
 
     # --- workbook
     wb = Workbook()
@@ -133,7 +137,8 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
     outputs["search_xlsx"] = d / "search_results.xlsx"
     wb.save(outputs["search_xlsx"])
 
-    outputs.update(_plots(d, trials, front, s.objectives, s.memory_metric, cfg.requirement.target_memory_gb))
+    charts, axes = _plots(d, trials, front, s.objectives, s.memory_metric, cfg.requirement.target_memory_gb)
+    outputs.update(charts)
 
     # --- report: summary, then one section per question, each with a What this shows / What it means box; the
     # big tables go to the back
@@ -188,9 +193,9 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             + (", joined by a line." if x in s.objectives else " (best on " + " and ".join(
                 _lower(label(o)) for o in s.objectives) + " together, so not all at the bottom left here).")
             + (" The dashed line is the size limit." if x == s.memory_metric and cfg.requirement.target_memory_gb
-               else "") + " Neither axis starts at zero.*", "")],
+               else "") + axes[f"search_pareto_{x}"] + "*", "")],
         "## 2. Search methods compared", "",
-        *_box("How well each search method used the same budget: the best perplexity it found, how much of its "
+        *_box(f"How well each search method used the same budget: the best {first} it found, how much of its "
               "budget it spent before finding it, and how much of the space of good results its settings cover "
               "(hypervolume).",
               "The method with the higher hypervolume and the larger share of the best trade-off line found better "
@@ -202,14 +207,15 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             + [[SHORT_NAMES.get(n, n), _fmt(c["Models built"]), _fmt(c[f"Best {first} (lower is better)"]),
                 _fmt(c["Cost until it found that best (lower is better)"]), _fmt(c["Hypervolume (higher is better)"]),
                 _pct(c["Share of the best trade-off line it found (higher is better)"])]
-               for n, c in zip(dict.fromkeys(t["searcher"] for t in trials), comparison)]),
+               for n, c in ((n, by_name[SEARCHER_NAMES.get(n, n)]) for n in dict.fromkeys(t["searcher"] for t in trials))]),
         *([f"![Best {first} found so far](best_so_far.png)", "",
            f"*The lowest {first} each method had found among models under the limit, against the budget spent "
-           "(lower is better; a curve that drops earlier found good settings sooner). The y axis does not start at "
-           "zero.*", ""] if "search_best_so_far" in outputs else []),
+           "(lower is better; a curve that drops earlier found good settings sooner)." + axes["search_best_so_far"]
+           + "*", ""] if "search_best_so_far" in outputs else []),
         *(["![Hypervolume over the budget](hypervolume.png)", "",
            "*How much of the space of good results each method's settings cover, against the budget spent (higher is "
-           "better). All methods share one reference point, 10% past the worst value under the limit.*", ""]
+           "better). All methods share one reference point, 10% past the worst value under the limit."
+           + axes["search_hypervolume"] + "*", ""]
           if "search_hypervolume" in outputs else []),
         "## 3. Best setting for each goal", "",
         *_box("The single setting under the limit with the lowest value of each goal.",
@@ -246,12 +252,16 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
 
 
 def rebuild_search_report(run_dir: str | Path, tests: str | None = None) -> dict[str, Path]:
-    """The search outputs again from a finished run's config.json and search/trials.json, with no model built."""
+    """The search outputs again from a run's config.json and search/trials.json, with no model built. A finished run
+    (the search wrote search_report.md at its end) is rebuilt in place; an unfinished one into search/partial/, so a
+    rebuild never touches what the running search writes. trials.json is only read."""
     run_dir = Path(run_dir).resolve()
+    d = run_dir / "search"
+    out_dir = d if (d / "search_report.md").exists() else d / "partial"
     cfg = FrameworkConfig.from_dict(json.loads((run_dir / "config.json").read_text(encoding="utf-8")))
     trials = json.loads((run_dir / "search" / "trials.json").read_text(encoding="utf-8"))
     ctx = RunContext(cfg=cfg, run_id=run_dir.name, run_dir=run_dir, cache=None)  # nothing is built, so no cache
-    return write_search_report(ctx, trials, technique_space(cfg), tests)
+    return write_search_report(ctx, trials, technique_space(cfg), tests, out_dir)
 
 
 def _box(shows: str, means: str) -> list[str]:
@@ -321,7 +331,8 @@ def _table(ws, header: list[str], rows: list[list[Any]]) -> None:
         ws.append([v if isinstance(v, (int, float, str, bool)) or v is None else str(v) for v in r])
 
 
-def _plots(d: Path, trials, front, objectives, memory, limit) -> dict[str, Path]:
+def _plots(d: Path, trials, front, objectives, memory, limit) -> tuple[dict[str, Path], dict[str, str]]:
+    """The charts, and for each a caption note on any axis that does not start at zero."""
     try:
         import matplotlib
 
@@ -329,18 +340,25 @@ def _plots(d: Path, trials, front, objectives, memory, limit) -> dict[str, Path]
         import matplotlib.pyplot as plt
     except ImportError:
         log.warning("matplotlib is not installed: no search plots (pip install .[figures])")
-        return {}
-    out = {}
+        return {}, {}
+    out, notes = {}, {}
     y = objectives[0]
     ok = [t for t in trials if t["full"] and t["ok"]]
-    # Okabe-Ito colours (colour-blind safe), one per search method
-    colors = dict(zip(dict.fromkeys(t["searcher"] for t in trials), ("#0072B2", "#E69F00", "#009E73", "#CC79A7")))
+    # Okabe-Ito colours (colour-blind safe), one per search method; black is kept for the best trade-off rings
+    palette = ("#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00", "#F0E442")
+    searchers = list(dict.fromkeys(t["searcher"] for t in trials))
+    if len(searchers) > len(palette):
+        raise ValueError(f"{len(searchers)} search methods but only {len(palette)} colour-blind-safe colours")
+    colors = dict(zip(searchers, palette))
     name = lambda n: SHORT_NAMES.get(n, n)  # noqa: E731
 
     def save(fig, ax, key, file):
         ax.legend(fontsize=8)
         ax.grid(alpha=0.3)
         fig.tight_layout()
+        x0, y0 = ax.get_xlim()[0] > 0, ax.get_ylim()[0] > 0
+        notes[key] = (" Neither axis starts at zero." if x0 and y0 else " The x axis does not start at zero." if x0
+                      else " The y axis does not start at zero." if y0 else "")
         out[key] = d / file
         fig.savefig(out[key], dpi=150)
         plt.close(fig)
@@ -383,4 +401,4 @@ def _plots(d: Path, trials, front, objectives, memory, limit) -> dict[str, Path]
         ax.set_xlabel("budget spent (full tries)")
         ax.set_ylabel(f"lowest {_lower(label(y))} so far (lower is better)")
         save(fig, ax, "search_best_so_far", "best_so_far.png")
-    return out
+    return out, notes
