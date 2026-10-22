@@ -325,6 +325,25 @@ def pareto(trials: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [t for t in ok if not any(_dominates(o["values"], t["values"]) for o in ok)]
 
 
+def best_per_objective(trials: list[dict[str, Any]], objectives: list[str]) -> dict[str, dict[str, Any] | None]:
+    """Per objective, the full-size trial that meets the requirement with its lowest value (None if no trial does);
+    a tie goes to the one better on the other objectives, so the best is never beaten on every objective."""
+    met = [t for t in trials if t["full"] and t["met"]]
+    return {o: min(met, key=lambda t, i=i: (t["values"][i], t["values"]), default=None) for i, o in enumerate(objectives)}
+
+
+def finalists(trials: list[dict[str, Any]], objectives: list[str]) -> list[dict[str, Any]]:
+    """The settings that get the full comparison after the search (project rule: the final trade-off candidates and
+    the best per objective): the Pareto trials, then any best-per-objective trial not among them, one per point."""
+    out = pareto(trials)
+    seen = {json.dumps(t["point"], sort_keys=True) for t in out}
+    for t in best_per_objective(trials, objectives).values():
+        if t and (k := json.dumps(t["point"], sort_keys=True)) not in seen:
+            seen.add(k)
+            out.append(t)
+    return out
+
+
 def hypervolume(trials: list[dict[str, Any]], ref: list[float]) -> float:
     """Area (volume) the met, full-size trials dominate up to `ref`; larger is better."""
     import numpy as np

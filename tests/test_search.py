@@ -12,8 +12,8 @@ import torch
 from sdf import search
 from sdf.eval import vllm_backend
 from sdf.run import start_run
-from sdf.search import (FAILED, Recorder, _decode, _rank_key, _sample, evaluate, hypervolume, pareto, run_mfbo, run_mobo,
-                        run_nsga3, run_search, technique_space, violation)
+from sdf.search import (FAILED, Recorder, _decode, _rank_key, _sample, best_per_objective, evaluate, finalists,
+                        hypervolume, pareto, run_mfbo, run_mobo, run_nsga3, run_search, technique_space, violation)
 from sdf.search_space import SEARCH_SPACE
 from sdf.stage0.planner import require_bits_only
 from sdf.stages import runner
@@ -70,6 +70,17 @@ def test_pareto_and_hypervolume_use_only_met_full_trials():
     assert hypervolume([_t([1, 1], met=False)], [20, 10]) == 0
     assert violation({"met": False, "shortfall": {"target_memory_gb": 0.25}}) == 0.25
     assert violation({"met": True, "shortfall": {}}) == 0
+
+
+def test_finalists_are_the_pareto_trials_and_the_best_per_objective_once_each():
+    ts = [_t([10, 5]), _t([10, 4]), _t([12, 3]), _t([1, 1], met=False), _t([9, 9], full=False),
+          _t([12, 3], point={"v": [12, 3]}, searcher="b")]
+    best = best_per_objective(ts, ["ppl_val", "ms"])
+    assert best["ppl_val"]["values"] == [10, 4]  # the tie on the first objective goes to the better second one
+    assert best["ms"]["values"] == [12, 3] and best["ms"]["searcher"] == "a"
+    assert [t["values"] for t in finalists(ts, ["ppl_val", "ms"])] == [[10, 4], [12, 3]]
+    assert best_per_objective([_t([1, 1], met=False)], ["ppl_val"]) == {"ppl_val": None}
+    assert finalists([_t([1, 1], met=False)], ["ppl_val"]) == []
 
 
 def test_evaluate_builds_the_chained_model_and_caches_it(cfg, tiny_llama, tokenizer):
