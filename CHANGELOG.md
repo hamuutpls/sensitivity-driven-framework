@@ -10,7 +10,7 @@
 - Tables give each setting's average bits (WxAy), units, and the speed in tokens per second next to the time per token.
 - The report states the unit-test result of the code that made the numbers, or that none was recorded.
 - `sdf-search-report <run_dir> --tests "..."` writes the search outputs again from the saved tries, no model built. It only reads trials.json, and
-  writes into search/partial/ while the search is still running (no search_report.md yet).
+  writes into search/partial/ while the search is still running (no search_report.md newer than trials.json).
 
 ## 2026-10-22: Pruned models reach the backends (search and chain fix)
 

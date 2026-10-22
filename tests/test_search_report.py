@@ -95,6 +95,18 @@ def test_a_rebuild_never_rewrites_the_saved_tries_and_keeps_out_of_an_unfinished
     assert (d / "trials.json").read_bytes() == saved
 
 
+def test_a_resumed_search_whose_report_is_older_than_its_tries_counts_as_unfinished(run_dir):
+    import os
+
+    run, _ = run_dir
+    d = run / "search"
+    old = (d / "search_report.md").stat().st_mtime - 60
+    os.utime(d / "search_report.md", (old, old))  # the last run's report; the resumed search rewrote trials.json
+    search_report_main([str(run)])
+    assert (d / "search_report.md").read_text() == "the report the search wrote when it ended"
+    assert (d / "partial" / "search_report.md").exists()
+
+
 def test_more_search_methods_than_colours_fail_loudly(run_dir):
     run, trials = run_dir
     extra = [{**trials[0], "searcher": f"s{i}"} for i in range(5)]  # 3 + 5 = 8 methods, 7 colours
@@ -107,9 +119,9 @@ def test_the_report_says_when_no_test_result_was_recorded_or_nothing_met_the_lim
     run, trials = run_dir
     for t in trials:
         t["met"] = False
-    (run / "search" / "trials.json").write_text(json.dumps(trials))
+    (run / "search" / "trials.json").write_text(json.dumps(trials))  # still running, so rebuilt into partial/
     search_report_main([str(run)])
-    text = (run / "search" / "search_report.md").read_text()
+    text = (run / "search" / "partial" / "search_report.md").read_text()
     assert "not recorded for this report" in text and "No setting met the limit" in text
 
 

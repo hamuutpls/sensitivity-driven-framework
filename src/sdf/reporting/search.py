@@ -253,11 +253,13 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
 
 def rebuild_search_report(run_dir: str | Path, tests: str | None = None) -> dict[str, Path]:
     """The search outputs again from a run's config.json and search/trials.json, with no model built. A finished run
-    (the search wrote search_report.md at its end) is rebuilt in place; an unfinished one into search/partial/, so a
+    (the search wrote search_report.md at its end, after trials.json) is rebuilt in place; an unfinished one into search/partial/, so a
     rebuild never touches what the running search writes. trials.json is only read."""
     run_dir = Path(run_dir).resolve()
     d = run_dir / "search"
-    out_dir = d if (d / "search_report.md").exists() else d / "partial"
+    report, saved = d / "search_report.md", d / "trials.json"
+    # finished: the search wrote its report after its last trials.json (a resumed search rewrites trials.json)
+    out_dir = d if report.exists() and report.stat().st_mtime >= saved.stat().st_mtime else d / "partial"
     cfg = FrameworkConfig.from_dict(json.loads((run_dir / "config.json").read_text(encoding="utf-8")))
     trials = json.loads((run_dir / "search" / "trials.json").read_text(encoding="utf-8"))
     ctx = RunContext(cfg=cfg, run_id=run_dir.name, run_dir=run_dir, cache=None)  # nothing is built, so no cache
@@ -370,7 +372,8 @@ def _plots(d: Path, trials, front, objectives, memory, limit) -> tuple[dict[str,
                 pts = [t for t in ok if t["searcher"] == n and t["met"] == met and is_number(t["metrics"].get(x))]
                 if pts:
                     ax.scatter([t["metrics"][x] for t in pts], [t["metrics"][y] for t in pts], color=c, marker=marker,
-                               alpha=0.6, label=f"{name(n)}, {word}")
+                               alpha=0.6, label=f"{name(n)}, {word}",
+                               edgecolors="#555555" if marker == "o" else None)  # the yellow is faint on white
         pts = sorted((t for t in front if is_number(t["metrics"].get(x))), key=lambda t: t["metrics"][x])
         if pts and x in objectives:  # the line joins the front only on the axes it was found on
             ax.plot([t["metrics"][x] for t in pts], [t["metrics"][y] for t in pts], color="black", lw=1, zorder=1)
