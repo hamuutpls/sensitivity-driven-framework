@@ -398,11 +398,9 @@ def run_finalists(ctx: RunContext, trials: list[dict[str, Any]], model_factory: 
     default settings, no Stage 0) and Our method: Stage 1 the WxAy technique (Our method on the joint plan), Stage 2
     its pruning technique after each side's Stage 1 row, Stage 3 its KV technique on each side's Stage 2 model; then
     the master report. The backends cannot run the KV techniques, so on Stage 3 rows they measure the Stage 2
-    model (as in every run). finalists/index.json lists each setting and its folder."""
-    from sdf.reporting.master import write_master
-    from sdf.stage0.run import run_stage0
-    from sdf.stages.runner import run_stage, stage1_row
-
+    model (as in every run). finalists/index.json lists each setting and its folder, rewritten after each one; a
+    setting that fails is recorded there with its error and the next one runs. Rerun with the same run_id, a setting
+    whose master report exists is not built again."""
     ev = ctx.cfg.eval
     if missing := [k for k in ("llamacpp_dir", "llamacpp_convert", "vllm_python", "trtllm_python")
                    if not getattr(ev, k)]:
@@ -413,28 +411,56 @@ def run_finalists(ctx: RunContext, trials: list[dict[str, Any]], model_factory: 
     cfg = ctx.cfg.with_overrides({"stage0.pruning_levels": [], "stage0.joint_plan": True})  # as evaluate() builds
     kw = dict(model_factory=model_factory, tokenizer=tokenizer, text_loader=text_loader)
     index, outputs = [], {}
+    outputs["finalists_index"] = ctx.run_dir / "finalists" / "index.json"
     for n, t in enumerate(picked, 1):
         point = technique_space(cfg).validate(t["point"])
-        s1, s2, s3 = point["stage1_method"], point["stage2_method"], point["stage3_method"]
-        candidate = SEARCH_SPACE.make({p.name: point[p.name] for p in SEARCH_SPACE.params})
         fdir = ctx.run_dir / "finalists" / f"{n}_{config_hash(point, length=10)}"
-        fctx = RunContext(cfg, ctx.run_id, fdir, ctx.cache)
+        entry = {"n": n, "dir": str(fdir), "point": point, "searcher": t["searcher"], "try": t["n"],
+                 "search_metrics": t["metrics"]}
         log.info("final setting %d of %d: %s", n, len(picked), point)
-        model = model_factory() if model_factory else None
-        stage0_dir = run_stage0(fctx, candidate, model=model, tokenizer=tokenizer,
-                                text_loader=text_loader).outputs["report"].parent
-        del model
-        ours1 = s1 + "_joint"
-        run_stage(fctx, 1, [s1], candidate, stage0_dir, ours=stage1_row(ours1)[1], **kw)
-        used: dict = {}
-        run_stage(fctx, 2, [s2], candidate, stage0_dir, after={"original": s1, "framework": ours1}, used=used,
-                  ours="prune", **kw)
-        before = {v: used[(s2, v)][:2] for v in ("original", "framework")}
-        run_stage(fctx, 3, [s3], candidate, stage0_dir, before=before, **kw)
-        for k, path in write_master(fdir).items():
-            outputs[f"finalist_{n}_{k}"] = path
-        index.append({"n": n, "dir": str(fdir), "point": point, "searcher": t["searcher"], "try": t["n"],
-                      "search_metrics": t["metrics"]})
-    outputs["finalists_index"] = ctx.run_dir / "finalists" / "index.json"
-    atomic_write_text(outputs["finalists_index"], json.dumps(index, indent=2, default=str))
+        if (fdir / "master_report.md").exists():  # finished before this run was stopped: resume after it
+            prev = next((e for e in _read_index(outputs["finalists_index"]) if e["dir"] == str(fdir)), {})
+            index.append({**entry, **prev})
+            continue
+        try:
+            outputs.update({f"finalist_{n}_{k}": p for k, p in _finalist(RunContext(cfg, ctx.run_id, fdir, ctx.cache),
+                                                                           point, entry, **kw).items()})
+        except Exception as e:  # noqa: BLE001 - one setting that fails must not lose the others
+            log.exception("final setting %d failed", n)
+            entry["error"] = f"{type(e).__name__}: {e}"
+        index.append(entry)
+        atomic_write_text(outputs["finalists_index"], json.dumps(index, indent=2, default=str))  # after each
     return outputs
+
+
+def _read_index(path: Path) -> list[dict[str, Any]]:
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+
+
+def _finalist(ctx: RunContext, point: dict[str, Any], entry: dict[str, Any], model_factory: Callable | None,
+              tokenizer, text_loader: Callable | None) -> dict[str, Path]:
+    """One final setting's Stage 0 and chained Stages 1-3 (run_finalists); a side whose Stage 2 row failed gets no
+    Stage 3 row, and `entry` says so."""
+    from sdf.reporting.master import write_master
+    from sdf.stage0.run import run_stage0
+    from sdf.stages.runner import run_stage, stage1_row
+
+    s1, s2, s3 = point["stage1_method"], point["stage2_method"], point["stage3_method"]
+    candidate = SEARCH_SPACE.make({p.name: point[p.name] for p in SEARCH_SPACE.params})
+    kw = dict(model_factory=model_factory, tokenizer=tokenizer, text_loader=text_loader)
+    model = model_factory() if model_factory else None
+    stage0_dir = run_stage0(ctx, candidate, model=model, tokenizer=tokenizer,
+                            text_loader=text_loader).outputs["report"].parent
+    del model
+    ours1 = s1 + "_joint"
+    run_stage(ctx, 1, [s1], candidate, stage0_dir, ours=stage1_row(ours1)[1], **kw)
+    used: dict = {}
+    run_stage(ctx, 2, [s2], candidate, stage0_dir, after={"original": s1, "framework": ours1}, used=used,
+              ours="prune", **kw)
+    before = {v: used[(s2, v)][:2] for v in ("original", "framework") if (s2, v) in used}  # absent: the row failed
+    if missing := [v for v in ("original", "framework") if v not in before]:
+        entry["stage3_not_run"] = f"the Stage 2 row failed, so no Stage 3 row for: {', '.join(missing)}"
+    if before:
+        run_stage(ctx, 3, [s3], candidate, stage0_dir, before=before, only=None if len(before) == 2 else next(iter(before)),
+                  **kw)
+    return write_master(ctx.run_dir)

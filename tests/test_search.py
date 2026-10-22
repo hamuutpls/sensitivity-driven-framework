@@ -329,7 +329,7 @@ def test_finalists_get_the_chained_standard_vs_ours_comparison_on_all_four_backe
         search.run_finalists(ctx, [{**t, "met": False}], **_kw(tiny_llama, tokenizer))
     seen.clear()
     out = search.run_finalists(ctx, [t, {**t, "values": [99.0, 99.0]}], **_kw(tiny_llama, tokenizer))
-    (entry,) = json.loads(out["finalists_index"].read_text())  # the beaten repeat is not a finalist
+    (entry,) = json.loads(out["finalists_index"].read_text())  # the repeat of the same point is listed once
     assert entry["point"] == point and entry["try"] == 7 and out["finalist_1_master_report"].exists()
     rows = {s: {(r["method"], r["variant"]): r for r in json.loads((Path(entry["dir"]) / f"stage_{s}" /
                                                                     "results.json").read_text())["rows"]}
@@ -346,6 +346,38 @@ def test_finalists_get_the_chained_standard_vs_ours_comparison_on_all_four_backe
     # Stage 3 rows are built on their own side's Stage 2 row; the backends measured that Stage 2 model
     assert all(rows[3][("h2o", v)]["info"]["built_on"] == "unstructured_prune" for v in ("original", "framework"))
     assert "Stage 2 model" in rows[3][("h2o", "framework")]["info"]["backends"]
+    for v in ("original", "framework"):  # each side's Stage 3 row carries its own Stage 2 row's size
+        assert rows[3][("h2o", v)]["metrics"]["predicted_weight_memory_gb"] == pytest.approx(
+            rows[2][("unstructured_prune", v)]["metrics"]["predicted_weight_memory_gb"])
+    assert rows[2][("unstructured_prune", "original")]["metrics"]["predicted_weight_memory_gb"] != pytest.approx(
+        rows[2][("unstructured_prune", "framework")]["metrics"]["predicted_weight_memory_gb"])
     # Our method's chained model is the one the search built: the same perplexity
     assert rows[3][("h2o", "framework")]["metrics"]["ppl_val"] == pytest.approx(searched["metrics"]["ppl_val"])
     assert {n for n, fp16 in seen if not fp16} == {"llamacpp", "vllm", "trtllm"}
+
+    # rerun with the same run_id: the finished setting is not built again and keeps its index entry
+    seen.clear()
+    again = search.run_finalists(ctx, [t], **_kw(tiny_llama, tokenizer))
+    assert not seen and json.loads(again["finalists_index"].read_text()) == [entry]
+
+    # a Stage 2 row that fails: that side gets no Stage 3 row, the index says so, and the next setting still runs
+    calls = []
+    real = runner._require
+
+    def fail_first_prune(m):
+        if m.name == "unstructured_prune":
+            calls.append(m)
+            if len(calls) == 1:  # the Standard row is built first
+                raise RuntimeError("out of memory")
+        real(m)
+
+    monkeypatch.setattr(runner, "_require", fail_first_prune)
+    other = _point(c, stage3_method="h2o", prune_ratio_aggressive=0.5)
+    ctx2 = start_run(c.with_overrides({"run.run_id": "test2"}))
+    out = search.run_finalists(ctx2, [{**t, "point": other},
+                                      {**t, "point": {**other, "calib_samples": 32}, "values": [0.0, 9.0]}],
+                               **_kw(tiny_llama, tokenizer))
+    first, second = json.loads(out["finalists_index"].read_text())
+    assert "original" in first["stage3_not_run"] and "error" not in first and "error" not in second
+    stage3 = json.loads((Path(first["dir"]) / "stage_3" / "results.json").read_text())["rows"]
+    assert {(r["method"], r["variant"]) for r in stage3} == {("baseline", "fp16"), ("h2o", "framework")}

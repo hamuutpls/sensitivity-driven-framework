@@ -328,6 +328,8 @@ def run_stage(
         raise ValueError("after= is for Stage 2 (after a Stage 1 method), before= for Stage 3 (after a Stage 2 row)")
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
     methods = methods_for(stage, method_names)
+    if ours and (bad := [m.name for m in methods if ours not in m.plans]):
+        raise ValueError(f"{bad} have no Stage 0 plan {ours!r} for Our method rows to follow")
     plans = all_plans = Stage0Plans.load(stage0_dir)
     device, handle, text_loader = setup(ctx, None, tokenizer, text_loader)
     dtype = getattr(torch, cfg.model.dtype)

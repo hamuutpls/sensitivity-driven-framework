@@ -120,3 +120,10 @@ def test_main_finalists_mode_keeps_the_search_runs_settings_and_adds_the_backend
     assert (cfg.eval.max_windows, cfg.search.budget, cfg.hyperparams["calib_samples"]) == (7, 3, 16)  # the search's
     assert (cfg.eval.llamacpp_dir, cfg.eval.llamacpp_convert, cfg.eval.vllm_python, cfg.eval.trtllm_python) == (
         "lc", "conv", "vpy", "tpy")
+    for k, v in {"RUN_ID": "searched", "OUTPUT_ROOT": str(tmp_path)}.items():  # the search's own folder
+        monkeypatch.setattr(main, k, v)
+    with pytest.raises(SystemExit, match="new run"):
+        main.main()
+    monkeypatch.setattr(main, "SEARCH_RUN", None)
+    with pytest.raises(SystemExit, match="needs SEARCH_RUN"):
+        main.main()

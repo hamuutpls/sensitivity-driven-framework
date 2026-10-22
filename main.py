@@ -158,7 +158,8 @@ SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]
 #    finished search (its best trade-off settings and the best per objective) is built again along the same chain
 #    0 -> 1 -> 2 -> 3, Standard and Our method, and measured on Hugging Face, llama.cpp, vLLM and TensorRT-LLM.
 #    The settings above are not used: everything comes from the search run's config.json, except the run's name,
-#    folders and the backends below. Results in <OUTPUT_ROOT>/<RUN_ID>/finalists/.
+#    folders and the backends below. Results in <OUTPUT_ROOT>/<RUN_ID>/finalists/. Set CACHE_DIR to the search's
+#    cache, so the Stage 0 profiles, FP16 and Standard rows are reused; set RUN_ID to resume a stopped run.
 # =====================================================================================================
 SEARCH_RUN = None  # the finished search's run folder, e.g. "thesis_compression/results/<search run_id>"
 LLAMACPP_DIR = None  # folder with llama-quantize, llama-bench and llama-perplexity
@@ -289,7 +290,11 @@ def main():
         from sdf.config import FrameworkConfig
         from sdf.search import run_finalists
 
+        if SEARCH_RUN is None:
+            raise SystemExit("MODE finalists needs SEARCH_RUN, the finished search's run folder")
         searched = Path(SEARCH_RUN)
+        if RUN_ID and (Path(OUTPUT_ROOT) / RUN_ID).resolve() == searched.resolve():
+            raise SystemExit("RUN_ID must name a new run, not the search's: its config.json would be overwritten")
         cfg = FrameworkConfig.from_dict(json.loads((searched / "config.json").read_text())).with_overrides({
             "run.output_root": OUTPUT_ROOT, "run.cache_dir": CACHE_DIR, "run.run_id": RUN_ID,
             "eval.llamacpp_dir": LLAMACPP_DIR, "eval.llamacpp_convert": LLAMACPP_CONVERT,
