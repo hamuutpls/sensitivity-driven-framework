@@ -81,5 +81,19 @@ def sweep_main(argv: list[str] | None = None) -> None:
         print(f"{name}: {path}")
 
 
+def search_report_main(argv: list[str] | None = None) -> None:
+    p = argparse.ArgumentParser(description="Write a settings search's report again from its saved tries (no model "
+                                            "is built)")
+    p.add_argument("run_dir", type=Path, help="the search run's directory: the one holding config.json and search/")
+    p.add_argument("--tests", help='the unit-test result of the code that made the numbers, e.g. '
+                                   '"417 passed, 3 skipped at 5f440dc"')
+    args = p.parse_args(argv)
+
+    from sdf.reporting.search import rebuild_search_report
+
+    for name, path in rebuild_search_report(args.run_dir, args.tests).items():
+        print(f"{name}: {path}")
+
+
 if __name__ == "__main__":
     stage0_main()

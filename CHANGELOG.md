@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-22: Search report laid out like the stage reports
+
+- search_report.md now has a summary, one section per question (best trade-off settings, search methods compared,
+  best setting for each goal), each with a "What this shows / What it means" box, and the big tables at the back.
+- The charts are shown in the report with captions that say which direction is better. New chart: the best
+  perplexity each search method had found so far, against the budget spent. Pareto charts mark tries under and over
+  the limit, show the size limit, and use the short search method names.
+- Tables give each setting's average bits (WxAy), units, and the speed in tokens per second next to the time per token.
+- The report states the unit-test result of the code that made the numbers, or that none was recorded.
+- `sdf-search-report <run_dir> --tests "..."` writes the search outputs again from the saved tries, no model built.
+
 ## 2026-10-22: Pruned models reach the backends (search and chain fix)
 
 - A pruned model (Stage 2 after Stage 1, as every search try and the chain's Stage 2 rows are) was refused by the
