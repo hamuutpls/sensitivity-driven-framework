@@ -388,3 +388,53 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     from sdf.reporting.search import write_search_report
 
     return write_search_report(ctx, trials, space)
+
+
+def run_finalists(ctx: RunContext, trials: list[dict[str, Any]], model_factory: Callable | None = None,
+                  tokenizer=None, text_loader: Callable | None = None) -> dict[str, Path]:
+    """The full comparison of the search's final settings (finalists) on every backend (Mohammad, 2026-10-22:
+    "Chained, Standard vs Ours"). Per setting, in <run_dir>/finalists/<n>_<hash>/: its Stage 0 plan, then the same
+    chain 0 -> 1 -> 2 -> 3 the search built, each stage's report with FP16, Standard (the same technique with its
+    default settings, no Stage 0) and Our method: Stage 1 the WxAy technique (Our method on the joint plan), Stage 2
+    its pruning technique after each side's Stage 1 row, Stage 3 its KV technique on each side's Stage 2 model; then
+    the master report. The backends cannot run the KV techniques, so on Stage 3 rows they measure the Stage 2
+    model (as in every run). finalists/index.json lists each setting and its folder."""
+    from sdf.reporting.master import write_master
+    from sdf.stage0.run import run_stage0
+    from sdf.stages.runner import run_stage, stage1_row
+
+    ev = ctx.cfg.eval
+    if missing := [k for k in ("llamacpp_dir", "llamacpp_convert", "vllm_python", "trtllm_python")
+                   if not getattr(ev, k)]:
+        raise ValueError(f"the final settings run on all four backends: set eval.{', eval.'.join(missing)}")
+    picked = finalists(trials, ctx.cfg.search.objectives)
+    if not picked:
+        raise ValueError("no full try of the search meets the requirement, so there is no final setting to compare")
+    cfg = ctx.cfg.with_overrides({"stage0.pruning_levels": [], "stage0.joint_plan": True})  # as evaluate() builds
+    kw = dict(model_factory=model_factory, tokenizer=tokenizer, text_loader=text_loader)
+    index, outputs = [], {}
+    for n, t in enumerate(picked, 1):
+        point = technique_space(cfg).validate(t["point"])
+        s1, s2, s3 = point["stage1_method"], point["stage2_method"], point["stage3_method"]
+        candidate = SEARCH_SPACE.make({p.name: point[p.name] for p in SEARCH_SPACE.params})
+        fdir = ctx.run_dir / "finalists" / f"{n}_{config_hash(point, length=10)}"
+        fctx = RunContext(cfg, ctx.run_id, fdir, ctx.cache)
+        log.info("final setting %d of %d: %s", n, len(picked), point)
+        model = model_factory() if model_factory else None
+        stage0_dir = run_stage0(fctx, candidate, model=model, tokenizer=tokenizer,
+                                text_loader=text_loader).outputs["report"].parent
+        del model
+        ours1 = s1 + "_joint"
+        run_stage(fctx, 1, [s1], candidate, stage0_dir, ours=stage1_row(ours1)[1], **kw)
+        used: dict = {}
+        run_stage(fctx, 2, [s2], candidate, stage0_dir, after={"original": s1, "framework": ours1}, used=used,
+                  ours="prune", **kw)
+        before = {v: used[(s2, v)][:2] for v in ("original", "framework")}
+        run_stage(fctx, 3, [s3], candidate, stage0_dir, before=before, **kw)
+        for k, path in write_master(fdir).items():
+            outputs[f"finalist_{n}_{k}"] = path
+        index.append({"n": n, "dir": str(fdir), "point": point, "searcher": t["searcher"], "try": t["n"],
+                      "search_metrics": t["metrics"]})
+    outputs["finalists_index"] = ctx.run_dir / "finalists" / "index.json"
+    atomic_write_text(outputs["finalists_index"], json.dumps(index, indent=2, default=str))
+    return outputs

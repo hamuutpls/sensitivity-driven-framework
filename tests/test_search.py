@@ -299,3 +299,53 @@ def test_mobo_does_not_keep_proposing_a_point_that_fails_after_building(cfg, mon
     assert not study.get_trials(states=(TrialState.FAIL,))  # the failures taught the model
     late = rec.trials[10:]
     assert sum(t["point"]["stage3_method"] == "h2o" for t in late) / len(late) < 0.25
+
+
+def test_finalists_get_the_chained_standard_vs_ours_comparison_on_all_four_backends(cfg, tiny_llama, tokenizer,
+                                                                                     monkeypatch):
+    from sdf.eval import llamacpp, trtllm_backend
+
+    seen = []
+
+    def fake(name):
+        def measure(model, tok, plan, *a, **k):
+            if plan is not None:
+                require_bits_only(plan, "the export")  # as the real exports do
+            seen.append((name, plan is None))
+            return {f"{name}_ppl_val": 9.0, f"{name}_decode_ms_per_token": 3.0}
+        return measure
+
+    for mod, name in ((llamacpp, "llamacpp"), (vllm_backend, "vllm"), (trtllm_backend, "trtllm")):
+        monkeypatch.setattr(mod, "measure", fake(name))
+    with pytest.raises(ValueError, match="eval.llamacpp_dir, eval.llamacpp_convert, eval.trtllm_python"):
+        search.run_finalists(start_run(cfg.with_overrides({"eval.vllm_python": "py"})), [], **_kw(tiny_llama, tokenizer))
+    c = cfg.with_overrides({"eval.llamacpp_dir": "lc", "eval.llamacpp_convert": "conv", "eval.vllm_python": "py",
+                            "eval.trtllm_python": "py"})
+    ctx = start_run(c)
+    point = _point(c, stage3_method="h2o")
+    searched = evaluate(ctx, point, **_kw(tiny_llama, tokenizer))  # the try as the search measured it
+    t = {**_t([searched["metrics"]["ppl_val"], 1.0], point=point), "n": 7, "metrics": searched["metrics"]}
+    with pytest.raises(ValueError, match="no full try"):
+        search.run_finalists(ctx, [{**t, "met": False}], **_kw(tiny_llama, tokenizer))
+    seen.clear()
+    out = search.run_finalists(ctx, [t, {**t, "values": [99.0, 99.0]}], **_kw(tiny_llama, tokenizer))
+    (entry,) = json.loads(out["finalists_index"].read_text())  # the beaten repeat is not a finalist
+    assert entry["point"] == point and entry["try"] == 7 and out["finalist_1_master_report"].exists()
+    rows = {s: {(r["method"], r["variant"]): r for r in json.loads((Path(entry["dir"]) / f"stage_{s}" /
+                                                                    "results.json").read_text())["rows"]}
+            for s in (1, 2, 3)}
+    s1 = point["stage1_method"]
+    assert set(rows[1]) == {("baseline", "fp16"), (s1, "original"), (s1 + "_joint", "framework")}
+    assert set(rows[2]) == {("baseline", "fp16"), ("unstructured_prune", "original"),
+                            ("unstructured_prune", "framework")}  # Our method on the plan the search used only
+    assert set(rows[3]) == {("baseline", "fp16"), ("h2o", "original"), ("h2o", "framework")}
+    for s in (1, 2, 3):
+        for r in rows[s].values():
+            assert r["status"] == "ok", r.get("error")
+            assert all(r["metrics"].get(f"{n}_ppl_val") == 9.0 for n in ("llamacpp", "vllm", "trtllm")), (s, r["method"])
+    # Stage 3 rows are built on their own side's Stage 2 row; the backends measured that Stage 2 model
+    assert all(rows[3][("h2o", v)]["info"]["built_on"] == "unstructured_prune" for v in ("original", "framework"))
+    assert "Stage 2 model" in rows[3][("h2o", "framework")]["info"]["backends"]
+    # Our method's chained model is the one the search built: the same perplexity
+    assert rows[3][("h2o", "framework")]["metrics"]["ppl_val"] == pytest.approx(searched["metrics"]["ppl_val"])
+    assert {n for n, fp16 in seen if not fp16} == {"llamacpp", "vllm", "trtllm"}
