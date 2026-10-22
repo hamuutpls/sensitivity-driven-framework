@@ -329,7 +329,8 @@ def best_per_objective(trials: list[dict[str, Any]], objectives: list[str]) -> d
     """Per objective, the full-size trial that meets the requirement with its lowest value (None if no trial does);
     a tie goes to the one better on the other objectives, so the best is never beaten on every objective."""
     met = [t for t in trials if t["full"] and t["met"]]
-    return {o: min(met, key=lambda t, i=i: (t["values"][i], t["values"]), default=None) for i, o in enumerate(objectives)}
+    return {o: min(met, key=lambda t, i=i: (t["values"][i], t["values"]), default=None)
+            for i, o in enumerate(objectives)}
 
 
 def finalists(trials: list[dict[str, Any]], objectives: list[str]) -> list[dict[str, Any]]:
@@ -461,6 +462,6 @@ def _finalist(ctx: RunContext, point: dict[str, Any], entry: dict[str, Any], mod
     if missing := [v for v in ("original", "framework") if v not in before]:
         entry["stage3_not_run"] = f"the Stage 2 row failed, so no Stage 3 row for: {', '.join(missing)}"
     if before:
-        run_stage(ctx, 3, [s3], candidate, stage0_dir, before=before, only=None if len(before) == 2 else next(iter(before)),
-                  **kw)
+        only = None if len(before) == 2 else next(iter(before))
+        run_stage(ctx, 3, [s3], candidate, stage0_dir, before=before, only=only, **kw)
     return write_master(ctx.run_dir)
