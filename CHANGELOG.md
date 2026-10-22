@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-22: Pruned models reach the backends (search and chain fix)
+
+- A pruned model (Stage 2 after Stage 1, as every search try and the chain's Stage 2 rows are) was refused by the
+  compressed-tensors (vLLM) and GPTQ-format (vLLM, TensorRT-LLM) exports ("is a quantization method and removes
+  nothing"), so its vLLM and TensorRT-LLM numbers were missing and every search try failed.
+  The backends now get the bits-only plan: the pruned weights are already zero in the model. vLLM VERSION 6 and
+  TensorRT-LLM VERSION 5, so their numbers are measured again.
+
 ## 2026-10-20: the other ponytail audit fixes (audits 2026-10-19 and 2026-10-20)
 
 How results are judged (Mohammad's 09:17 choice, 2026-10-20 findings 21 and 30):
