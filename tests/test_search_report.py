@@ -95,3 +95,13 @@ def test_best_so_far_keeps_the_lowest_full_try_under_the_limit():
 def test_tokens_per_second_only_for_a_real_time():
     assert _tokens_per_s(4.0) == 250.0
     assert _tokens_per_s(None) is None and _tokens_per_s(0) is None and _tokens_per_s(FAILED) is None
+
+
+def test_a_vllm_first_objective_gets_its_own_best_column(run_dir):
+    run, _ = run_dir
+    cfg = json.loads((run / "config.json").read_text())
+    cfg["search"]["objectives"] = OBJ[::-1]  # "vLLM ..." keeps its capitals in the comparison key
+    (run / "config.json").write_text(json.dumps(cfg))
+    search_report_main([str(run)])
+    text = (run / "search" / "search_report.md").read_text()
+    assert "Best vLLM decode time per token (lower is better)" in text and "lowest vLLM decode time per token" in text

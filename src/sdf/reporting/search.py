@@ -14,7 +14,7 @@ from sdf.eval import vllm_backend  # noqa: F401 - registers the vLLM metric name
 from sdf.config import FrameworkConfig
 from sdf.reporting.metrics import METRICS, is_number, label
 from sdf.run import RunContext
-from sdf.search import FAILED, hypervolume, pareto
+from sdf.search import FAILED, hypervolume, pareto, technique_space
 from sdf.search_space import SearchSpace
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.logging import get_logger
@@ -46,7 +46,7 @@ def compare_searchers(trials: list[dict[str, Any]], objectives: list[str]) -> li
             "Cost, in full tries": round(sum(t["cost"] for t in ts), 3),
             "Time, minutes": round(sum(t.get("time_s", 0.0) for t in ts) / 60, 1),
             "Share of tries under the limit (higher is better)": len([t for t in ts if t["met"]]) / len(ts),
-            f"Best {label(objectives[0]).lower()} (lower is better)": best["values"][0] if best else None,
+            f"Best {_lower(label(objectives[0]))} (lower is better)": best["values"][0] if best else None,
             "Cost until it found that best (lower is better)":
                 round(sum(t["cost"] for t in ts[: ts.index(best) + 1]), 3) if best else None,
             "Hypervolume (higher is better)": hypervolume(ts, ref) if ref else 0.0,
@@ -157,13 +157,14 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             "and activation plan), then Stage 2 (pruning: removing numbers), then Stage 3 (compressing the KV cache, "
             "the model's memory of earlier words). A setting is the technique of each stage plus the numbers that tune "
             f"them. Only settings that meet the limit count ({_req(cfg)}). Among those the search looks for the lowest "
-            + " and the lowest ".join(_lower(label(o)) for o in s.objectives) + ". Three search methods each had the "
+            + " and the lowest ".join(_lower(label(o)) for o in s.objectives) + ". " + f"{len(s.searchers)} search method(s) each had the "
             f"same budget of {s.budget} full tries: "
             + "; ".join(SEARCHER_NAMES[n] for n in s.searchers if n in SEARCHER_NAMES) + ".",
-            f"{len(trials)} settings were tried and {len(built)} models were built; {len(met)} measured models met "
-            f"the limit. {len(front)} of them are on the best trade-off line (none can get better on one goal "
-            "without getting worse on another)."
-            + (f" The most accurate one ({first} {_fmt(top['metrics'].get(s.objectives[0]))}) uses "
+            f"There were {len(trials)} tries and {len(built)} models were built; {len(met)} tries measured on all the "
+            "windows met the limit (a setting two methods both found counts twice). "
+            f"{len(front)} distinct settings are on the best trade-off line (none can get better on one goal without "
+            "getting worse on another)."
+            + (f" The one with the lowest {first} ({_fmt(top['metrics'].get(s.objectives[0]))}) uses "
                f"{setting_value('stage1_method', top['point']['stage1_method'])}"
                + (f" ({_wxay(top)})" if _wxay(top) else "") + ", "
                f"{setting_value('stage2_method', top['point']['stage2_method'])} with a pruning share of "
@@ -171,7 +172,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
                f"{setting_value('stage3_method', top['point']['stage3_method'])}." if top else
                " No setting met the limit, so there is no best setting to recommend.")),
         "## 1. Best trade-off settings", "",
-        *_box("Every setting on the best trade-off line, lowest perplexity first, with the model size, the speed "
+        *_box(f"Every setting on the best trade-off line, lowest {first} first, with the model size, the speed "
               "and the held-out perplexity. Held-out perplexity was measured but never used to choose.",
               "Each row is a fair choice depending on whether accuracy or speed matters more. If held-out perplexity "
               "stays close to validation perplexity, the choice holds on text the search never saw. Speed comes from "
@@ -181,9 +182,9 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             + [[str(i + 1)] + [setting_value(n, t["point"][n]) for n in tech] + cells(t) for i, t in enumerate(front)]),
         *[line for x in ppl_x for line in (
             f"![{label(s.objectives[0])} against {_lower(label(x))}](pareto_ppl_vs_{x}.png)", "",
-            f"*Every measured model, by search method: {first} (lower is better) against "
+            f"*Every model measured on all the evaluation windows, by search method: {first} (lower is better) against "
             f"{_lower(label(x))} (lower is better), so the best settings sit towards the bottom left. Filled circles met "
-            "the limit, crosses did not; black rings are the best trade-off settings of section 1"
+            "the limit; crosses (if any) were built but missed another part of the limit; black rings are the best trade-off settings of section 1"
             + (", joined by a line." if x in s.objectives else " (best on " + " and ".join(
                 _lower(label(o)) for o in s.objectives) + " together, so not all at the bottom left here).")
             + (" The dashed line is the size limit." if x == s.memory_metric and cfg.requirement.target_memory_gb
@@ -246,9 +247,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
 
 def rebuild_search_report(run_dir: str | Path, tests: str | None = None) -> dict[str, Path]:
     """The search outputs again from a finished run's config.json and search/trials.json, with no model built."""
-    from sdf.search import technique_space
-
-    run_dir = Path(run_dir)
+    run_dir = Path(run_dir).resolve()
     cfg = FrameworkConfig.from_dict(json.loads((run_dir / "config.json").read_text(encoding="utf-8")))
     trials = json.loads((run_dir / "search" / "trials.json").read_text(encoding="utf-8"))
     ctx = RunContext(cfg=cfg, run_id=run_dir.name, run_dir=run_dir, cache=None)  # nothing is built, so no cache
