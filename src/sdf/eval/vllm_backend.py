@@ -37,7 +37,7 @@ VERSION = 6  # 6: a pruned model is exported with the bits-only plan (it was ref
 
 _NOTE = " Measured in vLLM, a program for running models on servers, after saving the model at the plan's bits."
 METRICS.update({
-    "vllm_size_gb": MetricSpec("vLLM file size", "GB", "lower", "real file size of the compressed model",
+    "vllm_size_gb": MetricSpec("vLLM file size", "GB", "lower", "file size of the model in vLLM's format",
                                "The size of the model file, in gigabytes." + _NOTE),
     "vllm_weight_memory_gb": MetricSpec("vLLM weight memory", "GB", "lower", "memory the weights take on the graphics card",
                                         "Memory taken by the model's numbers once loaded." + _NOTE),
