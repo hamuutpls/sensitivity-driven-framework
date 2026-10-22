@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-22: Search time counts reused models (report fix)
+
+- A search try whose model came back from the cache (built by another searcher, or before a restart) had a time of
+  about 0 s, so the searcher table's "Time, minutes" was too low (MOBO by about 4 h after the 30-try restart).
+  The cache now keeps each build's time, and a reused model reports it. A cache entry from before this change has no
+  time, so that try's time is unknown and the searcher's total is shown as unknown, not too low.
+
 ## 2026-10-22: Pruned models reach the backends (search and chain fix)
 
 - A pruned model (Stage 2 after Stage 1, as every search try and the chain's Stage 2 rows are) was refused by the

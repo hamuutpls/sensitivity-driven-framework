@@ -288,3 +288,31 @@ def test_mobo_does_not_keep_proposing_a_point_that_fails_after_building(cfg, mon
     assert not study.get_trials(states=(TrialState.FAIL,))  # the failures taught the model
     late = rec.trials[10:]
     assert sum(t["point"]["stage3_method"] == "h2o" for t in late) / len(late) < 0.25
+
+
+def test_a_model_reused_from_the_cache_reports_the_time_it_took_to_build(cfg, monkeypatch):
+    import time
+
+    def build(*a):
+        time.sleep(0.2)
+        return {"metrics": {"ppl_val": 10.0, "decode_ms_per_token_mean": 1.0, "predicted_weight_memory_gb": 0.5},
+                "errors": {}}
+
+    monkeypatch.setattr(search, "_build_and_measure", build)
+    ctx, p = start_run(cfg), _point(cfg)
+    first = Recorder(ctx, "a", 6)(p)
+    assert not first["cached"] and first["time_s"] >= 0.2
+    again = Recorder(ctx, "b", 6)(p)  # another searcher, or the same one after a restart: cached, still a built model
+    assert again["cached"] and again["cost"] == 1 and again["time_s"] == first["time_s"]
+    # a cache entry written before the time was kept: unknown, and the searcher's total is not shown as too low
+    path, = (ctx.cache.root / "search_point").glob("*.json")
+    entry = json.loads(path.read_text())
+    del entry["value"]["time_s"]
+    path.write_text(json.dumps(entry))
+    old = Recorder(ctx, "c", 6)(p)
+    assert old["time_s"] is None
+
+    from sdf.reporting.search import compare_searchers
+
+    rows = {r["Search method"]: r["Time, minutes"] for r in compare_searchers([first, again, old], HF)}
+    assert rows["c"] is None and rows["a"] == rows["b"] is not None

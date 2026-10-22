@@ -43,7 +43,8 @@ def compare_searchers(trials: list[dict[str, Any]], objectives: list[str]) -> li
             "Models built": sum(1 for t in ts if t["cost"] > 0),
             "Of those, on all evaluation windows": sum(1 for t in ts if t["cost"] > 0 and t["full"]),
             "Cost, in full tries": round(sum(t["cost"] for t in ts), 3),
-            "Time, minutes": round(sum(t.get("time_s", 0.0) for t in ts) / 60, 1),
+            "Time, minutes": None if any(t.get("time_s") is None for t in ts)  # a reused model of unknown build time
+            else round(sum(t["time_s"] for t in ts) / 60, 1),
             "Share of tries under the limit (higher is better)": len([t for t in ts if t["met"]]) / len(ts),
             f"Best {label(objectives[0]).lower()} (lower is better)": best["values"][0] if best else None,
             "Cost until it found that best (lower is better)":

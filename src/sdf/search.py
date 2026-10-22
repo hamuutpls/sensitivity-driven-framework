@@ -79,7 +79,8 @@ def evaluate(ctx: RunContext, point: dict[str, Any], max_windows: int | None = N
     if cached:
         result = json.loads(path.read_text(encoding="utf-8"))["value"]
     else:
-        result = build()
+        t0 = time.perf_counter()  # the build's time is kept in the cache, so a replay reports it
+        result = {**build(), "time_s": time.perf_counter() - t0}
         if "error" not in result and not result.get("errors") and "not_built" not in result:  # a failure may be passing (a crash, out of
             atomic_write_text(path, json.dumps({"key": key, "value": result}, default=str))  # memory): retried
     if "error" not in result:  # checked after the cache, so a changed limit applies to points already measured
@@ -196,7 +197,11 @@ class Recorder:
              "values": values if ok else [FAILED] * len(values),
              "violation": FAILED if "error" in r else violation(r),
              "metrics": r.get("metrics", {}), "dir": r["dir"],
-             "time_s": time.perf_counter() - t0, "cached": r["cached"],
+             # a built model's time is its build's, also when reused from the cache (another searcher's, or an earlier
+             # run's); None if that cache entry is older than the field
+             "time_s": (r.get("time_s") if r["cached"] else r.get("time_s", time.perf_counter() - t0))
+             if built and not repeat else time.perf_counter() - t0,
+             "cached": r["cached"],
              "error": r.get("error") or r.get("not_built") or (None if ok else "; ".join(f"{k}: {v}" for k, v in r.get("errors", {}).items())
                                          or f"no {[o for o, v in zip(self.objectives, values) if v is None]}")}
         self.trials.append(t)
