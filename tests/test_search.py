@@ -355,10 +355,19 @@ def test_finalists_get_the_chained_standard_vs_ours_comparison_on_all_four_backe
     assert rows[3][("h2o", "framework")]["metrics"]["ppl_val"] == pytest.approx(searched["metrics"]["ppl_val"])
     assert {n for n, fp16 in seen if not fp16} == {"llamacpp", "vllm", "trtllm"}
 
-    # rerun with the same run_id: the finished setting is not built again and keeps its index entry
+    # rerun with the same run_id: the finished setting is not built again and keeps its index entry, also when a
+    # setting now ahead of it puts it second in the list
     seen.clear()
     again = search.run_finalists(ctx, [t], **_kw(tiny_llama, tokenizer))
     assert not seen and json.loads(again["finalists_index"].read_text()) == [entry]
+    monkeypatch.setattr(search, "_finalist", lambda *a, **k: {})  # the new setting: not built here
+    ahead = {**t, "point": {**point, "calib_samples": 32}, "values": [0.0, 9.0]}
+    first, second = json.loads(search.run_finalists(ctx, [ahead, t], **_kw(tiny_llama, tokenizer))
+                               ["finalists_index"].read_text())
+    assert second["point"] == point and second["dir"] == entry["dir"] and not seen
+    monkeypatch.undo()
+    for mod, name in ((llamacpp, "llamacpp"), (vllm_backend, "vllm"), (trtllm_backend, "trtllm")):
+        monkeypatch.setattr(mod, "measure", fake(name))
 
     # a Stage 2 row that fails: that side gets no Stage 3 row, the index says so, and the next setting still runs
     calls = []

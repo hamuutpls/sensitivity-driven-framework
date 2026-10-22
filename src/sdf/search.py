@@ -401,7 +401,7 @@ def run_finalists(ctx: RunContext, trials: list[dict[str, Any]], model_factory: 
     the master report. The backends cannot run the KV techniques, so on Stage 3 rows they measure the Stage 2
     model (as in every run). finalists/index.json lists each setting and its folder, rewritten after each one; a
     setting that fails is recorded there with its error and the next one runs. Rerun with the same run_id, a setting
-    whose master report exists is not built again."""
+    whose master report exists is not built again (found by the setting, whatever its place in the list)."""
     ev = ctx.cfg.eval
     if missing := [k for k in ("llamacpp_dir", "llamacpp_convert", "vllm_python", "trtllm_python")
                    if not getattr(ev, k)]:
@@ -415,20 +415,21 @@ def run_finalists(ctx: RunContext, trials: list[dict[str, Any]], model_factory: 
     outputs["finalists_index"] = ctx.run_dir / "finalists" / "index.json"
     for n, t in enumerate(picked, 1):
         point = technique_space(cfg).validate(t["point"])
-        fdir = ctx.run_dir / "finalists" / f"{n}_{config_hash(point, length=10)}"
+        h = config_hash(point, length=10)
+        done = [d for d in (ctx.run_dir / "finalists").glob(f"*_{h}") if (d / "master_report.md").exists()]
+        fdir = done[0] if done else ctx.run_dir / "finalists" / f"{n}_{h}"  # a finished one is found by its setting
         entry = {"n": n, "dir": str(fdir), "point": point, "searcher": t["searcher"], "try": t["n"],
                  "search_metrics": t["metrics"]}
         log.info("final setting %d of %d: %s", n, len(picked), point)
-        if (fdir / "master_report.md").exists():  # finished before this run was stopped: resume after it
-            prev = next((e for e in _read_index(outputs["finalists_index"]) if e["dir"] == str(fdir)), {})
-            index.append({**entry, **prev})
-            continue
-        try:
-            outputs.update({f"finalist_{n}_{k}": p for k, p in _finalist(RunContext(cfg, ctx.run_id, fdir, ctx.cache),
-                                                                           point, entry, **kw).items()})
-        except Exception as e:  # noqa: BLE001 - one setting that fails must not lose the others
-            log.exception("final setting %d failed", n)
-            entry["error"] = f"{type(e).__name__}: {e}"
+        if done:  # finished before this run was stopped: resume after it
+            entry.update(next((e for e in _read_index(outputs["finalists_index"]) if e["dir"] == str(fdir)), {}))
+        else:
+            try:
+                outputs.update({f"finalist_{n}_{k}": p for k, p in _finalist(
+                    RunContext(cfg, ctx.run_id, fdir, ctx.cache), point, entry, **kw).items()})
+            except Exception as e:  # noqa: BLE001 - one setting that fails must not lose the others
+                log.exception("final setting %d failed", n)
+                entry["error"] = f"{type(e).__name__}: {e}"
         index.append(entry)
         atomic_write_text(outputs["finalists_index"], json.dumps(index, indent=2, default=str))  # after each
     return outputs

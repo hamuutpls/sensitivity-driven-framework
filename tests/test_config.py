@@ -95,6 +95,7 @@ def test_main_settings_build_a_valid_config(monkeypatch):
 def test_main_finalists_mode_keeps_the_search_runs_settings_and_adds_the_backends(monkeypatch, tmp_path):
     import importlib.util
     import json
+    import os
     from pathlib import Path
 
     from sdf import search
@@ -107,13 +108,22 @@ def test_main_finalists_mode_keeps_the_search_runs_settings_and_adds_the_backend
     (searched / "search").mkdir(parents=True)
     old = FrameworkConfig().with_overrides({"eval.max_windows": 7, "search.budget": 3, "hyperparams.calib_samples": 16})
     (searched / "config.json").write_text(json.dumps(old.to_dict()))
-    (searched / "search" / "trials.json").write_text('[{"n": 1}]')
+    trials = searched / "search" / "trials.json"
+    trials.write_text('[{"n": 1}]')
     got = {}
     monkeypatch.setattr(search, "run_finalists", lambda ctx, trials: got.update(cfg=ctx.cfg, trials=trials) or {})
     for k, v in {"MODE": "finalists", "SEARCH_RUN": str(searched), "OUTPUT_ROOT": str(tmp_path / "out"),
                  "CACHE_DIR": str(tmp_path / "cache"), "RUN_ID": "fin", "LLAMACPP_DIR": "lc",
                  "LLAMACPP_CONVERT": "conv", "VLLM_PYTHON": "vpy", "TRTLLM_PYTHON": "tpy"}.items():
         monkeypatch.setattr(main, k, v)
+    with pytest.raises(SystemExit, match="only after the search has finished"):  # still running: no report yet
+        main.main()
+    report = searched / "search" / "search_report.md"
+    report.write_text("# Settings search")
+    os.utime(trials, (report.stat().st_mtime + 10,) * 2)  # rewritten by a search that started again
+    with pytest.raises(SystemExit, match="only after the search has finished"):
+        main.main()
+    os.utime(report, (trials.stat().st_mtime + 1,) * 2)
     main.main()
     cfg = got["cfg"]
     assert got["trials"] == [{"n": 1}] and cfg.run.run_id == "fin" and cfg.run.output_root == str(tmp_path / "out")

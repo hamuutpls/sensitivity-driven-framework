@@ -9,7 +9,10 @@
   run's name, folders and backends are set. Output per setting: results/<run_id>/finalists/<n>_<hash>/ with its
   Stage 0-3 reports and the master report, and finalists/index.json.
 - Our method rows of these stages follow only the plan the search used (the joint plan in Stage 1, the pruning plan in
-  Stage 2), via run_stage's new `ours` argument; other modes are unchanged.
+  Stage 2), via run_stage's new `ours` argument; other modes are unchanged. So the finalists' Stage 2 has no "same
+  amount removed" (prune_same_size) Our method row: the search never built it.
+- main.py refuses MODE "finalists" until the search has finished (its search_report.md, written last, is newer than
+  trials.json), so it never picks from a partial set while the search still runs.
 - The search report's "Best configs" breaks a tie on one objective by the other objectives, so the best is never a
   setting another one beats on every objective (before, the first tried won the tie).
 
