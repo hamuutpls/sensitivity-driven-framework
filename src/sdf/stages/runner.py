@@ -309,6 +309,7 @@ def run_stage(
     subdir: str | None = None,
     used: dict[tuple[str, str], tuple[Method, Any, float | None]] | None = None,
     only: str | None = None,
+    ours: str | None = None,
 ) -> dict[str, Path]:
     """Run one of Stages 1-3 with `method_names` (see sdf.stages.methods.METHODS). `model_factory` returns a
     fresh FP16 model on the right device (default: from_pretrained); tests pass a tiny model's deepcopy.
@@ -319,13 +320,16 @@ def run_stage(
     (method, plan) built on the fresh model before the row's method, e.g. the best Stage 2 row. `subdir`: the
     report folder instead of stage_<N>/. `used`, when given, is filled with (row name, variant) -> (method, plan,
     pruning level) of every row, so the next stage can rebuild a row exactly. `only`: "original" or "framework" to
-    run only that side's rows (the chain follows each side's rows on its own)."""
+    run only that side's rows (the chain follows each side's rows on its own). `ours`: the one Stage 0 plan key Our
+    method rows follow (e.g. "joint_weights"), instead of every plan the method has."""
     if stage not in TITLES:
         raise ValueError(f"run_stage runs Stages 1-3, not {stage}")
     if after and stage != 2 or before and stage != 3:
         raise ValueError("after= is for Stage 2 (after a Stage 1 method), before= for Stage 3 (after a Stage 2 row)")
     cfg, s0 = ctx.cfg, ctx.cfg.stage0
     methods = methods_for(stage, method_names)
+    if ours and (bad := [m.name for m in methods if ours not in m.plans]):
+        raise ValueError(f"{bad} have no Stage 0 plan {ours!r} for Our method rows to follow")
     plans = all_plans = Stage0Plans.load(stage0_dir)
     device, handle, text_loader = setup(ctx, None, tokenizer, text_loader)
     dtype = getattr(torch, cfg.model.dtype)
@@ -610,7 +614,7 @@ def run_stage(
                 row.info.update(not_on_backends(m))
                 rep.add_raw(m.name, "original", result["raw"])
 
-        for plan_key in mf.plans if only != "original" else ():
+        for plan_key in [k for k in mf.plans if ours in (None, k)] if only != "original" else ():
             suffix, *plain = _PLAN_ROWS.get(plan_key, ("",))
             info = {"compare_to": mf.name, "plan_file": plans.files[plan_key], "simulated": mf.simulated}
             if plain:

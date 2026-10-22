@@ -13,7 +13,7 @@ from openpyxl.styles import Font
 from sdf.eval import vllm_backend  # noqa: F401 - registers the vLLM metric names
 from sdf.reporting.metrics import label
 from sdf.run import RunContext
-from sdf.search import FAILED, hypervolume, pareto
+from sdf.search import FAILED, best_per_objective, hypervolume, pareto
 from sdf.search_space import SearchSpace
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.logging import get_logger
@@ -91,8 +91,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
     d.mkdir(parents=True, exist_ok=True)
     comparison = compare_searchers(trials, s.objectives)
     front = sorted(pareto(trials), key=lambda t: t["values"][0])
-    best = {o: min((t for t in trials if t["full"] and t["met"]), key=lambda t, i=i: t["values"][i], default=None)
-            for i, o in enumerate(s.objectives)}
+    best = best_per_objective(trials, s.objectives)
     names = [p.name for p in space.params]
     outputs = {"search_trials": d / "trials.json"}
     atomic_write_text(outputs["search_trials"], json.dumps(trials, indent=2, default=str))

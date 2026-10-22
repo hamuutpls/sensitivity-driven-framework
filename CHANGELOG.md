@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-22: the search's final settings on all four backends (MODE "finalists")
+
+- New MODE "finalists" in main.py (section 9; Mohammad's choice "Chained, Standard vs Ours"). After a search, each
+  final setting (the best trade-off settings plus the best per objective, `search.finalists`) is built again along
+  the chain 0 -> 1 -> 2 -> 3 the search used, Standard and Our method, and measured on Hugging Face, llama.cpp, vLLM
+  and TensorRT-LLM. The settings come from the search run's config.json, so the conditions are the same; only the
+  run's name, folders and backends are set. Output per setting: results/<run_id>/finalists/<n>_<hash>/ with its
+  Stage 0-3 reports and the master report, and finalists/index.json.
+- Our method rows of these stages follow only the plan the search used (the joint plan in Stage 1, the pruning plan in
+  Stage 2), via run_stage's new `ours` argument; other modes are unchanged. So the finalists' Stage 2 has no "same
+  amount removed" (prune_same_size) Our method row: the search never built it.
+- main.py refuses MODE "finalists" until the search has finished (its search_report.md, written last, is newer than
+  trials.json), so it never picks from a partial set while the search still runs.
+- The search report's "Best configs" breaks a tie on one objective by the other objectives, so the best is never a
+  setting another one beats on every objective (before, the first tried won the tie).
+
 ## 2026-10-22: Pruned models reach the backends (search and chain fix)
 
 - A pruned model (Stage 2 after Stage 1, as every search try and the chain's Stage 2 rows are) was refused by the

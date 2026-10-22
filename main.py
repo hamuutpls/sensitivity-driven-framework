@@ -17,6 +17,7 @@ MODE = "single"  # "single": one Stage 0 run with the settings in section 2
 #                            section 8 with the lowest perplexity and latency; MOBO, MFBO and NSGA-III compared
 #                  "chain": Stages 0 -> 1 -> 2 -> 3 -> 4 in a row: every row on a side's memory vs perplexity trade-off
 #                           line (Standard and Our method each their own; Stage 1: WxAy rows) goes into the next stage
+#                  "finalists": after a search, the full comparison of its final settings (section 9) on all four backends
 
 MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 OUTPUT_ROOT = "thesis_compression/results"  # local folder, relative to where you run; results/<run_id>/stage_0/
@@ -152,6 +153,20 @@ SEARCH_STAGE1 = [f"{w}_with_{a}" for w in ("rtn", "gptq", "awq", "omniquant", "s
 SEARCH_STAGE2 = ["unstructured_prune", "structured_prune"]  # pruning techniques (low-rank cannot follow Stage 1)
 SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]  # KV-cache techniques
 
+# =====================================================================================================
+# 9. Final settings (MODE = "finalists"; Mohammad, 2026-10-22: "Chained, Standard vs Ours"). Each final setting of a
+#    finished search (its best trade-off settings and the best per objective) is built again along the same chain
+#    0 -> 1 -> 2 -> 3, Standard and Our method, and measured on Hugging Face, llama.cpp, vLLM and TensorRT-LLM.
+#    The settings above are not used: everything comes from the search run's config.json, except the run's name,
+#    folders and the backends below. Results in <OUTPUT_ROOT>/<RUN_ID>/finalists/. Run it only after the search has
+#    finished (it refuses otherwise); then set CACHE_DIR to the search's cache, so the Stage 0 profiles, FP16 and
+#    Standard rows are reused. Set RUN_ID to resume a stopped run.
+# =====================================================================================================
+SEARCH_RUN = None  # the finished search's run folder, e.g. "thesis_compression/results/<search run_id>"
+LLAMACPP_DIR = None  # folder with llama-quantize, llama-bench and llama-perplexity
+LLAMACPP_CONVERT = None  # path of llama.cpp's convert_hf_to_gguf.py
+TRTLLM_PYTHON = None  # the Python of the TensorRT-LLM install (Linux only); VLLM_PYTHON is in section 8
+
 
 # =====================================================================================================
 def build_config():
@@ -269,6 +284,27 @@ def main():
         from sdf.search import run_search
 
         outputs = run_search(start_run(cfg))
+    elif MODE == "finalists":
+        import json
+        from pathlib import Path
+
+        from sdf.config import FrameworkConfig
+        from sdf.search import run_finalists
+
+        if SEARCH_RUN is None:
+            raise SystemExit("MODE finalists needs SEARCH_RUN, the finished search's run folder")
+        searched = Path(SEARCH_RUN)
+        trials, report = searched / "search" / "trials.json", searched / "search" / "search_report.md"
+        if not report.exists() or report.stat().st_mtime < trials.stat().st_mtime:  # the report is written last
+            raise SystemExit(f"{searched} has no finished search (no search_report.md newer than trials.json): run "
+                             "finalists only after the search has finished")
+        if RUN_ID and (Path(OUTPUT_ROOT) / RUN_ID).resolve() == searched.resolve():
+            raise SystemExit("RUN_ID must name a new run, not the search's: its config.json would be overwritten")
+        cfg = FrameworkConfig.from_dict(json.loads((searched / "config.json").read_text())).with_overrides({
+            "run.output_root": OUTPUT_ROOT, "run.cache_dir": CACHE_DIR, "run.run_id": RUN_ID,
+            "eval.llamacpp_dir": LLAMACPP_DIR, "eval.llamacpp_convert": LLAMACPP_CONVERT,
+            "eval.vllm_python": VLLM_PYTHON, "eval.trtllm_python": TRTLLM_PYTHON})
+        outputs = run_finalists(start_run(cfg), json.loads(trials.read_text()))
     elif MODE == "chain":
         from sdf.stage0.run import run_stage0
         from sdf.stages.runner import run_chain
@@ -282,7 +318,7 @@ def main():
         outputs.update(run_chain(ctx, candidate, stage0_dir, measure_fp16=MEASURE_FP16))
     else:
         raise SystemExit("MODE must be 'single', 'sweep', 'compare_scores', 'prune_sweep', 'threshold_sweep', 'stages', "
-                         f"'chain' or 'search', not {MODE!r}")
+                         f"'chain', 'search' or 'finalists', not {MODE!r}")
     for name, path in outputs.items():
         print(f"{name}: {path}")
 

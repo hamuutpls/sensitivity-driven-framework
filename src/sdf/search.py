@@ -325,6 +325,26 @@ def pareto(trials: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [t for t in ok if not any(_dominates(o["values"], t["values"]) for o in ok)]
 
 
+def best_per_objective(trials: list[dict[str, Any]], objectives: list[str]) -> dict[str, dict[str, Any] | None]:
+    """Per objective, the full-size trial that meets the requirement with its lowest value (None if no trial does);
+    a tie goes to the one better on the other objectives, so the best is never beaten on every objective."""
+    met = [t for t in trials if t["full"] and t["met"]]
+    return {o: min(met, key=lambda t, i=i: (t["values"][i], t["values"]), default=None)
+            for i, o in enumerate(objectives)}
+
+
+def finalists(trials: list[dict[str, Any]], objectives: list[str]) -> list[dict[str, Any]]:
+    """The settings that get the full comparison after the search (project rule: the final trade-off candidates and
+    the best per objective): the Pareto trials, then any best-per-objective trial not among them, one per point."""
+    out = pareto(trials)
+    seen = {json.dumps(t["point"], sort_keys=True) for t in out}
+    for t in best_per_objective(trials, objectives).values():
+        if t and (k := json.dumps(t["point"], sort_keys=True)) not in seen:
+            seen.add(k)
+            out.append(t)
+    return out
+
+
 def hypervolume(trials: list[dict[str, Any]], ref: list[float]) -> float:
     """Area (volume) the met, full-size trials dominate up to `ref`; larger is better."""
     import numpy as np
@@ -369,3 +389,80 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     from sdf.reporting.search import write_search_report
 
     return write_search_report(ctx, trials, space)
+
+
+def run_finalists(ctx: RunContext, trials: list[dict[str, Any]], model_factory: Callable | None = None,
+                  tokenizer=None, text_loader: Callable | None = None) -> dict[str, Path]:
+    """The full comparison of the search's final settings (finalists) on every backend (Mohammad, 2026-10-22:
+    "Chained, Standard vs Ours"). Per setting, in <run_dir>/finalists/<n>_<hash>/: its Stage 0 plan, then the same
+    chain 0 -> 1 -> 2 -> 3 the search built, each stage's report with FP16, Standard (the same technique with its
+    default settings, no Stage 0) and Our method: Stage 1 the WxAy technique (Our method on the joint plan), Stage 2
+    its pruning technique after each side's Stage 1 row, Stage 3 its KV technique on each side's Stage 2 model; then
+    the master report. The backends cannot run the KV techniques, so on Stage 3 rows they measure the Stage 2
+    model (as in every run). finalists/index.json lists each setting and its folder, rewritten after each one; a
+    setting that fails is recorded there with its error and the next one runs. Rerun with the same run_id, a setting
+    whose master report exists is not built again (found by the setting, whatever its place in the list)."""
+    ev = ctx.cfg.eval
+    if missing := [k for k in ("llamacpp_dir", "llamacpp_convert", "vllm_python", "trtllm_python")
+                   if not getattr(ev, k)]:
+        raise ValueError(f"the final settings run on all four backends: set eval.{', eval.'.join(missing)}")
+    picked = finalists(trials, ctx.cfg.search.objectives)
+    if not picked:
+        raise ValueError("no full try of the search meets the requirement, so there is no final setting to compare")
+    cfg = ctx.cfg.with_overrides({"stage0.pruning_levels": [], "stage0.joint_plan": True})  # as evaluate() builds
+    kw = dict(model_factory=model_factory, tokenizer=tokenizer, text_loader=text_loader)
+    index, outputs = [], {}
+    outputs["finalists_index"] = ctx.run_dir / "finalists" / "index.json"
+    for n, t in enumerate(picked, 1):
+        point = technique_space(cfg).validate(t["point"])
+        h = config_hash(point, length=10)
+        done = [d for d in (ctx.run_dir / "finalists").glob(f"*_{h}") if (d / "master_report.md").exists()]
+        fdir = done[0] if done else ctx.run_dir / "finalists" / f"{n}_{h}"  # a finished one is found by its setting
+        entry = {"n": n, "dir": str(fdir), "point": point, "searcher": t["searcher"], "try": t["n"],
+                 "search_metrics": t["metrics"]}
+        log.info("final setting %d of %d: %s", n, len(picked), point)
+        if done:  # finished before this run was stopped: resume after it
+            entry.update(next((e for e in _read_index(outputs["finalists_index"]) if e["dir"] == str(fdir)), {}))
+        else:
+            try:
+                outputs.update({f"finalist_{n}_{k}": p for k, p in _finalist(
+                    RunContext(cfg, ctx.run_id, fdir, ctx.cache), point, entry, **kw).items()})
+            except Exception as e:  # noqa: BLE001 - one setting that fails must not lose the others
+                log.exception("final setting %d failed", n)
+                entry["error"] = f"{type(e).__name__}: {e}"
+        index.append(entry)
+        atomic_write_text(outputs["finalists_index"], json.dumps(index, indent=2, default=str))  # after each
+    return outputs
+
+
+def _read_index(path: Path) -> list[dict[str, Any]]:
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+
+
+def _finalist(ctx: RunContext, point: dict[str, Any], entry: dict[str, Any], model_factory: Callable | None,
+              tokenizer, text_loader: Callable | None) -> dict[str, Path]:
+    """One final setting's Stage 0 and chained Stages 1-3 (run_finalists); a side whose Stage 2 row failed gets no
+    Stage 3 row, and `entry` says so."""
+    from sdf.reporting.master import write_master
+    from sdf.stage0.run import run_stage0
+    from sdf.stages.runner import run_stage, stage1_row
+
+    s1, s2, s3 = point["stage1_method"], point["stage2_method"], point["stage3_method"]
+    candidate = SEARCH_SPACE.make({p.name: point[p.name] for p in SEARCH_SPACE.params})
+    kw = dict(model_factory=model_factory, tokenizer=tokenizer, text_loader=text_loader)
+    model = model_factory() if model_factory else None
+    stage0_dir = run_stage0(ctx, candidate, model=model, tokenizer=tokenizer,
+                            text_loader=text_loader).outputs["report"].parent
+    del model
+    ours1 = s1 + "_joint"
+    run_stage(ctx, 1, [s1], candidate, stage0_dir, ours=stage1_row(ours1)[1], **kw)
+    used: dict = {}
+    run_stage(ctx, 2, [s2], candidate, stage0_dir, after={"original": s1, "framework": ours1}, used=used,
+              ours="prune", **kw)
+    before = {v: used[(s2, v)][:2] for v in ("original", "framework") if (s2, v) in used}  # absent: the row failed
+    if missing := [v for v in ("original", "framework") if v not in before]:
+        entry["stage3_not_run"] = f"the Stage 2 row failed, so no Stage 3 row for: {', '.join(missing)}"
+    if before:
+        only = None if len(before) == 2 else next(iter(before))
+        run_stage(ctx, 3, [s3], candidate, stage0_dir, before=before, only=only, **kw)
+    return write_master(ctx.run_dir)

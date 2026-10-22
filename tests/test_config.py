@@ -90,3 +90,50 @@ def test_main_settings_build_a_valid_config(monkeypatch):
     assert none.met is None and none.targets_set is False  # nothing set: not "met"
     kv = DeploymentRequirement(kv_budget_gb=0.01).check({"predicted_kv_memory_gb": 0.02})
     assert kv.met is False and kv.checked == {"kv_budget_gb": "predicted_kv_memory_gb"}
+
+
+def test_main_finalists_mode_keeps_the_search_runs_settings_and_adds_the_backends(monkeypatch, tmp_path):
+    import importlib.util
+    import json
+    import os
+    from pathlib import Path
+
+    from sdf import search
+    from sdf.config import FrameworkConfig
+
+    spec = importlib.util.spec_from_file_location("main", Path(__file__).parent.parent / "main.py")
+    main = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(main)
+    searched = tmp_path / "searched"
+    (searched / "search").mkdir(parents=True)
+    old = FrameworkConfig().with_overrides({"eval.max_windows": 7, "search.budget": 3, "hyperparams.calib_samples": 16})
+    (searched / "config.json").write_text(json.dumps(old.to_dict()))
+    trials = searched / "search" / "trials.json"
+    trials.write_text('[{"n": 1}]')
+    got = {}
+    monkeypatch.setattr(search, "run_finalists", lambda ctx, trials: got.update(cfg=ctx.cfg, trials=trials) or {})
+    for k, v in {"MODE": "finalists", "SEARCH_RUN": str(searched), "OUTPUT_ROOT": str(tmp_path / "out"),
+                 "CACHE_DIR": str(tmp_path / "cache"), "RUN_ID": "fin", "LLAMACPP_DIR": "lc",
+                 "LLAMACPP_CONVERT": "conv", "VLLM_PYTHON": "vpy", "TRTLLM_PYTHON": "tpy"}.items():
+        monkeypatch.setattr(main, k, v)
+    with pytest.raises(SystemExit, match="only after the search has finished"):  # still running: no report yet
+        main.main()
+    report = searched / "search" / "search_report.md"
+    report.write_text("# Settings search")
+    os.utime(trials, (report.stat().st_mtime + 10,) * 2)  # rewritten by a search that started again
+    with pytest.raises(SystemExit, match="only after the search has finished"):
+        main.main()
+    os.utime(report, (trials.stat().st_mtime + 1,) * 2)
+    main.main()
+    cfg = got["cfg"]
+    assert got["trials"] == [{"n": 1}] and cfg.run.run_id == "fin" and cfg.run.output_root == str(tmp_path / "out")
+    assert (cfg.eval.max_windows, cfg.search.budget, cfg.hyperparams["calib_samples"]) == (7, 3, 16)  # the search's
+    assert (cfg.eval.llamacpp_dir, cfg.eval.llamacpp_convert, cfg.eval.vllm_python, cfg.eval.trtllm_python) == (
+        "lc", "conv", "vpy", "tpy")
+    for k, v in {"RUN_ID": "searched", "OUTPUT_ROOT": str(tmp_path)}.items():  # the search's own folder
+        monkeypatch.setattr(main, k, v)
+    with pytest.raises(SystemExit, match="new run"):
+        main.main()
+    monkeypatch.setattr(main, "SEARCH_RUN", None)
+    with pytest.raises(SystemExit, match="needs SEARCH_RUN"):
+        main.main()

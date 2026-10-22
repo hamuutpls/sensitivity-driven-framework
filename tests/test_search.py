@@ -12,8 +12,8 @@ import torch
 from sdf import search
 from sdf.eval import vllm_backend
 from sdf.run import start_run
-from sdf.search import (FAILED, Recorder, _decode, _rank_key, _sample, evaluate, hypervolume, pareto, run_mfbo, run_mobo,
-                        run_nsga3, run_search, technique_space, violation)
+from sdf.search import (FAILED, Recorder, _decode, _rank_key, _sample, best_per_objective, evaluate, finalists,
+                        hypervolume, pareto, run_mfbo, run_mobo, run_nsga3, run_search, technique_space, violation)
 from sdf.search_space import SEARCH_SPACE
 from sdf.stage0.planner import require_bits_only
 from sdf.stages import runner
@@ -70,6 +70,17 @@ def test_pareto_and_hypervolume_use_only_met_full_trials():
     assert hypervolume([_t([1, 1], met=False)], [20, 10]) == 0
     assert violation({"met": False, "shortfall": {"target_memory_gb": 0.25}}) == 0.25
     assert violation({"met": True, "shortfall": {}}) == 0
+
+
+def test_finalists_are_the_pareto_trials_and_the_best_per_objective_once_each():
+    ts = [_t([10, 5]), _t([10, 4]), _t([12, 3]), _t([1, 1], met=False), _t([9, 9], full=False),
+          _t([12, 3], point={"v": [12, 3]}, searcher="b")]
+    best = best_per_objective(ts, ["ppl_val", "ms"])
+    assert best["ppl_val"]["values"] == [10, 4]  # the tie on the first objective goes to the better second one
+    assert best["ms"]["values"] == [12, 3] and best["ms"]["searcher"] == "a"
+    assert [t["values"] for t in finalists(ts, ["ppl_val", "ms"])] == [[10, 4], [12, 3]]
+    assert best_per_objective([_t([1, 1], met=False)], ["ppl_val"]) == {"ppl_val": None}
+    assert finalists([_t([1, 1], met=False)], ["ppl_val"]) == []
 
 
 def test_evaluate_builds_the_chained_model_and_caches_it(cfg, tiny_llama, tokenizer):
@@ -288,3 +299,94 @@ def test_mobo_does_not_keep_proposing_a_point_that_fails_after_building(cfg, mon
     assert not study.get_trials(states=(TrialState.FAIL,))  # the failures taught the model
     late = rec.trials[10:]
     assert sum(t["point"]["stage3_method"] == "h2o" for t in late) / len(late) < 0.25
+
+
+def test_finalists_get_the_chained_standard_vs_ours_comparison_on_all_four_backends(cfg, tiny_llama, tokenizer,
+                                                                                     monkeypatch):
+    from sdf.eval import llamacpp, trtllm_backend
+
+    seen = []
+
+    def fake(name):
+        def measure(model, tok, plan, *a, **k):
+            if plan is not None:
+                require_bits_only(plan, "the export")  # as the real exports do
+            seen.append((name, plan is None))
+            return {f"{name}_ppl_val": 9.0, f"{name}_decode_ms_per_token": 3.0}
+        return measure
+
+    for mod, name in ((llamacpp, "llamacpp"), (vllm_backend, "vllm"), (trtllm_backend, "trtllm")):
+        monkeypatch.setattr(mod, "measure", fake(name))
+    with pytest.raises(ValueError, match="eval.llamacpp_dir, eval.llamacpp_convert, eval.trtllm_python"):
+        search.run_finalists(start_run(cfg.with_overrides({"eval.vllm_python": "py"})), [], **_kw(tiny_llama, tokenizer))
+    c = cfg.with_overrides({"eval.llamacpp_dir": "lc", "eval.llamacpp_convert": "conv", "eval.vllm_python": "py",
+                            "eval.trtllm_python": "py"})
+    ctx = start_run(c)
+    point = _point(c, stage3_method="h2o")
+    searched = evaluate(ctx, point, **_kw(tiny_llama, tokenizer))  # the try as the search measured it
+    t = {**_t([searched["metrics"]["ppl_val"], 1.0], point=point), "n": 7, "metrics": searched["metrics"]}
+    with pytest.raises(ValueError, match="no full try"):
+        search.run_finalists(ctx, [{**t, "met": False}], **_kw(tiny_llama, tokenizer))
+    seen.clear()
+    out = search.run_finalists(ctx, [t, {**t, "values": [99.0, 99.0]}], **_kw(tiny_llama, tokenizer))
+    (entry,) = json.loads(out["finalists_index"].read_text())  # the repeat of the same point is listed once
+    assert entry["point"] == point and entry["try"] == 7 and out["finalist_1_master_report"].exists()
+    rows = {s: {(r["method"], r["variant"]): r for r in json.loads((Path(entry["dir"]) / f"stage_{s}" /
+                                                                    "results.json").read_text())["rows"]}
+            for s in (1, 2, 3)}
+    s1 = point["stage1_method"]
+    assert set(rows[1]) == {("baseline", "fp16"), (s1, "original"), (s1 + "_joint", "framework")}
+    assert set(rows[2]) == {("baseline", "fp16"), ("unstructured_prune", "original"),
+                            ("unstructured_prune", "framework")}  # Our method on the plan the search used only
+    assert set(rows[3]) == {("baseline", "fp16"), ("h2o", "original"), ("h2o", "framework")}
+    for s in (1, 2, 3):
+        for r in rows[s].values():
+            assert r["status"] == "ok", r.get("error")
+            assert all(r["metrics"].get(f"{n}_ppl_val") == 9.0 for n in ("llamacpp", "vllm", "trtllm")), (s, r["method"])
+    # Stage 3 rows are built on their own side's Stage 2 row; the backends measured that Stage 2 model
+    assert all(rows[3][("h2o", v)]["info"]["built_on"] == "unstructured_prune" for v in ("original", "framework"))
+    assert "Stage 2 model" in rows[3][("h2o", "framework")]["info"]["backends"]
+    for v in ("original", "framework"):  # each side's Stage 3 row carries its own Stage 2 row's size
+        assert rows[3][("h2o", v)]["metrics"]["predicted_weight_memory_gb"] == pytest.approx(
+            rows[2][("unstructured_prune", v)]["metrics"]["predicted_weight_memory_gb"])
+    assert rows[2][("unstructured_prune", "original")]["metrics"]["predicted_weight_memory_gb"] != pytest.approx(
+        rows[2][("unstructured_prune", "framework")]["metrics"]["predicted_weight_memory_gb"])
+    # Our method's chained model is the one the search built: the same perplexity
+    assert rows[3][("h2o", "framework")]["metrics"]["ppl_val"] == pytest.approx(searched["metrics"]["ppl_val"])
+    assert {n for n, fp16 in seen if not fp16} == {"llamacpp", "vllm", "trtllm"}
+
+    # rerun with the same run_id: the finished setting is not built again and keeps its index entry, also when a
+    # setting now ahead of it puts it second in the list
+    seen.clear()
+    again = search.run_finalists(ctx, [t], **_kw(tiny_llama, tokenizer))
+    assert not seen and json.loads(again["finalists_index"].read_text()) == [entry]
+    monkeypatch.setattr(search, "_finalist", lambda *a, **k: {})  # the new setting: not built here
+    ahead = {**t, "point": {**point, "calib_samples": 32}, "values": [0.0, 9.0]}
+    first, second = json.loads(search.run_finalists(ctx, [ahead, t], **_kw(tiny_llama, tokenizer))
+                               ["finalists_index"].read_text())
+    assert second["point"] == point and second["dir"] == entry["dir"] and not seen
+    monkeypatch.undo()
+    for mod, name in ((llamacpp, "llamacpp"), (vllm_backend, "vllm"), (trtllm_backend, "trtllm")):
+        monkeypatch.setattr(mod, "measure", fake(name))
+
+    # a Stage 2 row that fails: that side gets no Stage 3 row, the index says so, and the next setting still runs
+    calls = []
+    real = runner._require
+
+    def fail_first_prune(m):
+        if m.name == "unstructured_prune":
+            calls.append(m)
+            if len(calls) == 1:  # the Standard row is built first
+                raise RuntimeError("out of memory")
+        real(m)
+
+    monkeypatch.setattr(runner, "_require", fail_first_prune)
+    other = _point(c, stage3_method="h2o", prune_ratio_aggressive=0.5)
+    ctx2 = start_run(c.with_overrides({"run.run_id": "test2"}))
+    out = search.run_finalists(ctx2, [{**t, "point": other},
+                                      {**t, "point": {**other, "calib_samples": 32}, "values": [0.0, 9.0]}],
+                               **_kw(tiny_llama, tokenizer))
+    first, second = json.loads(out["finalists_index"].read_text())
+    assert "original" in first["stage3_not_run"] and "error" not in first and "error" not in second
+    stage3 = json.loads((Path(first["dir"]) / "stage_3" / "results.json").read_text())["rows"]
+    assert {(r["method"], r["variant"]) for r in stage3} == {("baseline", "fp16"), ("h2o", "framework")}
