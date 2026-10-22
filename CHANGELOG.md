@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-22: Faster perplexity for Stage 3 rows that forget words (speed-up option 1)
+
+- H2O's word-by-word loop ran once per perplexity window, so a model whose KV plan forgets words took about 40 min
+  to measure on the A100 (most of a ~45 min search try). While a forgetting rule is on, `kv_attention` now sets
+  `model.sdf_ppl_batch` (16) and `perplexity` runs that many windows per forward pass. The forgetting rules and the
+  rounding already work per window, so the numbers are the same up to float rounding; a test checks them against
+  one window per pass for every KV technique. Every other row still runs one window per pass, unchanged.
+  Peak GPU memory is still set by one window per pass (`measure_model` resets it and runs one window after the
+  batched perplexity), so forgetting rows are not charged for the batch.
+
 ## 2026-10-22: Pruned models reach the backends (search and chain fix)
 
 - A pruned model (Stage 2 after Stage 1, as every search try and the chain's Stage 2 rows are) was refused by the

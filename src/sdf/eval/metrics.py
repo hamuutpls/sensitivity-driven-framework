@@ -13,6 +13,7 @@ import time
 from typing import Any, Callable
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from sdf.config import EvalConfig
@@ -23,12 +24,19 @@ log = get_logger(__name__)
 
 @torch.no_grad()
 def perplexity(model: nn.Module, windows: torch.Tensor, device: torch.device) -> tuple[float, list[float]]:
-    """exp(mean token NLL) over `windows` (n, seq_len). Returns (ppl, per-window mean NLL)."""
+    """exp(mean token NLL) over `windows` (n, seq_len). Returns (ppl, per-window mean NLL).
+    A model with `sdf_ppl_batch` set (Stage 3 forgetting, see kv_attention) runs that many windows per forward pass;
+    every other model keeps one window per pass, so its numbers stay exactly as before."""
     model.eval()
     nlls = []
-    for w in windows:
-        ids = w.unsqueeze(0).to(device)
-        nlls.append(model(input_ids=ids, labels=ids).loss.float().item())
+    batch = getattr(model, "sdf_ppl_batch", 1)
+    for i in range(0, len(windows), batch):
+        ids = windows[i:i + batch].to(device)
+        if batch == 1:
+            nlls.append(model(input_ids=ids, labels=ids).loss.float().item())
+            continue
+        logits = model(input_ids=ids).logits[:, :-1].float()  # the shift and upcast transformers' loss does
+        nlls += F.cross_entropy(logits.transpose(1, 2), ids[:, 1:], reduction="none").mean(1).tolist()
     mean = statistics.fmean(nlls)
     ppl = math.inf if mean > 709 else math.exp(mean)  # math.exp raises OverflowError above ~709
     if not math.isfinite(ppl):
@@ -180,6 +188,11 @@ def measure_model(model: nn.Module, validation: torch.Tensor, held_out: torch.Te
 
     ppl_val, nll_val = perplexity(model, validation, device)
     ppl_held, nll_held = perplexity(model, held_out, device)
+    if getattr(model, "sdf_ppl_batch", 1) > 1 and device.type == "cuda":  # batched windows raise the peak: set it
+        torch.cuda.reset_peak_memory_stats(device)  # with one window per pass, as every other row's
+        with torch.no_grad():
+            ids = validation[:1].to(device)
+            model(input_ids=ids, labels=ids)
     lat = measure_latency(model, cfg, device, model.config.vocab_size, seed=seed)
 
     prefill = [r["prefill_ms"] for r in lat]
