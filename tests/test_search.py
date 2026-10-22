@@ -7,6 +7,7 @@ from pathlib import Path
 
 import openpyxl
 import pytest
+import torch
 
 from sdf import search
 from sdf.eval import vllm_backend
@@ -14,6 +15,7 @@ from sdf.run import start_run
 from sdf.search import (FAILED, Recorder, _decode, _rank_key, _sample, evaluate, hypervolume, pareto, run_mfbo, run_mobo,
                         run_nsga3, run_search, technique_space, violation)
 from sdf.search_space import SEARCH_SPACE
+from sdf.stage0.planner import require_bits_only
 from sdf.stages import runner
 from sdf.stages.runner import stage1_row
 from conftest import fake_texts
@@ -117,7 +119,10 @@ def test_vllm_latency_is_measured_on_the_stage2_model(cfg, tiny_llama, tokenizer
     seen = []
 
     def measure(model, tok, plan, val, held, ev, base, group, acts=None, act_group_size=128):
-        seen.append((plan, acts))
+        if plan is not None:
+            require_bits_only(plan, "the export")  # as the real exports do
+        ws = [m.weight for m in model.model.layers.modules() if isinstance(m, torch.nn.Linear)]
+        seen.append((plan, acts, sum((w == 0).sum().item() for w in ws) / sum(w.numel() for w in ws)))
         return {"vllm_decode_ms_per_token": 3.0, "vllm_ppl_val": 9.0, "vllm_size_gb": 0.1}
 
     monkeypatch.setattr(vllm_backend, "measure", measure)
@@ -126,11 +131,13 @@ def test_vllm_latency_is_measured_on_the_stage2_model(cfg, tiny_llama, tokenizer
     rec = Recorder(ctx, "x", 6, **_kw(tiny_llama, tokenizer))
     t = rec(_point(c))
     chained = [x for x in seen if x[0] is not None]  # the other call is the uncompressed row's (cached)
-    assert t["ok"] and t["values"][1] == 3.0 and len(chained) == 1
-    plan, acts = chained[0]
-    assert max(lp.pruning_ratio for lp in plan.layers) > 0 and acts is not None  # pruned, activations rounded
+    assert t["ok"] and t["values"][1] == 3.0 and len(chained) == 1, t["error"]
+    plan, acts, zero_share = chained[0]
     row = next(x for x in json.loads((ctx.run_dir / "search" / "points" / t["dir"].rsplit("/", 1)[1] / "stage_3" /
                                       "results.json").read_text())["rows"] if x["variant"] == "framework")
+    # the model is pruned (at least the planned share is zero), the export gets the bits only, activations rounded
+    assert zero_share >= row["metrics"]["decoder_weights_removed"] > 0.1
+    assert max(lp.pruning_ratio for lp in plan.layers) == 0 and acts is not None
     assert "Stage 2 model" in row["info"]["backends"] and "vllm_error" not in row["info"]
 
     # a plan vLLM cannot load: the try fails and says why

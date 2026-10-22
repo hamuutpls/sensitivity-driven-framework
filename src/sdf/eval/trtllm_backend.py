@@ -34,7 +34,7 @@ from sdf.utils.logging import get_logger
 log = get_logger(__name__)
 
 # Bump when a change alters the measured numbers, so cached TensorRT-LLM results are not reused.
-VERSION = 4  # 4: timings report their std across repeats; 3: KV block reuse off, so prefill is a real prefill; 2: mixed-bit plans build through a per-layer checkpoint (were errors in 1)
+VERSION = 5  # 5: a pruned model is exported with the bits-only plan (it was refused); 4: timings report their std across repeats; 3: KV block reuse off, so prefill is a real prefill; 2: mixed-bit plans build through a per-layer checkpoint (were errors in 1)
 
 _NOTE = " Measured in TensorRT-LLM, NVIDIA's program for running models fast, after building the model at the plan's bits."
 METRICS.update({

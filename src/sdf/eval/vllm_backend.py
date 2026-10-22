@@ -33,7 +33,7 @@ log = get_logger(__name__)
 
 # Bump when a change alters the measured numbers, or turns cached error rows into measurable ones, so cached vLLM
 # results are not reused.
-VERSION = 5  # 5: timings report their std across repeats; 4: prefix caching off, so prefill is a real prefill; 3: start-up memory share follows the free memory (rows failed vLLM's 0.92 check in 2)
+VERSION = 6  # 6: a pruned model is exported with the bits-only plan (it was refused); 5: timings report their std across repeats; 4: prefix caching off, so prefill is a real prefill; 3: start-up memory share follows the free memory (rows failed vLLM's 0.92 check in 2)
 
 _NOTE = " Measured in vLLM, a program for running models on servers, after saving the model at the plan's bits."
 METRICS.update({

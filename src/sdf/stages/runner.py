@@ -33,8 +33,8 @@ from sdf.eval.metrics import measure_model
 from sdf.run import RunContext
 from sdf.stage0.activation import ActivationPlan, uniform_activation_plan
 from sdf.stage0.kv_cache import KVPlan, KVProfile, predict_kv, uniform_kv_plan
-from sdf.stage0.planner import (CompressionPlan, baseline_cost, cap_pruning, combine_plans, decoder_share_removed,
-                                level_tag, same_size_pruning_plan, uniform_plan)
+from sdf.stage0.planner import (CompressionPlan, baseline_cost, bits_only, cap_pruning, combine_plans,
+                                decoder_share_removed, level_tag, same_size_pruning_plan, uniform_plan)
 from sdf.stage0.pruning_levels import layer_caps
 from sdf.stage0.run import (_cost_metrics, _kv_metrics, calib_batches, fp16_key, load_fp16, source_key,
                             setup, stage_reporter, weight_cost)
@@ -416,6 +416,8 @@ def run_stage(
         backends that failed for a reason that may pass are added to `retry`."""
         joint = isinstance(plan, JointPlan)
         weights, acts = (plan.weights, plan.acts) if joint else (plan, None)
+        if isinstance(weights, CompressionPlan):  # what was pruned is already removed in `model`, so the exports get
+            weights = bits_only(weights)  # the bits only (their bits-only check is for Stage 1 plans)
         rotated = has_online_rotation(model)  # QuaRot/SpinQuant: no saved file can hold the rotation
         if lc_on(method):
             if rotated:
