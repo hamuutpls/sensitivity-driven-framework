@@ -9,7 +9,9 @@ import openpyxl
 import pytest
 
 from sdf.cli import search_report_main
-from sdf.reporting.search import _tokens_per_s, best_so_far
+from sdf.reporting.metrics import label
+from sdf.reporting.search import (_tokens_per_s, best_panels, best_so_far, front_labels, goal_callouts,
+                                  measured_text)
 from sdf.search import FAILED, _sample, pareto, technique_space
 
 OBJ = ["ppl_val", "vllm_decode_ms_per_token"]
@@ -147,3 +149,57 @@ def test_a_vllm_first_objective_gets_its_own_best_column(run_dir):
     search_report_main([str(run)])
     text = (run / "search" / "search_report.md").read_text()
     assert "Best vLLM decode time per token (lower is better)" in text and "lowest vLLM decode time per token" in text
+
+
+def _best(trials):
+    met = [t for t in trials if t["full"] and t["met"]]
+    return {o: min(met, key=lambda t, i=i: t["values"][i], default=None) for i, o in enumerate(OBJ)}
+
+
+def test_trade_off_labels_match_the_section_1_rows_and_callouts_sit_on_the_best_points(run_dir):
+    run, trials = run_dir
+    search_report_main([str(run)])
+    text = (run / "search" / "search_report.md").read_text()
+    front = sorted(pareto(trials), key=lambda t: t["values"][0])
+    labels = front_labels(front, "vllm_decode_ms_per_token", "ppl_val")
+    assert len(labels) == len(front)
+    for k, (tag, (ms, ppl)) in enumerate(labels, 1):
+        row = next(r for r in text.splitlines() if r.startswith(f"| {k} |"))  # the same setting in section 1
+        assert tag == f"#{k}" and f"| {ppl:.4g} |" in row and f"| {ms:.4g} |" in row
+    best = _best(trials)
+    callouts = dict(goal_callouts(best, "vllm_decode_ms_per_token", "ppl_val"))
+    for o, t in best.items():
+        xy = (t["metrics"]["vllm_decode_ms_per_token"], t["metrics"]["ppl_val"])
+        assert callouts[f"lowest {label(o)[:1].lower() + label(o)[1:]}"] == xy
+
+
+def test_a_setting_best_on_both_goals_gets_one_panel_and_one_callout_naming_both():
+    t = {"metrics": {"ppl_val": 9.0, "vllm_decode_ms_per_token": 4.0}}
+    best = {"ppl_val": t, "vllm_decode_ms_per_token": t}
+    assert best_panels(best) == [(["ppl_val", "vllm_decode_ms_per_token"], t)]
+    assert goal_callouts(best, "vllm_decode_ms_per_token", "ppl_val") == [
+        ("lowest perplexity (validation half) and lowest vLLM decode time per token", (4.0, 9.0))]
+    assert best_panels({"ppl_val": None}) == []
+
+
+def test_measured_text_follows_the_objectives_and_skips_failed_values():
+    t = {"metrics": {"ppl_val": 9.0, "ppl_heldout": 9.5, "decode_ms_per_token_mean": FAILED,
+                     "predicted_weight_memory_gb": 0.8}}
+    text = measured_text(t, ["ppl_val", "decode_ms_per_token_mean"], "predicted_weight_memory_gb")
+    assert "Perplexity (validation half): 9" in text and "Perplexity (held-out half): 9.5" in text
+    assert "0.8 GB" in text and "ms" not in text and "tokens/s =" not in text and "lower is better" in text
+
+
+@pytest.mark.parametrize("keep", ["none", "one"])
+def test_the_report_is_written_with_no_tries_or_a_single_one(run_dir, keep):
+    run, trials = run_dir
+    kept = [] if keep == "none" else [next(t for t in trials if t["met"])]
+    (run / "search" / "trials.json").write_text(json.dumps(kept))
+    (run / "search" / "search_report.md").write_text("old")  # written after trials.json: a finished run
+    search_report_main([str(run)])
+    d = run / "search"
+    text = (d / "search_report.md").read_text()
+    assert text.startswith("# Settings search")
+    for png in re.findall(r"!\[[^]]*\]\(([^)]+)\)", text):
+        assert (d / png).exists(), png
+    assert (d / "best_settings.png").exists() == (keep == "one")

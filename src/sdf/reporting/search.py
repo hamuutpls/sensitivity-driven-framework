@@ -221,7 +221,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         *(["![The best setting for each goal, stage by stage](best_settings.png)", "",
            "*How each best setting was built: the choice made at each stage of the chain, and what the finished model "
            "measured (perplexity: lower is better; size: smaller is better; time per token: lower is better, tokens per "
-           "second: higher is better). The blue bracket marks the part of the model vLLM runs to measure the speed.*", ""]
+           "second: higher is better). The bracket marks the part of the model vLLM runs to measure the speed.*", ""]
           if "search_best_settings" in outputs else []),
         *_box("The single setting under the limit with the lowest value of each goal.",
               "These are the ends of the best trade-off line: the most accurate model, and the best one on each "
@@ -361,7 +361,8 @@ def _plots(d: Path, trials, front, objectives, memory, limit, best) -> tuple[dic
     name = lambda n: SHORT_NAMES.get(n, n)  # noqa: E731
 
     def save(fig, ax, key, file):
-        ax.legend(fontsize=8)
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(fontsize=8)
         ax.grid(alpha=0.3)
         fig.tight_layout()
         x0, y0 = ax.get_xlim()[0] > 0, ax.get_ylim()[0] > 0
@@ -386,15 +387,15 @@ def _plots(d: Path, trials, front, objectives, memory, limit, best) -> tuple[dic
         if pts:
             ax.scatter([t["metrics"][x] for t in pts], [t["metrics"][y] for t in pts], facecolors="none",
                        edgecolors="black", s=120, label="best trade-off (#: row in section 1)")
-            for t in pts:
-                ax.annotate(f"#{front.index(t) + 1}", (t["metrics"][x], t["metrics"][y]), xytext=(7, 5),
-                            textcoords="offset points", fontsize=8)
-        lo, hi = ax.get_ylim()
-        for i, (o, t) in enumerate((o, t) for o, t in best.items() if t and is_number(t["metrics"].get(x))):
-            up = t["metrics"][y] < (lo + hi) / 2  # point the callout into the chart, not off its edge
-            ax.annotate(f"lowest {_lower(label(o))}", (t["metrics"][x], t["metrics"][y]),
-                        xytext=(30, (1 if up else -1) * (30 + 18 * i)),
-                        textcoords="offset points", fontsize=8, arrowprops={"arrowstyle": "->", "lw": 0.8},
+            for text, xy in front_labels(front, x, y):
+                ax.annotate(text, xy, xytext=(7, 5), textcoords="offset points", fontsize=8)
+        (x_lo, x_hi), (y_lo, y_hi) = ax.get_xlim(), ax.get_ylim()
+        for i, (text, (px, py)) in enumerate(goal_callouts(best, x, y)):
+            # point the callout into the chart, away from the nearer edges (and from the #k label up and right)
+            right, up = px < (x_lo + x_hi) / 2, py < (y_lo + y_hi) / 2
+            ax.annotate(text, (px, py), xytext=((30 if right else -30), (1 if up else -1) * (30 + 18 * i)),
+                        textcoords="offset points", ha="left" if right else "right", fontsize=8,
+                        arrowprops={"arrowstyle": "->", "lw": 0.8},
                         bbox={"boxstyle": "round", "fc": "white", "ec": "#555555", "lw": 0.6})
         if x == memory and limit:
             ax.axvline(limit, color="grey", ls="--", lw=1, label=f"size limit ({limit} GB)")
@@ -420,54 +421,90 @@ def _plots(d: Path, trials, front, objectives, memory, limit, best) -> tuple[dic
         ax.set_xlabel("budget spent (full tries)")
         ax.set_ylabel(f"lowest {_lower(label(y))} so far (lower is better)")
         save(fig, ax, "search_best_so_far", "best_so_far.png")
-    picks = list({id(t): (o, t) for o, t in best.items() if t}.values())  # one row per distinct setting
-    if picks:
+    panels = best_panels(best)
+    if panels:
         out["search_best_settings"] = d / "best_settings.png"
-        _settings_figure(plt, picks, front, out["search_best_settings"])
+        _settings_figure(plt, panels, front, objectives, memory, out["search_best_settings"])
         notes["search_best_settings"] = ""
     return out, notes
 
 
-def _settings_figure(plt, picks, front, path: Path) -> None:
+def front_labels(front, x: str, y: str) -> list[tuple[str, tuple[float, float]]]:
+    """"#k" at each trade-off setting that has both values, k its row in the section 1 table."""
+    return [(f"#{k}", (t["metrics"][x], t["metrics"][y])) for k, t in enumerate(front, 1)
+            if is_number(t["metrics"].get(x)) and is_number(t["metrics"].get(y))]
+
+
+def goal_callouts(best, x: str, y: str) -> list[tuple[str, tuple[float, float]]]:
+    """One callout per distinct best setting, naming every goal it is best for."""
+    return [(" and ".join(f"lowest {_lower(label(o))}" for o in goals), (t["metrics"][x], t["metrics"][y]))
+            for goals, t in best_panels(best) if is_number(t["metrics"].get(x)) and is_number(t["metrics"].get(y))]
+
+
+def best_panels(best) -> list[tuple[list[str], dict[str, Any]]]:
+    """The best settings, each once, with the goals it is best for (a setting can be best on more than one)."""
+    groups: dict[int, tuple[list[str], dict[str, Any]]] = {}
+    for o, t in best.items():
+        if t:
+            groups.setdefault(id(t), ([], t))[0].append(o)
+    return list(groups.values())
+
+
+def measured_text(t: dict[str, Any], objectives: list[str], memory: str) -> str:
+    """What a setting measured, in words: the goals, its held-out perplexity and its size."""
+    m = t["metrics"]
+    shown = list(dict.fromkeys([*objectives, "ppl_heldout", memory]))
+    lines = []
+    for k in shown:
+        v = m.get(k)
+        if not is_number(v) or v >= FAILED:
+            continue
+        unit = METRICS[k].unit if k in METRICS else ""
+        lines.append(f"{label(k)}: {_fmt(v)}" + (f" {unit}" if unit else ""))
+        if k.endswith("ms_per_token") or k.endswith("ms_per_token_mean"):
+            lines.append(f"= {_fmt(_tokens_per_s(v))} tokens/s")
+    return "\n".join(lines + ["(lower is better; tokens/s higher)"])
+
+
+def _settings_figure(plt, panels, front, objectives, memory, path: Path) -> None:
     """An annotated drawing of each best setting: the chain it was built along, the choice made at each stage, and
     what it measured."""
     import textwrap
 
     from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
-    wrap = lambda text: "\n".join(textwrap.fill(line, 20) for line in text.split("\n"))  # noqa: E731
-    fig, axes = plt.subplots(len(picks), 1, figsize=(12, 3.2 * len(picks)), squeeze=False)
-    for ax, (o, t) in zip(axes[:, 0], picks):
-        p, m = t["point"], t["metrics"]
-        ms = m.get("vllm_decode_ms_per_token")
+    wrap = lambda text: "\n".join(textwrap.fill(line, 22) for line in text.split("\n"))  # noqa: E731
+    fig, axes = plt.subplots(len(panels), 1, figsize=(12, 3.6 * len(panels)), squeeze=False)
+    for ax, (goals, t) in zip(axes[:, 0], panels):
+        p = t["point"]
+        share = p.get("prune_ratio_aggressive")
         boxes = [
             ("Stage 0: sensitivity plan", f"protection threshold {setting_value('sensitive_threshold', p.get('sensitive_threshold'))}"
              f"\ncalibration: {p.get('calib_dataset')}, {p.get('calib_samples')} passages", "#E8F1FA"),
             ("Stage 1: fewer bits", f"{setting_value('stage1_method', p['stage1_method'])}\n{_wxay(t) or ''}", "#E8F1FA"),
-            ("Stage 2: pruning", f"{setting_value('stage2_method', p['stage2_method'])}\nshare "
-             f"{setting_value('prune_ratio_aggressive', p['prune_ratio_aggressive'])}", "#E8F1FA"),
+            ("Stage 2: pruning", setting_value("stage2_method", p["stage2_method"])
+             + (f"\npruning share {share:.0%}" if is_number(share) else ""), "#E8F1FA"),
             ("Stage 3: KV cache", setting_value("stage3_method", p["stage3_method"]), "#E8F1FA"),
-            ("Measured", f"{label('ppl_val')} {_fmt(m.get('ppl_val'))}\nheld-out {_fmt(m.get('ppl_heldout'))}"
-             f"\nsize {_fmt(m.get('predicted_weight_memory_gb'))} GB"
-             + (f"\n{_fmt(ms)} ms/token = {_fmt(_tokens_per_s(ms))} tokens/s" if is_number(ms) else ""), "#FFF4E0"),
+            ("Measured", measured_text(t, objectives, memory), "#FFF4E0"),
         ]
         ax.set_xlim(0, 10)
-        ax.set_ylim(0, 3.2)
+        ax.set_ylim(0, 3.6)
         ax.axis("off")
         k = front.index(t) + 1 if t in front else None
-        ax.set_title(f"Lowest {_lower(label(o))}" + (f": trade-off setting #{k}" if k else ""), loc="left",
+        title = " and ".join(f"lowest {_lower(label(o))}" for o in goals)
+        ax.set_title(title[:1].upper() + title[1:] + (f": trade-off setting #{k}" if k else ""), loc="left",
                      fontsize=10, fontweight="bold")
         for i, (head, body, fill) in enumerate(boxes):
             x = 0.1 + i * 2
-            ax.add_patch(FancyBboxPatch((x, 0.9), 1.7, 1.9, boxstyle="round,pad=0.03", fc=fill, ec="#555555", lw=0.8))
-            ax.text(x + 0.85, 2.6, head, ha="center", va="top", fontsize=10, fontweight="bold")
-            ax.text(x + 0.85, 2.2, wrap(body), ha="center", va="top", fontsize=9)
+            ax.add_patch(FancyBboxPatch((x, 0.9), 1.7, 2.4, boxstyle="round,pad=0.03", fc=fill, ec="#555555", lw=0.8))
+            ax.text(x + 0.85, 3.15, head, ha="center", va="top", fontsize=10, fontweight="bold")
+            ax.text(x + 0.85, 2.75, wrap(body), ha="center", va="top", fontsize=8.5)
             if i:
-                ax.add_patch(FancyArrowPatch((x - 0.28, 1.85), (x - 0.02, 1.85), arrowstyle="->", mutation_scale=10))
-        # what the speed covers: vLLM runs the model up to Stage 2
-        ax.annotate("", (0.1, 0.65), (5.8, 0.65), arrowprops={"arrowstyle": "<->", "color": "#0072B2", "lw": 0.9})
+                ax.add_patch(FancyArrowPatch((x - 0.28, 2.1), (x - 0.02, 2.1), arrowstyle="->", mutation_scale=10))
+        # what the speed covers: vLLM runs the model up to Stage 2 (dark grey: the blue belongs to MOBO)
+        ax.annotate("", (0.1, 0.65), (5.8, 0.65), arrowprops={"arrowstyle": "<->", "color": "#333333", "lw": 0.9})
         ax.text(2.95, 0.3, "vLLM measures the speed on this part (it cannot run Stage 3)", ha="center",
-                fontsize=9, color="#0072B2")
+                fontsize=9, color="#333333")
         ax.text(7.05, 0.3, "Stage 3 counts in perplexity, not in speed", ha="center", fontsize=9, color="#555555")
     fig.tight_layout()
     fig.savefig(path, dpi=150)
