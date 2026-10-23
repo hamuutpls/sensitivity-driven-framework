@@ -120,6 +120,18 @@ sdf-stage0-sweep --grid sensitive_threshold=0.4,0.5,0.6 --grid calib_samples=64
 sdf-stage0-sweep --profile results/<run>/stage_0/sensitivity_profile.json # planning only, no GPU
 ```
 
+### Search report
+
+A settings search (`MODE = "search"` in main.py) writes its report itself when it ends. `sdf-search-report` writes
+it again from the saved tries (`search/trials.json`, only read) with no model built, e.g. after a report change.
+A finished run (its search_report.md newer than trials.json) is rebuilt in place; a run still going, or resumed, is rebuilt
+into `search/partial/`. (A resumed search still looks finished until its first search method ends and rewrites
+`trials.json`; until then a rebuild redoes the earlier, complete run's report.)
+
+```bash
+sdf-search-report thesis_compression/results/<run_id> --tests "417 passed, 3 skipped at 5f440dc"
+```
+
 ## Usage
 
 ```bash

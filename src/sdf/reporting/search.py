@@ -11,9 +11,10 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 
 from sdf.eval import vllm_backend  # noqa: F401 - registers the vLLM metric names
-from sdf.reporting.metrics import label
+from sdf.config import FrameworkConfig
+from sdf.reporting.metrics import METRICS, is_number, label
 from sdf.run import RunContext
-from sdf.search import FAILED, hypervolume, pareto
+from sdf.search import FAILED, hypervolume, pareto, technique_space
 from sdf.search_space import SearchSpace
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.logging import get_logger
@@ -25,19 +26,44 @@ _SHOWN = ("ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "vllm_decode_m
           "decoder_weights_removed", "predicted_kv_memory_gb")
 
 
+# settings only some techniques read; a point carries them anyway (gptq_groupsize stays: every plan's size and the
+# backend export round with it)
+_ONLY_IF_USED = ("smoothquant_alpha", "quarot_k_bits")
+
+
+def used_key(point: dict[str, Any]) -> str:
+    """The point without the settings its chosen techniques do not read: two points with the same key build the
+    same model."""
+    from sdf.stages.methods import METHODS
+    from sdf.stages.runner import stage1_row
+
+    used = set(stage1_row(point["stage1_method"])[0].params) | set(METHODS[point["stage3_method"]].params)
+    return json.dumps({k: v for k, v in point.items() if k not in _ONLY_IF_USED or k in used}, sort_keys=True,
+                      default=str)
+
+
+def report_front(trials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The trade-off line, lowest first objective first, each model once: of tries that differ only in settings
+    their techniques do not read, the first listed is kept."""
+    out: dict[str, dict[str, Any]] = {}
+    for t in sorted(pareto(trials), key=lambda t: t["values"][0]):
+        out.setdefault(used_key(t["point"]), t)
+    return list(out.values())
+
+
 def compare_searchers(trials: list[dict[str, Any]], objectives: list[str]) -> list[dict[str, Any]]:
     """Per searcher: tries, models built (and how many on all the windows), cost, share meeting the requirement, its best first objective and the cost at
     which it first found it, hypervolume (one reference point for all: 10% past the worst met value), and its share
     of the combined trade-off line."""
     met = [t["values"] for t in trials if t["full"] and t["met"]]
     ref = [max(v[i] for v in met) * 1.1 for i in range(len(objectives))] if met else None
-    front = {json.dumps(t["point"], sort_keys=True) for t in pareto(trials)}
+    front = {used_key(t["point"]) for t in report_front(trials)}
     out = []
     for name in dict.fromkeys(t["searcher"] for t in trials):
         ts = [t for t in trials if t["searcher"] == name]
         full_met = [t for t in ts if t["full"] and t["met"]]
         best = min(full_met, key=lambda t: t["values"][0], default=None)
-        mine = {json.dumps(t["point"], sort_keys=True) for t in full_met}
+        mine = {used_key(t["point"]) for t in full_met}
         out.append({
             "Search method": SEARCHER_NAMES.get(name, name), "Tries": len(ts),
             "Models built": sum(1 for t in ts if t["cost"] > 0),
@@ -45,7 +71,7 @@ def compare_searchers(trials: list[dict[str, Any]], objectives: list[str]) -> li
             "Cost, in full tries": round(sum(t["cost"] for t in ts), 3),
             "Time, minutes": round(sum(t.get("time_s", 0.0) for t in ts) / 60, 1),
             "Share of tries under the limit (higher is better)": len([t for t in ts if t["met"]]) / len(ts),
-            f"Best {label(objectives[0]).lower()} (lower is better)": best["values"][0] if best else None,
+            f"Best {_lower(label(objectives[0]))} (lower is better)": best["values"][0] if best else None,
             "Cost until it found that best (lower is better)":
                 round(sum(t["cost"] for t in ts[: ts.index(best) + 1]), 3) if best else None,
             "Hypervolume (higher is better)": hypervolume(ts, ref) if ref else 0.0,
@@ -58,6 +84,7 @@ def compare_searchers(trials: list[dict[str, Any]], objectives: list[str]) -> li
 SEARCHER_NAMES = {"mobo": "MOBO (multi-objective Bayesian optimisation)",
                   "mfbo": "MFBO (multi-fidelity: rough measurements first, full ones for the best)",
                   "nsga3": "NSGA-III (an evolutionary method)"}
+SHORT_NAMES = {"mobo": "MOBO", "mfbo": "MFBO", "nsga3": "NSGA-III"}
 SETTING_NAMES = {"sensitive_threshold": "Protection threshold", "prune_ratio_aggressive": "Pruning share",
                  "calib_dataset": "Calibration text", "calib_samples": "Calibration passages",
                  "gptq_groupsize": "Group size", "smoothquant_alpha": "SmoothQuant strength",
@@ -84,18 +111,36 @@ def hypervolume_curve(trials: list[dict[str, Any]], searcher: str, ref: list[flo
     return [(sum(t["cost"] for t in ts[: i + 1]), hypervolume(ts[: i + 1], ref)) for i in range(len(ts))]
 
 
-def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: SearchSpace) -> dict[str, Path]:
+def best_so_far(trials: list[dict[str, Any]], searcher: str) -> list[tuple[float, float]]:
+    """(cost spent, lowest first objective so far among full tries under the limit), from its first such try."""
+    out, low, spent = [], None, 0.0
+    for t in (t for t in trials if t["searcher"] == searcher):
+        spent += t["cost"]
+        if t["full"] and t["met"] and (low is None or t["values"][0] < low):
+            low = t["values"][0]
+        if low is not None:
+            out.append((spent, low))
+    return out
+
+
+def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: SearchSpace,
+                        tests: str | None = None, out_dir: Path | None = None) -> dict[str, Path]:
+    """`tests`: the unit-test result of the code that made the numbers, e.g. "417 passed, 3 skipped at 5f440dc".
+    `out_dir`: where a rebuild writes; trials.json is then left alone (only the search itself writes it)."""
     cfg = ctx.cfg
     s = cfg.search
-    d = ctx.run_dir / "search"
+    d = out_dir or ctx.run_dir / "search"
     d.mkdir(parents=True, exist_ok=True)
     comparison = compare_searchers(trials, s.objectives)
-    front = sorted(pareto(trials), key=lambda t: t["values"][0])
+    by_name = {c["Search method"]: c for c in comparison}
+    front = report_front(trials)
     best = {o: min((t for t in trials if t["full"] and t["met"]), key=lambda t, i=i: t["values"][i], default=None)
             for i, o in enumerate(s.objectives)}
     names = [p.name for p in space.params]
-    outputs = {"search_trials": d / "trials.json"}
-    atomic_write_text(outputs["search_trials"], json.dumps(trials, indent=2, default=str))
+    outputs = {}
+    if out_dir is None:
+        outputs["search_trials"] = d / "trials.json"
+        atomic_write_text(outputs["search_trials"], json.dumps(trials, indent=2, default=str))
 
     # --- workbook
     wb = Workbook()
@@ -117,68 +162,184 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
     outputs["search_xlsx"] = d / "search_results.xlsx"
     wb.save(outputs["search_xlsx"])
 
-    outputs.update(_plots(d, trials, front, s.objectives, s.memory_metric, comparison))
+    charts, axes = _plots(d, trials, front, s.objectives, s.memory_metric, cfg.requirement.target_memory_gb, best)
+    outputs.update(charts)
 
-    # --- report
+    # --- report: summary, then one section per question, each with a What this shows / What it means box; the
+    # big tables go to the back
     shown = [m for m in (s.objectives[0], s.memory_metric, *s.objectives[1:], "ppl_heldout") if m]
     tech = ["stage1_method", "stage2_method", "prune_ratio_aggressive", "stage3_method"]
     rest = [n for n in names if n not in tech]
+    head, cells = _metric_columns(shown)
+    first = _lower(label(s.objectives[0]))
+    built = [t for t in trials if t["cost"] > 0]
+    met = [t for t in trials if t["full"] and t["met"]]
+    top = front[0] if front else None
+    ppl_x = [x for x in (s.memory_metric, *s.objectives[1:]) if f"search_pareto_{x}" in outputs]
     lines = [
         "# Settings search", "",
-        "## What this shows", "",
-        "The framework tried many settings and built each one as a chained model: the Stage 0 plan (which layers are "
-        "sensitive), then Stage 1 (weights and activations stored with fewer bits, following the joint weight and activation "
-        "plan), then Stage 2 (pruning: removing "
-        "numbers), then Stage 3 (compressing the KV cache, the model's memory of earlier words). A setting is the "
-        "technique of each stage plus the numbers that tune them (protection threshold, pruning share, calibration "
-        f"text and so on). Only settings that meet the limit count ({_req(cfg)}). Among those the search looks for "
-        "the lowest " + " and the lowest ".join(label(o).lower() for o in s.objectives) + ". Speed comes from vLLM, "
-        "which runs the model up to Stage 2 (it cannot run the Stage 3 techniques); unstructured pruning keeps the "
-        "removed numbers as zeros, so it does not make vLLM faster. Three search methods each had the same budget of "
-        f"{s.budget} full tries, where a full try is one model measured on all the evaluation windows. MFBO's rough "
-        "tries use fewer windows and count by that share, so it builds more models for the same budget (see Models "
-        "built below). A setting whose plan is already over the limit is not built and does not count, nor does one "
-        "that failed before building or a repeat of the method's own try that came from the cache. The methods: "
-        + "; ".join(SEARCHER_NAMES[n] for n in s.searchers if n in SEARCHER_NAMES) + ".", "",
-        "## What it means", "",
-        f"{len(front)} setting(s) are on the best trade-off line: none of them can get better on one goal without "
-        "getting worse on another, so each is a fair choice depending on what matters more. They are listed below, "
-        "lowest perplexity first (lower perplexity means more accurate; lower time means faster). Held-out perplexity "
-        "was measured but never used to choose, so it shows how well the choice holds on unseen text.", "",
-        "## Best trade-off settings", "",
-        _md([["#", "Stage 1 quantization", "Stage 2 pruning", "Pruning share", "Stage 3 technique"]
-             + [label(m) + " (lower is better)" for m in shown]]
-            + [[str(i + 1)] + [setting_value(n, t["point"][n]) for n in tech] + [_fmt(t["metrics"].get(m)) for m in shown]
-               for i, t in enumerate(front)]),
-        "The other settings of each option:", "",
-        _md([["#"] + [SETTING_NAMES.get(n, n) for n in rest]]
-            + [[str(i + 1)] + [setting_value(n, t["point"][n]) for n in rest] for i, t in enumerate(front)]),
-        "## Search methods compared", "",
-        _md([list(comparison[0]) if comparison else ["Search method"]]
-            + [[_fmt(v) for v in c.values()] for c in comparison]),
-        "A full try measures on every evaluation window (a slice of the test text); MFBO's rough tries use fewer "
-        "windows and count by that share, though each still builds the whole model, so its time column is the fairer "
-        "cost. Hypervolume measures how much of the space of good results (low perplexity and low time) the method's "
-        "settings under the limit cover; larger is better.", "",
+        f"Run {ctx.run_id}. Unit tests of the code that made these numbers: "
+        + (tests or "not recorded for this report") + ".", "",
+        "## Summary", "",
+        *_box(
+            "The framework tried many settings and built each one as a chained model: the Stage 0 plan (which layers "
+            "are sensitive), then Stage 1 (weights and activations stored with fewer bits, following the joint weight "
+            "and activation plan), then Stage 2 (pruning: removing numbers), then Stage 3 (compressing the KV cache, "
+            "the model's memory of earlier words). A setting is the technique of each stage plus the numbers that tune "
+            f"them. Only settings that meet the limit count ({_req(cfg)}). Among those the search looks for the lowest "
+            + " and the lowest ".join(_lower(label(o)) for o in s.objectives) + ". " + f"{len(s.searchers)} search method(s) each had the "
+            f"same budget of {s.budget} full tries: "
+            + "; ".join(SEARCHER_NAMES[n] for n in s.searchers if n in SEARCHER_NAMES) + ".",
+            f"There were {len(trials)} tries and {len(built)} models were built; {len(met)} tries measured on all the "
+            "windows met the limit (a setting two methods both found counts twice). "
+            f"{len(front)} distinct settings are on the best trade-off line (none can get better on one goal without "
+            "getting worse on another)."
+            + (f" The one with the lowest {first} ({_fmt(top['metrics'].get(s.objectives[0]))}) uses "
+               f"{setting_value('stage1_method', top['point']['stage1_method'])}"
+               + (f" ({_wxay(top)})" if _wxay(top) else "") + ", "
+               f"{setting_value('stage2_method', top['point']['stage2_method'])} with a pruning share of "
+               f"{setting_value('prune_ratio_aggressive', top['point']['prune_ratio_aggressive'])}, and "
+               f"{setting_value('stage3_method', top['point']['stage3_method'])}." if top else
+               " No setting met the limit, so there is no best setting to recommend.")),
+        "## 1. Best trade-off settings", "",
+        *_box(f"Every setting on the best trade-off line, lowest {first} first, with the model size, the speed "
+              "and the held-out perplexity. Held-out perplexity was measured but never used to choose.",
+              "Each row is a fair choice depending on whether accuracy or speed matters more. If held-out perplexity "
+              "stays close to validation perplexity, the choice holds on text the search never saw. Speed comes from "
+              "vLLM, which runs the model up to Stage 2 (it cannot run the Stage 3 techniques); unstructured pruning "
+              "keeps the removed numbers as zeros, so it does not make vLLM faster."),
+        _md([["#", "Stage 1 quantization", "Stage 2 pruning", "Pruning share", "Stage 3 technique"] + head]
+            + [[str(i + 1)] + [setting_value(n, t["point"][n]) for n in tech] + cells(t) for i, t in enumerate(front)]),
+        *[line for x in ppl_x for line in (
+            f"![{label(s.objectives[0])} against {_lower(label(x))}](pareto_ppl_vs_{x}.png)", "",
+            f"*Every model measured on all the evaluation windows, by search method: {first} (lower is better) against "
+            f"{_lower(label(x))} (lower is better), so the best settings sit towards the bottom left. Filled circles met "
+            "the limit; crosses (if any) were built but missed another part of the limit; black rings are the best trade-off settings of section 1"
+            + (", joined by a line." if x in s.objectives else " (best on " + " and ".join(
+                _lower(label(o)) for o in s.objectives) + " together, so not all at the bottom left here).")
+            + (" The dashed line is the size limit." if x == s.memory_metric and cfg.requirement.target_memory_gb
+               else "") + axes[f"search_pareto_{x}"] + "*", "")],
+        "## 2. Search methods compared", "",
+        *_box(f"How well each search method used the same budget: the best {first} it found, how much of its "
+              "budget it spent before finding it, and how much of the space of good results its settings cover "
+              "(hypervolume).",
+              "The method with the higher hypervolume and the larger share of the best trade-off line found better "
+              "settings overall; the one that reached its best for less cost is the faster one. MFBO's rough tries use "
+              "fewer evaluation windows and count by that share, so it builds more models for the same budget."),
+        _md([["Search method", "Models built", f"Best {first} (lower is better)",
+              "Cost until it found that best, in full tries (lower is better)", "Hypervolume (higher is better)",
+              "Share of the best trade-off line (higher is better)"]]
+            + [[SHORT_NAMES.get(n, n), _fmt(c["Models built"]), _fmt(c[f"Best {first} (lower is better)"]),
+                _fmt(c["Cost until it found that best (lower is better)"]), _fmt(c["Hypervolume (higher is better)"]),
+                _pct(c["Share of the best trade-off line it found (higher is better)"])]
+               for n, c in ((n, by_name[SEARCHER_NAMES.get(n, n)]) for n in dict.fromkeys(t["searcher"] for t in trials))]),
+        *([f"![Best {first} found so far](best_so_far.png)", "",
+           f"*The lowest {first} each method had found among models under the limit, against the budget spent "
+           "(lower is better; a curve that drops earlier found good settings sooner)." + axes["search_best_so_far"]
+           + "*", ""] if "search_best_so_far" in outputs else []),
+        *(["![Hypervolume over the budget](hypervolume.png)", "",
+           "*How much of the space of good results each method's settings cover, against the budget spent (higher is "
+           "better). All methods share one reference point, 10% past the worst value under the limit."
+           + axes["search_hypervolume"] + "*", ""]
+          if "search_hypervolume" in outputs else []),
+        "## 3. Best setting for each goal", "",
+        *(["![The best setting for each goal, stage by stage](best_settings.png)", "",
+           "*How each best setting was built: the choice made at each stage of the chain, and what the finished model "
+           "measured (perplexity: lower is better; size: smaller is better; time per token: lower is better, tokens per "
+           "second: higher is better). The bracket marks the part of the model vLLM runs to measure the speed.*", ""]
+          if "search_best_settings" in outputs else []),
+        *_box("The single setting under the limit with the lowest value of each goal.",
+              "These are the ends of the best trade-off line: the most accurate model, and the best one on each "
+              "other goal."),
+        _md([["Best for", "Stage 1 quantization", "Stage 2 pruning", "Pruning share", "Stage 3 technique"] + head]
+            + [[label(o)] + [setting_value(n, t["point"][n]) for n in tech] + cells(t)
+               for o, t in best.items() if t]),
         "## Conditions", "",
         f"- Model: {cfg.model.name}; seed {cfg.run.seed}; evaluation windows: {cfg.eval.max_windows or 'all'} of "
         f"{cfg.eval.seq_len} tokens.",
         "- Techniques allowed: Stage 1 " + ", ".join(setting_value("stage1_method", m) for m in s.stage1_methods)
         + "; Stage 2 " + ", ".join(setting_value("stage2_method", m) for m in s.stage2_methods)
         + "; Stage 3 " + ", ".join(setting_value("stage3_method", m) for m in s.stage3_methods) + ".",
+        "- Settings a technique does not read (SmoothQuant strength without SmoothQuant, QuaRot key bits without "
+        "QuaRot KV) are ignored when telling settings apart, so each model is listed once on the trade-off line; "
+        "the search itself still built such twins separately.",
+        "- A setting whose plan is already over the limit is not built and does not count against the budget, nor "
+        "does one that failed before building or a repeat of the method's own try that came from the cache.",
         f"- Tries over the limit, so not built: {sum(1 for t in trials if t.get('over_limit'))} of {len(trials)}.",
         f"- Tries that failed (could not be built or measured): "
         f"{sum(1 for t in trials if not t['ok'] and not t.get('over_limit'))} of "
         f"{len(trials)}; the reasons are in the Trials sheet of search_results.xlsx.", "",
+        "## Appendix A: the other settings of each best trade-off option", "",
+        _md([["#"] + [SETTING_NAMES.get(n, n) for n in rest]]
+            + [[str(i + 1)] + [setting_value(n, t["point"][n]) for n in rest] for i, t in enumerate(front)]),
+        "## Appendix B: search methods, every column", "",
+        _md([list(comparison[0]) if comparison else ["Search method"]]
+            + [[_fmt(v) for v in c.values()] for c in comparison]),
+        "A full try measures on every evaluation window (a slice of the test text); MFBO's rough tries use fewer "
+        "windows and count by that share, though each still builds the whole model, so its time column is the fairer "
+        "cost. Every try, with its settings, results and any error, is in search_results.xlsx.", "",
     ]
     outputs["search_report"] = d / "search_report.md"
     atomic_write_text(outputs["search_report"], "\n".join(lines))
     return outputs
 
 
+def rebuild_search_report(run_dir: str | Path, tests: str | None = None) -> dict[str, Path]:
+    """The search outputs again from a run's config.json and search/trials.json, with no model built. A finished run
+    (the search wrote search_report.md at its end, after trials.json) is rebuilt in place; an unfinished one into search/partial/, so a
+    rebuild never touches what the running search writes. trials.json is only read."""
+    run_dir = Path(run_dir).resolve()
+    d = run_dir / "search"
+    report, saved = d / "search_report.md", d / "trials.json"
+    # finished: the search wrote its report after its last trials.json (a resumed search rewrites trials.json)
+    out_dir = d if report.exists() and report.stat().st_mtime >= saved.stat().st_mtime else d / "partial"
+    cfg = FrameworkConfig.from_dict(json.loads((run_dir / "config.json").read_text(encoding="utf-8")))
+    trials = json.loads((run_dir / "search" / "trials.json").read_text(encoding="utf-8"))
+    ctx = RunContext(cfg=cfg, run_id=run_dir.name, run_dir=run_dir, cache=None)  # nothing is built, so no cache
+    return write_search_report(ctx, trials, technique_space(cfg), tests, out_dir)
+
+
+def _box(shows: str, means: str) -> list[str]:
+    return [f"> **What this shows.** {shows}", ">", f"> **What it means.** {means}", ""]
+
+
+def _metric_columns(metrics: list[str]):
+    """Headers and a row maker for `metrics`, each with its better direction; a time per token is followed by the
+    same speed in tokens per second."""
+    head, makers = ["Average bits, weights and activations (WxAy)"], [_wxay]
+    for m in metrics:
+        spec = METRICS.get(m)
+        head.append(label(m) + (f", {spec.unit}" if spec and spec.unit else "")
+                    + (f", {spec.better} is better" if spec and spec.better else ""))
+        makers.append(lambda t, m=m: _fmt(t["metrics"].get(m)))
+        if m.endswith("ms_per_token") or m.endswith("ms_per_token_mean"):
+            head.append("Same speed, tokens per second, higher is better")
+            makers.append(lambda t, m=m: _fmt(_tokens_per_s(t["metrics"].get(m))))
+    return head, lambda t: [f(t) for f in makers]
+
+
+def _wxay(t: dict[str, Any]) -> str:
+    w, a = t["metrics"].get("avg_bits_per_weight"), t["metrics"].get("avg_activation_bits")
+    return f"W{w:.3g}A{a:.3g}" if is_number(w) and is_number(a) else ""
+
+
+def _lower(text: str) -> str:
+    """A label inside a sentence: first letter small (vLLM stays vLLM)."""
+    return text[:1].lower() + text[1:]
+
+
+def _tokens_per_s(ms: Any) -> float | None:
+    return 1000.0 / ms if is_number(ms) and 0 < ms < FAILED else None
+
+
+def _pct(v: Any) -> str:
+    return f"{v:.0%}" if is_number(v) else ""
+
+
 def _req(cfg) -> str:
     r = cfg.requirement
-    parts = [f"{label(m)} at most {v}" for m, v in ((cfg.search.memory_metric, r.target_memory_gb),
+    unit = lambda m: f" {METRICS[m].unit}" if m in METRICS and METRICS[m].unit else ""  # noqa: E731
+    parts = [f"{_lower(label(m))} at most {v}{unit(m)}" for m, v in ((cfg.search.memory_metric, r.target_memory_gb),
                                                      ("ppl_val", r.target_ppl),
                                                      ("decode_ms_per_token_mean", r.target_latency_ms),
                                                      ("predicted_kv_memory_gb", r.kv_budget_gb)) if v is not None]
@@ -205,7 +366,9 @@ def _table(ws, header: list[str], rows: list[list[Any]]) -> None:
         ws.append([v if isinstance(v, (int, float, str, bool)) or v is None else str(v) for v in r])
 
 
-def _plots(d: Path, trials, front, objectives, memory, comparison) -> dict[str, Path]:
+def _plots(d: Path, trials, front, objectives, memory, limit, best) -> tuple[dict[str, Path], dict[str, str]]:
+    """The charts, and for each a caption note on any axis that does not start at zero. Trade-off settings are
+    numbered as in the report's section 1 table, and the best setting for each goal is called out."""
     try:
         import matplotlib
 
@@ -213,38 +376,164 @@ def _plots(d: Path, trials, front, objectives, memory, comparison) -> dict[str, 
         import matplotlib.pyplot as plt
     except ImportError:
         log.warning("matplotlib is not installed: no search plots (pip install .[figures])")
-        return {}
-    out = {}
+        return {}, {}
+    out, notes = {}, {}
+    y = objectives[0]
     ok = [t for t in trials if t["full"] and t["ok"]]
-    colors = dict(zip(dict.fromkeys(t["searcher"] for t in trials), ("#0072B2", "#E69F00", "#009E73", "#CC79A7")))
-    for x in [memory] + objectives[1:]:
-        fig, ax = plt.subplots(figsize=(6, 4))
-        for name, c in colors.items():
-            pts = [t for t in ok if t["searcher"] == name and t["metrics"].get(x) is not None]
-            ax.scatter([t["metrics"][x] for t in pts], [t["metrics"]["ppl_val"] for t in pts], c=c, label=name,
-                       alpha=0.6, marker="o")
-        pts = [t for t in front if t["metrics"].get(x) is not None]
-        ax.scatter([t["metrics"][x] for t in pts], [t["metrics"]["ppl_val"] for t in pts], facecolors="none",
-                   edgecolors="black", s=120, label="best trade-off")
-        ax.set_xlabel(label(x) + " (lower is better)")
-        ax.set_ylabel("validation perplexity (lower is better)")
-        ax.legend()
+    # Okabe-Ito colours (colour-blind safe), one per search method; black is kept for the best trade-off rings
+    palette = ("#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00", "#F0E442")
+    searchers = list(dict.fromkeys(t["searcher"] for t in trials))
+    if len(searchers) > len(palette):
+        raise ValueError(f"{len(searchers)} search methods but only {len(palette)} colour-blind-safe colours")
+    colors = dict(zip(searchers, palette))
+    name = lambda n: SHORT_NAMES.get(n, n)  # noqa: E731
+
+    def save(fig, ax, key, file):
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
         fig.tight_layout()
-        out[f"search_pareto_{x}"] = d / f"pareto_ppl_vs_{x}.png"
-        fig.savefig(out[f"search_pareto_{x}"], dpi=150)
+        x0, y0 = ax.get_xlim()[0] > 0, ax.get_ylim()[0] > 0
+        notes[key] = (" Neither axis starts at zero." if x0 and y0 else " The x axis does not start at zero." if x0
+                      else " The y axis does not start at zero." if y0 else "")
+        out[key] = d / file
+        fig.savefig(out[key], dpi=150)
         plt.close(fig)
+
+    for x in [memory] + objectives[1:]:
+        fig, ax = plt.subplots(figsize=(6.5, 4.5))
+        for n, c in colors.items():
+            for met, marker, word in ((True, "o", "under the limit"), (False, "x", "over the limit")):
+                pts = [t for t in ok if t["searcher"] == n and t["met"] == met and is_number(t["metrics"].get(x))]
+                if pts:
+                    ax.scatter([t["metrics"][x] for t in pts], [t["metrics"][y] for t in pts], color=c, marker=marker,
+                               alpha=0.6, label=f"{name(n)}, {word}",
+                               edgecolors="#555555" if marker == "o" else None)  # the yellow is faint on white
+        pts = sorted((t for t in front if is_number(t["metrics"].get(x))), key=lambda t: t["metrics"][x])
+        if pts and x in objectives:  # the line joins the front only on the axes it was found on
+            ax.plot([t["metrics"][x] for t in pts], [t["metrics"][y] for t in pts], color="black", lw=1, zorder=1)
+        if pts:
+            ax.scatter([t["metrics"][x] for t in pts], [t["metrics"][y] for t in pts], facecolors="none",
+                       edgecolors="black", s=120, label="best trade-off (#: row in section 1)")
+            for text, xy in front_labels(front, x, y):
+                ax.annotate(text, xy, xytext=(7, 5), textcoords="offset points", fontsize=8)
+        (x_lo, x_hi), (y_lo, y_hi) = ax.get_xlim(), ax.get_ylim()
+        for i, (text, (px, py)) in enumerate(goal_callouts(best, x, y)):
+            # point the callout into the chart, away from the nearer edges (and from the #k label up and right)
+            right, up = px < (x_lo + x_hi) / 2, py < (y_lo + y_hi) / 2
+            ax.annotate(text, (px, py), xytext=((30 if right else -30), (1 if up else -1) * (30 + 18 * i)),
+                        textcoords="offset points", ha="left" if right else "right", fontsize=8,
+                        arrowprops={"arrowstyle": "->", "lw": 0.8},
+                        bbox={"boxstyle": "round", "fc": "white", "ec": "#555555", "lw": 0.6})
+        if x == memory and limit:
+            ax.axvline(limit, color="grey", ls="--", lw=1, label=f"size limit ({limit} GB)")
+        ax.set_xlabel(label(x) + (f", {METRICS[x].unit}" if x in METRICS and METRICS[x].unit else "")
+                      + " (lower is better)")
+        ax.set_ylabel(label(y) + " (lower is better)")
+        save(fig, ax, f"search_pareto_{x}", f"pareto_ppl_vs_{x}.png")
     met = [t["values"] for t in ok if t["met"]]
     if met:
         ref = [max(v[i] for v in met) * 1.1 for i in range(len(objectives))]
-        fig, ax = plt.subplots(figsize=(6, 4))
-        for name, c in colors.items():
-            curve = hypervolume_curve(trials, name, ref)
-            ax.step([a for a, _ in curve], [b for _, b in curve], where="post", c=c, label=name)
-        ax.set_xlabel("cost (full evaluations)")
+        fig, ax = plt.subplots(figsize=(6.5, 4.5))
+        for n, c in colors.items():
+            curve = hypervolume_curve(trials, n, ref)
+            ax.step([a for a, _ in curve], [b for _, b in curve], where="post", color=c, label=name(n))
+        ax.set_xlabel("budget spent (full tries)")
         ax.set_ylabel("hypervolume (higher is better)")
-        ax.legend()
-        fig.tight_layout()
-        out["search_hypervolume"] = d / "hypervolume.png"
-        fig.savefig(out["search_hypervolume"], dpi=150)
-        plt.close(fig)
-    return out
+        save(fig, ax, "search_hypervolume", "hypervolume.png")
+        fig, ax = plt.subplots(figsize=(6.5, 4.5))
+        for n, c in colors.items():
+            curve = best_so_far(trials, n)
+            if curve:
+                ax.step([a for a, _ in curve], [b for _, b in curve], where="post", color=c, label=name(n))
+        ax.set_xlabel("budget spent (full tries)")
+        ax.set_ylabel(f"lowest {_lower(label(y))} so far (lower is better)")
+        save(fig, ax, "search_best_so_far", "best_so_far.png")
+    panels = best_panels(best)
+    if panels:
+        out["search_best_settings"] = d / "best_settings.png"
+        _settings_figure(plt, panels, front, objectives, memory, out["search_best_settings"])
+        notes["search_best_settings"] = ""
+    return out, notes
+
+
+def front_labels(front, x: str, y: str) -> list[tuple[str, tuple[float, float]]]:
+    """"#k" at each trade-off setting that has both values, k its row in the section 1 table."""
+    return [(f"#{k}", (t["metrics"][x], t["metrics"][y])) for k, t in enumerate(front, 1)
+            if is_number(t["metrics"].get(x)) and is_number(t["metrics"].get(y))]
+
+
+def goal_callouts(best, x: str, y: str) -> list[tuple[str, tuple[float, float]]]:
+    """One callout per distinct best setting, naming every goal it is best for."""
+    return [(" and ".join(f"lowest {_lower(label(o))}" for o in goals), (t["metrics"][x], t["metrics"][y]))
+            for goals, t in best_panels(best) if is_number(t["metrics"].get(x)) and is_number(t["metrics"].get(y))]
+
+
+def best_panels(best) -> list[tuple[list[str], dict[str, Any]]]:
+    """The best settings, each once, with the goals it is best for (a setting can be best on more than one)."""
+    groups: dict[int, tuple[list[str], dict[str, Any]]] = {}
+    for o, t in best.items():
+        if t:
+            groups.setdefault(id(t), ([], t))[0].append(o)
+    return list(groups.values())
+
+
+def measured_text(t: dict[str, Any], objectives: list[str], memory: str) -> str:
+    """What a setting measured, in words: the goals, its held-out perplexity and its size."""
+    m = t["metrics"]
+    shown = list(dict.fromkeys([*objectives, "ppl_heldout", memory]))
+    lines = []
+    for k in shown:
+        v = m.get(k)
+        if not is_number(v) or v >= FAILED:
+            continue
+        unit = METRICS[k].unit if k in METRICS else ""
+        lines.append(f"{label(k)}: {_fmt(v)}" + (f" {unit}" if unit else ""))
+        if k.endswith("ms_per_token") or k.endswith("ms_per_token_mean"):
+            lines.append(f"= {_fmt(_tokens_per_s(v))} tokens/s")
+    return "\n".join(lines + ["(lower is better; tokens/s higher)"])
+
+
+def _settings_figure(plt, panels, front, objectives, memory, path: Path) -> None:
+    """An annotated drawing of each best setting: the chain it was built along, the choice made at each stage, and
+    what it measured."""
+    import textwrap
+
+    from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+
+    wrap = lambda text: "\n".join(textwrap.fill(line, 22) for line in text.split("\n"))  # noqa: E731
+    fig, axes = plt.subplots(len(panels), 1, figsize=(12, 3.6 * len(panels)), squeeze=False)
+    for ax, (goals, t) in zip(axes[:, 0], panels):
+        p = t["point"]
+        share = p.get("prune_ratio_aggressive")
+        boxes = [
+            ("Stage 0: sensitivity plan", f"protection threshold {setting_value('sensitive_threshold', p.get('sensitive_threshold'))}"
+             f"\ncalibration: {p.get('calib_dataset')}, {p.get('calib_samples')} passages", "#E8F1FA"),
+            ("Stage 1: fewer bits", f"{setting_value('stage1_method', p['stage1_method'])}\n{_wxay(t) or ''}", "#E8F1FA"),
+            ("Stage 2: pruning", setting_value("stage2_method", p["stage2_method"])
+             + (f"\npruning share {share:.0%}" if is_number(share) else ""), "#E8F1FA"),
+            ("Stage 3: KV cache", setting_value("stage3_method", p["stage3_method"]), "#E8F1FA"),
+            ("Measured", measured_text(t, objectives, memory), "#FFF4E0"),
+        ]
+        ax.set_xlim(0, 10)
+        ax.set_ylim(0, 3.6)
+        ax.axis("off")
+        k = front.index(t) + 1 if t in front else None
+        title = " and ".join(f"lowest {_lower(label(o))}" for o in goals)
+        ax.set_title(title[:1].upper() + title[1:] + (f": trade-off setting #{k}" if k else ""), loc="left",
+                     fontsize=10, fontweight="bold")
+        for i, (head, body, fill) in enumerate(boxes):
+            x = 0.1 + i * 2
+            ax.add_patch(FancyBboxPatch((x, 0.9), 1.7, 2.4, boxstyle="round,pad=0.03", fc=fill, ec="#555555", lw=0.8))
+            ax.text(x + 0.85, 3.15, head, ha="center", va="top", fontsize=10, fontweight="bold")
+            ax.text(x + 0.85, 2.75, wrap(body), ha="center", va="top", fontsize=8.5)
+            if i:
+                ax.add_patch(FancyArrowPatch((x - 0.28, 2.1), (x - 0.02, 2.1), arrowstyle="->", mutation_scale=10))
+        # what the speed covers: vLLM runs the model up to Stage 2 (dark grey: the blue belongs to MOBO)
+        ax.annotate("", (0.1, 0.65), (5.8, 0.65), arrowprops={"arrowstyle": "<->", "color": "#333333", "lw": 0.9})
+        ax.text(2.95, 0.3, "vLLM measures the speed on this part (it cannot run Stage 3)", ha="center",
+                fontsize=9, color="#333333")
+        ax.text(7.05, 0.3, "Stage 3 counts in perplexity, not in speed", ha="center", fontsize=9, color="#555555")
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)

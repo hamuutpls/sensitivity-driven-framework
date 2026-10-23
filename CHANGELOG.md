@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-22: Search report laid out like the stage reports
+
+- search_report.md now has a summary, one section per question (best trade-off settings, search methods compared,
+  best setting for each goal), each with a "What this shows / What it means" box, and the big tables at the back.
+- The charts are shown in the report with captions that say which direction is better. New chart: the best
+  perplexity each search method had found so far, against the budget spent. Pareto charts mark tries under and over
+  the limit, show the size limit, and use the short search method names.
+- Tables give each setting's average bits (WxAy), units, and the speed in tokens per second next to the time per token.
+- The report states the unit-test result of the code that made the numbers, or that none was recorded.
+- The trade-off line lists each model once: tries that differ only in settings their techniques do not read
+  (SmoothQuant strength without SmoothQuant, QuaRot key bits without QuaRot KV) count as one, in the report and in
+  each method's share of the line.
+- Annotated charts: the trade-off settings are numbered as in the section 1 table and the best setting for each goal
+  is called out. New illustration best_settings.png draws each best setting stage by stage, with what it measured
+  and the part of the model vLLM times.
+- `sdf-search-report <run_dir> --tests "..."` writes the search outputs again from the saved tries, no model built. It only reads trials.json, and
+  writes into search/partial/ while the search is still running (no search_report.md newer than trials.json).
+
 ## 2026-10-22: Faster perplexity for Stage 3 rows that forget words (speed-up option 1)
 
 - H2O's word-by-word loop ran once per perplexity window, so a model whose KV plan forgets words took about 40 min

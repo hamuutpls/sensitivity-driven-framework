@@ -26,6 +26,7 @@ search = ["optuna>=5", "pymoo>=0.6"]  # MODE "search": MOBO (Optuna) and NSGA-II
 [project.scripts]
 sdf-stage0 = "sdf.cli:stage0_main"
 sdf-stage0-sweep = "sdf.cli:sweep_main"
+sdf-search-report = "sdf.cli:search_report_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
