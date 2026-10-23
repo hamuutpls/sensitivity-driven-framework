@@ -1,6 +1,7 @@
 """Stage 3 KV-cache techniques: QuaRot KV, KVQuant (rounding) and H2O, SnapKV, InfiniGen (forgetting words).
 
-Perplexity is measured with one forward pass per text window, so forgetting is simulated per word ("every word",
+Perplexity is measured with whole text windows per forward pass (FORGET_PPL_BATCH of them while a layer forgets),
+so forgetting is simulated per word ("every word",
 Mohammad, 2026-10-18): each word attends only to the past words the technique would still hold at that point, under
 a budget per layer from its share (the Stage 0 plan's share, or H2O's 20% in the standard rows): every forgetting
 rule keeps a fixed cache of ceil(keep_ratio x window) words, filled before anything is forgotten (`cache_budgets`;
@@ -38,6 +39,11 @@ SNAPKV_KERNEL = 7
 INFINIGEN_PARTIAL = 0.3  # InfiniGen's share of query/key channels used to guess which words matter
 KVQUANT_OUTLIERS = 0.01  # KVQuant keeps the largest 1% of numbers (dense-and-sparse) unrounded
 KVQUANT_CALIB_TOKENS = 8192  # calibration tokens per layer for KVQuant's ranges and levels
+# Perplexity windows per forward pass while a layer forgets: H2O's word-by-word loop costs the same per pass whatever
+# the batch, so one window per pass made it ~40 min per model on the A100 (Mohammad, 2026-10-22: speed-up option 1).
+# The same numbers up to float rounding (tests/test_kv_methods.py checks them against one window per pass).
+# shortcut: fixed, ~5 GB peak for TinyLlama at 512 words; lower it for a 7B model or 2048-word windows (out of memory).
+FORGET_PPL_BATCH = 16
 
 
 @dataclass(frozen=True)
@@ -223,12 +229,15 @@ def kv_attention(model: nn.Module, specs: list[LayerKV]) -> Iterator[None]:
     for a, s in zip(attns, specs):
         a.sdf_kv = s
     cfg._attn_implementation = SDF_KV
+    if any(s.forget is not None and s.keep_ratio < 1 for s in specs):
+        model.sdf_ppl_batch = FORGET_PPL_BATCH  # read by sdf.eval.metrics.perplexity
     try:
         yield
     finally:
         cfg._attn_implementation = old
         for a in attns:
             del a.sdf_kv
+        model.__dict__.pop("sdf_ppl_batch", None)
 
 
 # ------------------------------------------------------------------------------------------------- KVQuant
