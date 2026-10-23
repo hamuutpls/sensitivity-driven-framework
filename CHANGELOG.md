@@ -9,6 +9,9 @@
   the limit, show the size limit, and use the short search method names.
 - Tables give each setting's average bits (WxAy), units, and the speed in tokens per second next to the time per token.
 - The report states the unit-test result of the code that made the numbers, or that none was recorded.
+- The trade-off line lists each model once: tries that differ only in settings their techniques do not read
+  (SmoothQuant strength without SmoothQuant, QuaRot key bits without QuaRot KV) count as one, in the report and in
+  each method's share of the line.
 - Annotated charts: the trade-off settings are numbered as in the section 1 table and the best setting for each goal
   is called out. New illustration best_settings.png draws each best setting stage by stage, with what it measured
   and the part of the model vLLM times.

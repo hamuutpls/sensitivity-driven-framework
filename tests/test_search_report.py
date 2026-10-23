@@ -11,7 +11,7 @@ import pytest
 from sdf.cli import search_report_main
 from sdf.reporting.metrics import label
 from sdf.reporting.search import (_tokens_per_s, best_panels, best_so_far, front_labels, goal_callouts,
-                                  measured_text)
+                                  measured_text, report_front)
 from sdf.search import FAILED, _sample, pareto, technique_space
 
 OBJ = ["ppl_val", "vllm_decode_ms_per_token"]
@@ -203,3 +203,15 @@ def test_the_report_is_written_with_no_tries_or_a_single_one(run_dir, keep):
     for png in re.findall(r"!\[[^]]*\]\(([^)]+)\)", text):
         assert (d / png).exists(), png
     assert (d / "best_settings.png").exists() == (keep == "one")
+
+
+def test_tries_that_differ_only_in_settings_their_techniques_do_not_read_are_one_model_on_the_front():
+    def t(stage1, alpha, ppl, ms):
+        point = {"stage1_method": stage1, "stage3_method": "rtn_kv", "smoothquant_alpha": alpha, "quarot_k_bits": 4,
+                 "gptq_groupsize": 128}
+        return {"point": point, "full": True, "met": True, "values": [ppl, ms]}
+
+    twins = [t("rtn_with_rtn_act", 0.2, 9.0, 5.0), t("rtn_with_rtn_act", 0.8, 9.1, 4.9)]  # alpha is not read
+    assert len(pareto(twins)) == 2 and report_front(twins) == [twins[0]]
+    smooth = [t("rtn_with_smoothquant", 0.2, 9.0, 5.0), t("rtn_with_smoothquant", 0.8, 9.1, 4.9)]  # alpha is read
+    assert report_front(smooth) == smooth

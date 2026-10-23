@@ -26,19 +26,44 @@ _SHOWN = ("ppl_val", "ppl_heldout", "predicted_weight_memory_gb", "vllm_decode_m
           "decoder_weights_removed", "predicted_kv_memory_gb")
 
 
+# settings only some techniques read; a point carries them anyway (gptq_groupsize stays: every plan's size and the
+# backend export round with it)
+_ONLY_IF_USED = ("smoothquant_alpha", "quarot_k_bits")
+
+
+def used_key(point: dict[str, Any]) -> str:
+    """The point without the settings its chosen techniques do not read: two points with the same key build the
+    same model."""
+    from sdf.stages.methods import METHODS
+    from sdf.stages.runner import stage1_row
+
+    used = set(stage1_row(point["stage1_method"])[0].params) | set(METHODS[point["stage3_method"]].params)
+    return json.dumps({k: v for k, v in point.items() if k not in _ONLY_IF_USED or k in used}, sort_keys=True,
+                      default=str)
+
+
+def report_front(trials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The trade-off line, lowest first objective first, each model once: of tries that differ only in settings
+    their techniques do not read, the first listed is kept."""
+    out: dict[str, dict[str, Any]] = {}
+    for t in sorted(pareto(trials), key=lambda t: t["values"][0]):
+        out.setdefault(used_key(t["point"]), t)
+    return list(out.values())
+
+
 def compare_searchers(trials: list[dict[str, Any]], objectives: list[str]) -> list[dict[str, Any]]:
     """Per searcher: tries, models built (and how many on all the windows), cost, share meeting the requirement, its best first objective and the cost at
     which it first found it, hypervolume (one reference point for all: 10% past the worst met value), and its share
     of the combined trade-off line."""
     met = [t["values"] for t in trials if t["full"] and t["met"]]
     ref = [max(v[i] for v in met) * 1.1 for i in range(len(objectives))] if met else None
-    front = {json.dumps(t["point"], sort_keys=True) for t in pareto(trials)}
+    front = {used_key(t["point"]) for t in report_front(trials)}
     out = []
     for name in dict.fromkeys(t["searcher"] for t in trials):
         ts = [t for t in trials if t["searcher"] == name]
         full_met = [t for t in ts if t["full"] and t["met"]]
         best = min(full_met, key=lambda t: t["values"][0], default=None)
-        mine = {json.dumps(t["point"], sort_keys=True) for t in full_met}
+        mine = {used_key(t["point"]) for t in full_met}
         out.append({
             "Search method": SEARCHER_NAMES.get(name, name), "Tries": len(ts),
             "Models built": sum(1 for t in ts if t["cost"] > 0),
@@ -108,7 +133,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
     d.mkdir(parents=True, exist_ok=True)
     comparison = compare_searchers(trials, s.objectives)
     by_name = {c["Search method"]: c for c in comparison}
-    front = sorted(pareto(trials), key=lambda t: t["values"][0])
+    front = report_front(trials)
     best = {o: min((t for t in trials if t["full"] and t["met"]), key=lambda t, i=i: t["values"][i], default=None)
             for i, o in enumerate(s.objectives)}
     names = [p.name for p in space.params]
@@ -235,6 +260,9 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         "- Techniques allowed: Stage 1 " + ", ".join(setting_value("stage1_method", m) for m in s.stage1_methods)
         + "; Stage 2 " + ", ".join(setting_value("stage2_method", m) for m in s.stage2_methods)
         + "; Stage 3 " + ", ".join(setting_value("stage3_method", m) for m in s.stage3_methods) + ".",
+        "- Settings a technique does not read (SmoothQuant strength without SmoothQuant, QuaRot key bits without "
+        "QuaRot KV) are ignored when telling settings apart, so each model is listed once on the trade-off line; "
+        "the search itself still built such twins separately.",
         "- A setting whose plan is already over the limit is not built and does not count against the budget, nor "
         "does one that failed before building or a repeat of the method's own try that came from the cache.",
         f"- Tries over the limit, so not built: {sum(1 for t in trials if t.get('over_limit'))} of {len(trials)}.",
