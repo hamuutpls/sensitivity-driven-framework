@@ -9,6 +9,9 @@
   the limit, show the size limit, and use the short search method names.
 - Tables give each setting's average bits (WxAy), units, and the speed in tokens per second next to the time per token.
 - The report states the unit-test result of the code that made the numbers, or that none was recorded.
+- Annotated charts: the trade-off settings are numbered as in the section 1 table and the best setting for each goal
+  is called out. New illustration best_settings.png draws each best setting stage by stage, with what it measured
+  and the part of the model vLLM times.
 - `sdf-search-report <run_dir> --tests "..."` writes the search outputs again from the saved tries, no model built. It only reads trials.json, and
   writes into search/partial/ while the search is still running (no search_report.md newer than trials.json).
 

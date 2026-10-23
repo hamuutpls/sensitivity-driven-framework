@@ -65,7 +65,8 @@ def test_the_report_is_rebuilt_from_saved_tries(run_dir, capsys):
     for png in re.findall(r"!\[[^]]*\]\(([^)]+)\)", text):  # every chart the report shows exists
         assert (d / png).exists(), png
     assert {"pareto_ppl_vs_predicted_weight_memory_gb.png", "pareto_ppl_vs_vllm_decode_ms_per_token.png",
-            "best_so_far.png", "hypervolume.png"} <= {p.name for p in d.glob("*.png")}
+            "best_so_far.png", "hypervolume.png", "best_settings.png"} <= {p.name for p in d.glob("*.png")}
+    assert "](best_settings.png)" in text
     # the most accurate trade-off setting's speed is also given in tokens per second, next to its time
     top = min(pareto(trials), key=lambda t: t["values"][0])
     ms = top["metrics"]["vllm_decode_ms_per_token"]
