@@ -158,10 +158,11 @@ class Recorder:
     """Every evaluation a searcher asks for, in order, with its cost: its share of the full evaluation windows for a
     model built for this searcher (even if measuring it then failed), else 0 (a point the plan puts over the limit, a
     crash before building, or a point this searcher already tried on as many windows that came back from the cache).
-    Only built models use up the budget."""
+    Only built models use up the budget. `evaluator`: what measures a point, with evaluate()'s arguments and result
+    (default evaluate(), the chained model); a per-stage search passes its own stage's."""
 
-    def __init__(self, ctx: RunContext, searcher: str, full_windows: int, **kw: Any):
-        self.ctx, self.searcher, self.full, self.kw = ctx, searcher, full_windows, kw
+    def __init__(self, ctx: RunContext, searcher: str, full_windows: int, evaluator: Callable | None = None, **kw: Any):
+        self.ctx, self.searcher, self.full, self.evaluator, self.kw = ctx, searcher, full_windows, evaluator, kw
         self.trials: list[dict[str, Any]] = []
         s = ctx.cfg.search
         self.objectives = s.objectives
@@ -183,7 +184,7 @@ class Recorder:
     def __call__(self, point: dict[str, Any], windows: int | None = None) -> dict[str, Any]:
         windows = windows or self.full
         t0 = time.perf_counter()
-        r = evaluate(self.ctx, point, None if windows == self.full else windows, **self.kw)
+        r = (self.evaluator or evaluate)(self.ctx, point, None if windows == self.full else windows, **self.kw)
         values = [r.get("metrics", {}).get(o) for o in self.objectives]
         built = "not_built" not in r and ("error" not in r or r.get("attempted", False))
         repeat = r["cached"] and any(t["point"] == point and t["windows"] == windows and t["built"]
