@@ -160,21 +160,6 @@ def winner(cfg: FrameworkConfig, tried: list[dict[str, Any]]) -> dict[str, Any] 
                default=None)
 
 
-def extra_tries(ctx: RunContext, trials: list[dict[str, Any]], methods: list[str], full_windows: int,
-                **kw: Any) -> list[dict[str, Any]]:
-    """One Stage 1 try, at the run's own settings, for each of `methods` whose weight technique no searcher measured
-    on all the windows (Mohammad, 2026-10-25: SpQR, QuIP and QuIP# results in the run). Kept apart from the
-    searchers' trials, so they change no trade-off line or pair."""
-    done = {t["point"]["stage1_method"].split("_with_")[0] for t in trials if t["full"] and t["ok"]}
-    space, names = stage_space(ctx.cfg, 1), STAGE_PARAMS[1]
-    rec = Recorder(ctx, "extra", full_windows, evaluator=functools.partial(evaluate_stage, stage=1), **kw)
-    for m in methods:
-        if m.split("_with_")[0] not in done:
-            rec(space.make({**{n: ctx.cfg.hyperparams[n] for n in names if n in ctx.cfg.hyperparams},
-                            "stage1_method": m}))
-    return rec.trials
-
-
 def _searchers(names: list[str]) -> str:
     """The search methods in words, e.g. "2 search methods (MOBO, MFBO)"."""
     words = [{"nsga3": "NSGA-III"}.get(n, n.upper()) for n in names]
@@ -224,11 +209,9 @@ def run_stage_search(ctx: RunContext, model_factory: Callable | None = None, tok
     kw = dict(model_factory=model_factory, tokenizer=tokenizer, text_loader=text_loader)
     outputs: dict[str, Path] = {}
     fronts: dict[int, list[dict[str, Any]]] = {}
-    sctxs: dict[int, RunContext] = {}
-    stage_trials: dict[int, list[dict[str, Any]]] = {}
     for stage in (1, 2):
         scfg = cfg.with_overrides({"search.objectives": objectives(cfg, stage), "requirement.target_memory_gb": None})
-        sctx = sctxs[stage] = RunContext(scfg, ctx.run_id, root / f"stage_{stage}", ctx.cache)
+        sctx = RunContext(scfg, ctx.run_id, root / f"stage_{stage}", ctx.cache)
         space = stage_space(scfg, stage)
         trials: list[dict[str, Any]] = []
         for name in s.searchers:
@@ -236,7 +219,6 @@ def run_stage_search(ctx: RunContext, model_factory: Callable | None = None, tok
                            **kw)
             SEARCHERS[name](rec, space, s.budget, cfg.run.seed, **({"eta": s.mfbo_eta} if name == "mfbo" else {}))
             trials += rec.trials
-        stage_trials[stage] = trials
         outputs.update({f"stage_{stage}_{k}": p for k, p in write_search_report(sctx, trials, space,
                                                                                   _INTRO[stage]).items()})
         fronts[stage] = pareto(trials)
@@ -248,18 +230,17 @@ def run_stage_search(ctx: RunContext, model_factory: Callable | None = None, tok
         raise RuntimeError(f"every Stage 3 technique failed; see {kv_out.get('report')}")
     tried = pair_up(RunContext(cfg, ctx.run_id, root / "final", ctx.cache), fronts[1], fronts[2], kv, s.finalists, **kw)
     best = winner(cfg, tried)
-    extras = extra_tries(sctxs[1], stage_trials[1], s.extra_stage1, len(val) + len(held), **kw)
     results = {"stage_1_front": fronts[1], "stage_2_front": fronts[2], "stage_3_technique": kv,
                "stage_3_rows": [{"method": r["method"], "metrics": r["metrics"]} for r in kv_rows],
-               "pairs": tried, "winner": best, "stage_1_extra": extras}
+               "pairs": tried, "winner": best}
     outputs["stage_search_results"] = root / "stage_search_results.json"
     atomic_write_text(outputs["stage_search_results"], json.dumps(results, indent=2, default=str))
     outputs["stage_search_report"] = root / "stage_search_report.md"
-    atomic_write_text(outputs["stage_search_report"], _report(cfg, fronts, kv, kv_rows, tried, best, extras))
+    atomic_write_text(outputs["stage_search_report"], _report(cfg, fronts, kv, kv_rows, tried, best))
     return outputs
 
 
-def _report(cfg: FrameworkConfig, fronts, kv: str, kv_rows, tried, best, extras=()) -> str:
+def _report(cfg: FrameworkConfig, fronts, kv: str, kv_rows, tried, best) -> str:
     from sdf.reporting.metrics import label
     from sdf.reporting.search import SETTING_NAMES, _fmt, _md, _req, setting_value
 
@@ -310,13 +291,4 @@ def _report(cfg: FrameworkConfig, fronts, kv: str, kv_rows, tried, best, extras=
         f"Pairs are built in this order until {s.finalists} are measured under the limit; a pair whose plan is over "
         "the limit is not built. Held-out perplexity was measured but never used to choose.", "",
     ]
-    if extras:
-        lines += [
-            "## Stage 1: extra techniques", "",
-            "Techniques asked for in the results that no search method measured: one Stage 1 try each at the run's "
-            "own settings. They are not on the trade-off line and were not paired.", "",
-            _md([["Technique"] + head + ["Outcome"]]
-                + [[setting_value("stage1_method", t["point"]["stage1_method"])]
-                   + [_fmt(t["metrics"].get(m)) for m in shown] + ["measured" if t["ok"] else str(t["error"])]
-                   for t in extras]), ""]
     return "\n".join(lines)

@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-25: The chained search again, judged on the final model, with an accuracy test
+
+- Mohammad (2026-10-25): "the framework is sequential now", "stage 1 then 2 then 3 then see if its the best model":
+  MODE "search" (each try builds one chained model 0 -> 1 -> 2 -> 3) is the run again; MODE "stage_search" is kept
+  but not used. The final model must be at most 1 GB (`TARGET_MEMORY_GB`, was 1.1) with validation perplexity at
+  most 11 (`TARGET_PPL`). `SEARCH_REFINE_ROUNDS = 0`: no Stage 0 refinement in a try.
+- After the searchers: `search.extra_stage1` (SpQR, QuIP, QuIP#) gets one chained try each when no searcher measured
+  that weight technique on all the windows (the best try with only its Stage 1 technique changed), and
+  `search.accuracy_tasks` (ARC-Easy, PIQA, HellaSwag, WinoGrande, full sets) tests the lowest-perplexity final model
+  under the limit, next to the uncompressed TinyLlama measured in the same run (change and change in %). Both have
+  their own sections in search_report.md. The search report names the number of searchers and says when Stage 0's
+  refinement was off.
+
 ## 2026-10-25: The settings search inside the stages (MODE "stage_search")
 
 - Mohammad (2026-10-24/25): the separate search layer, which rebuilt Stages 0-3 for every try, is folded into the

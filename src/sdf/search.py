@@ -381,6 +381,46 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
         SEARCHERS[name](rec, space, s.budget, cfg.run.seed, **extra)
         trials += rec.trials
         atomic_write_text(ctx.run_dir / "search" / "trials.json", json.dumps(trials, indent=2, default=str))
+    extras = extra_tries(ctx, trials, s.extra_stage1, full, **kw)
+    accuracy = final_accuracy(ctx, trials, s.accuracy_tasks, **kw)
     from sdf.reporting.search import write_search_report
 
-    return write_search_report(ctx, trials, space)
+    return write_search_report(ctx, trials, space, extras=extras, accuracy=accuracy)
+
+
+def final_accuracy(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[str], **kw: Any) -> dict[str, Any] | None:
+    """The final model with the lowest validation perplexity under the limit, built again and tested for accuracy on
+    `tasks` (eval.downstream_tasks, lm-eval; Mohammad, 2026-10-25: "the final model that has the best perplexity is
+    then tested for accuracy", "then that accuracy will be compared with tinyllama accuracy"): "fp16" holds the
+    uncompressed model's accuracy, measured in the same run under the same conditions. None when no task is set or no
+    try met the limit."""
+    best = min((t for t in trials if t["full"] and t["met"]), key=lambda t: t["metrics"]["ppl_val"], default=None)
+    if not tasks or best is None:
+        return None
+    cfg = ctx.cfg.with_overrides({"eval.downstream_tasks": list(tasks)})
+    r = evaluate(RunContext(cfg, ctx.run_id, ctx.run_dir, ctx.cache), best["point"], **kw)
+    rows = Path(r["dir"]) / "stage_3" / "results.json"
+    fp16 = next((x["metrics"] for x in json.loads(rows.read_text())["rows"] if x["variant"] == "fp16"), {}) \
+        if rows.exists() else {}
+    return {"searcher": best["searcher"], "n": best["n"], "point": best["point"],
+            "fp16": {m: v for m, v in fp16.items() if m.startswith("acc_")},
+            **{k: r.get(k) for k in ("metrics", "error", "dir")}}
+
+
+def extra_tries(ctx: RunContext, trials: list[dict[str, Any]], methods: list[str], full_windows: int,
+                **kw: Any) -> list[dict[str, Any]]:
+    """One chained try for each of `methods` (Stage 1 techniques) whose weight technique no searcher measured on all
+    the windows (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"): the search's best try
+    under the limit (lowest first objective) with only its Stage 1 technique swapped, or the run's own settings if
+    no try met the limit. Kept apart from the searchers' trials, so they change no comparison or trade-off line."""
+    cfg = ctx.cfg
+    space = technique_space(cfg)
+    done = {t["point"]["stage1_method"].split("_with_")[0] for t in trials if t["full"] and t["ok"]}
+    best = min((t for t in trials if t["full"] and t["met"]), key=lambda t: t["values"][0], default=None)
+    base = best["point"] if best else space.make({k: v for k, v in cfg.hyperparams.items()
+                                                  if k in {p.name for p in SEARCH_SPACE.params}})
+    rec = Recorder(ctx, "extra", full_windows, **kw)
+    for m in methods:
+        if m.split("_with_")[0] not in done:
+            rec({**base, "stage1_method": m})
+    return rec.trials
