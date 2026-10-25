@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-25: The settings search inside the stages (MODE "stage_search")
+
+- Mohammad (2026-10-24/25): the separate search layer, which rebuilt Stages 0-3 for every try, is folded into the
+  stages (option B, "1a 2a", "no refinement for any stage"). New `sdf/stage_search.py`:
+  Stage 1 searches its technique, protection threshold, calibration text and passages, group size and SmoothQuant
+  strength on a Stage 1 model alone (joint plan); Stage 2 searches its technique and share removed on the
+  uncompressed model; each runs MOBO, MFBO and NSGA-III with the same budget and seed and keeps its trade-off line
+  (no limit inside a stage). Stage 3 tries every KV technique once and keeps the lowest validation perplexity. The
+  pairing step builds the chained model for Stage 1 x Stage 2 pairs, best estimated perplexity first (Stage 1's plus
+  Stage 2's rise over FP16), until `search.finalists` (3) are measured under the limit; the winner has the lowest
+  objectives in order. Stage 0's joint refinement is off everywhere.
+- Stage 2 and Stage 3 tries run no backend (their objectives do not use one). `quarot_k_bits` is not searched (Our
+  method rows do not read it).
+- Shared code: `Recorder(evaluator=...)`, `search.point_key` and `search.cached_point` (from `evaluate`, unchanged
+  numbers and cache keys), `run_stage(plan_keys=...)` to build one Our method row, `write_search_report(intro=...)`.
+  MODE "search" (the chained search) is unchanged.
+
 ## 2026-10-22: Faster perplexity for Stage 3 rows that forget words (speed-up option 1)
 
 - H2O's word-by-word loop ran once per perplexity window, so a model whose KV plan forgets words took about 40 min

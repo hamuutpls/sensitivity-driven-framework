@@ -84,7 +84,9 @@ def hypervolume_curve(trials: list[dict[str, Any]], searcher: str, ref: list[flo
     return [(sum(t["cost"] for t in ts[: i + 1]), hypervolume(ts[: i + 1], ref)) for i in range(len(ts))]
 
 
-def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: SearchSpace) -> dict[str, Path]:
+def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: SearchSpace,
+                        intro: str | None = None) -> dict[str, Path]:
+    """`intro`: the report's opening paragraph when the search is not the chained one (a per-stage search)."""
     cfg = ctx.cfg
     s = cfg.search
     d = ctx.run_dir / "search"
@@ -121,7 +123,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
 
     # --- report
     shown = [m for m in (s.objectives[0], s.memory_metric, *s.objectives[1:], "ppl_heldout") if m]
-    tech = ["stage1_method", "stage2_method", "prune_ratio_aggressive", "stage3_method"]
+    tech = [n for n in ("stage1_method", "stage2_method", "prune_ratio_aggressive", "stage3_method") if n in names]
     rest = [n for n in names if n not in tech]
     lines = [
         "# Settings search", "",
@@ -139,14 +141,14 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         "tries use fewer windows and count by that share, so it builds more models for the same budget (see Models "
         "built below). A setting whose plan is already over the limit is not built and does not count, nor does one "
         "that failed before building or a repeat of the method's own try that came from the cache. The methods: "
-        + "; ".join(SEARCHER_NAMES[n] for n in s.searchers if n in SEARCHER_NAMES) + ".", "",
+        + "; ".join(SEARCHER_NAMES[n] for n in s.searchers if n in SEARCHER_NAMES) + "." if intro is None else intro, "",
         "## What it means", "",
         f"{len(front)} setting(s) are on the best trade-off line: none of them can get better on one goal without "
         "getting worse on another, so each is a fair choice depending on what matters more. They are listed below, "
         "lowest perplexity first (lower perplexity means more accurate; lower time means faster). Held-out perplexity "
         "was measured but never used to choose, so it shows how well the choice holds on unseen text.", "",
         "## Best trade-off settings", "",
-        _md([["#", "Stage 1 quantization", "Stage 2 pruning", "Pruning share", "Stage 3 technique"]
+        _md([["#"] + [{"stage3_method": "Stage 3 technique"}.get(n, SETTING_NAMES[n]) for n in tech]
              + [label(m) + " (lower is better)" for m in shown]]
             + [[str(i + 1)] + [setting_value(n, t["point"][n]) for n in tech] + [_fmt(t["metrics"].get(m)) for m in shown]
                for i, t in enumerate(front)]),
@@ -217,7 +219,7 @@ def _plots(d: Path, trials, front, objectives, memory, comparison) -> dict[str, 
     out = {}
     ok = [t for t in trials if t["full"] and t["ok"]]
     colors = dict(zip(dict.fromkeys(t["searcher"] for t in trials), ("#0072B2", "#E69F00", "#009E73", "#CC79A7")))
-    for x in [memory] + objectives[1:]:
+    for x in dict.fromkeys([memory] + objectives[1:]):  # a stage search may have the memory among its objectives
         fig, ax = plt.subplots(figsize=(6, 4))
         for name, c in colors.items():
             pts = [t for t in ok if t["searcher"] == name and t["metrics"].get(x) is not None]

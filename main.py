@@ -15,6 +15,9 @@ MODE = "single"  # "single": one Stage 0 run with the settings in section 2
 #                  "stages": Stages 1-3 with the methods in section 7, on top of a Stage 0 plan
 #                  "search": find the settings (section 2 + a technique per stage) that meet the requirement in
 #                            section 8 with the lowest perplexity and latency; MOBO, MFBO and NSGA-III compared
+#                  "stage_search": the search folded into the stages (Mohammad, 2026-10-25): Stage 1 and Stage 2
+#                            each search their own settings, Stage 3 tries every KV technique, then the best Stage 1 +
+#                            Stage 2 pairs are built as chained models under the limit in section 8; no refinement
 #                  "chain": Stages 0 -> 1 -> 2 -> 3 -> 4 in a row: every row on a side's memory vs perplexity trade-off
 #                           line (Standard and Our method each their own; Stage 1: WxAy rows) goes into the next stage
 
@@ -151,6 +154,7 @@ SEARCH_STAGE1 = [f"{w}_with_{a}" for w in ("rtn", "gptq", "awq", "omniquant", "s
                  for a in ("rtn_act", "smoothquant")]
 SEARCH_STAGE2 = ["unstructured_prune", "structured_prune"]  # pruning techniques (low-rank cannot follow Stage 1)
 SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]  # KV-cache techniques
+SEARCH_FINALISTS = 3  # MODE "stage_search": chained models built and measured under the limit, best pairs first
 
 
 # =====================================================================================================
@@ -180,6 +184,7 @@ def build_config():
         "search.stage1_methods": SEARCH_STAGE1,
         "search.stage2_methods": SEARCH_STAGE2,
         "search.stage3_methods": SEARCH_STAGE3,
+        "search.finalists": SEARCH_FINALISTS,
         "stage0.score": SENSITIVITY_SCORE,
         "stage0.normalization": NORMALIZATION,
         "stage0.protected_bits": PROTECTED_BITS,
@@ -269,6 +274,10 @@ def main():
         from sdf.search import run_search
 
         outputs = run_search(start_run(cfg))
+    elif MODE == "stage_search":
+        from sdf.stage_search import run_stage_search
+
+        outputs = run_stage_search(start_run(cfg))
     elif MODE == "chain":
         from sdf.stage0.run import run_stage0
         from sdf.stages.runner import run_chain
@@ -282,7 +291,7 @@ def main():
         outputs.update(run_chain(ctx, candidate, stage0_dir, measure_fp16=MEASURE_FP16))
     else:
         raise SystemExit("MODE must be 'single', 'sweep', 'compare_scores', 'prune_sweep', 'threshold_sweep', 'stages', "
-                         f"'chain' or 'search', not {MODE!r}")
+                         f"'chain', 'search' or 'stage_search', not {MODE!r}")
     for name, path in outputs.items():
         print(f"{name}: {path}")
 

@@ -309,6 +309,7 @@ def run_stage(
     subdir: str | None = None,
     used: dict[tuple[str, str], tuple[Method, Any, float | None]] | None = None,
     only: str | None = None,
+    plan_keys: tuple[str, ...] | None = None,
 ) -> dict[str, Path]:
     """Run one of Stages 1-3 with `method_names` (see sdf.stages.methods.METHODS). `model_factory` returns a
     fresh FP16 model on the right device (default: from_pretrained); tests pass a tiny model's deepcopy.
@@ -319,7 +320,8 @@ def run_stage(
     (method, plan) built on the fresh model before the row's method, e.g. the best Stage 2 row. `subdir`: the
     report folder instead of stage_<N>/. `used`, when given, is filled with (row name, variant) -> (method, plan,
     pruning level) of every row, so the next stage can rebuild a row exactly. `only`: "original" or "framework" to
-    run only that side's rows (the chain follows each side's rows on its own)."""
+    run only that side's rows (the chain follows each side's rows on its own). `plan_keys`: only the Our method rows
+    of these plans (PLAN_FILES keys), e.g. ("joint_weights",) for a WxAy method's joint row alone."""
     if stage not in TITLES:
         raise ValueError(f"run_stage runs Stages 1-3, not {stage}")
     if after and stage != 2 or before and stage != 3:
@@ -610,7 +612,7 @@ def run_stage(
                 row.info.update(not_on_backends(m))
                 rep.add_raw(m.name, "original", result["raw"])
 
-        for plan_key in mf.plans if only != "original" else ():
+        for plan_key in [k for k in mf.plans if plan_keys is None or k in plan_keys] if only != "original" else ():
             suffix, *plain = _PLAN_ROWS.get(plan_key, ("",))
             info = {"compare_to": mf.name, "plan_file": plans.files[plan_key], "simulated": mf.simulated}
             if plain:
