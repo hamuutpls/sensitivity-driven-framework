@@ -11,7 +11,10 @@
   `search.accuracy_tasks` (ARC-Easy, PIQA, HellaSwag, WinoGrande, full sets) tests the lowest-perplexity final model
   under the limit, next to the uncompressed TinyLlama measured in the same run (change and change in %). Both have
   their own sections in search_report.md. The search report names the number of searchers and says when Stage 0's
-  refinement was off.
+  refinement was off. Both are checked before the first try (lm-eval installed; the extra techniques allowed), and
+  the uncompressed model's accuracy is read from its cache entry, so a rerun that finds the point cached still has it.
+- Docs: README stage and search table, docs/diagrams/search.md (current design), the SDD's subsystem table and full
+  run flow, and the SRS statuses (S1, S3, S4, SRCH) with new SRCH-09 to SRCH-11 describe the chained design.
 
 ## 2026-10-25: The settings search inside the stages (MODE "stage_search")
 

@@ -6,11 +6,11 @@ compression, applied to TinyLlama-1.1B-Chat.
 | Stage | What it does | Status |
 |---|---|---|
 | 0 | Per-layer sensitivity profiling, then a bit-width / pruning plan | implemented |
-| 1 | Quantization only, nothing removed: weights (RTN, GPTQ, AWQ) and activations (RTN, SmoothQuant, QuaRot, RPTQ, SpinQuant) | weights done (simulated); activations: RTN baseline |
+| 1 | Quantization only, nothing removed: weights (RTN, GPTQ, AWQ, OmniQuant, SqueezeLLM, SpQR, EfficientQAT, QuIP, QuIP#, PB-LLM, bitsandbytes and others) and activations (RTN, SmoothQuant, QuaRot, RPTQ, SpinQuant), on the joint weight x activation plan | done (simulated) |
 | 2 | Pruning only, nothing rounded (Wanda, structured, low-rank) | done (simulated) |
-| 3 | KV-cache compression (QuaRot KV, KVQuant, H2O, SnapKV, InfiniGen) | todo |
-| 4 | Evaluation across backends (HF Transformers, llama.cpp, vLLM, TensorRT-LLM) | todo |
-| Search | MOBO (Optuna), MFBO (successive halving), NSGA-III (pymoo), benchmarked against each other | todo |
+| 3 | KV-cache compression (RTN KV, QuaRot KV, KVQuant, H2O, SnapKV, InfiniGen) | done (simulated on HF) |
+| 4 | Evaluation across backends (HF Transformers, llama.cpp, vLLM, TensorRT-LLM), plus lm-eval task accuracy | done (vLLM and TensorRT-LLM on Linux/Colab) |
+| Search | MODE "search": each try builds one chained model 0 > 1 > 2 > 3 and only the final model is judged (size at most 1 GB, validation perplexity at most 11); MOBO (Optuna), MFBO (successive halving), NSGA-III (pymoo), benchmarked against each other; the lowest-perplexity final model is then tested for accuracy next to TinyLlama. See `docs/diagrams/search.md`. | done |
 
 Paths: 0 > 1 > 4, 0 > 2 > 4 (prunes the FP16 model), 0 > 3 > 4, and 0 > 1 > 2 > 4 (a Stage 2 method on a model
 Stage 1 has quantized; `stage2_after` in `main.py`).

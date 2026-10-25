@@ -180,7 +180,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         f"{len(trials)}; the reasons are in the Trials sheet of search_results.xlsx.", "",
     ]
     if accuracy:
-        acc = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith("acc_")}
+        acc = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("acc_", "downstream_acc"))}
         lines += [
             "## Accuracy of the final model", "",
             f"The final model with the lowest validation perplexity under the limit ({accuracy['searcher'].upper()} "

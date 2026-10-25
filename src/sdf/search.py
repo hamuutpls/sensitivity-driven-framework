@@ -369,6 +369,13 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
         raise ValueError("ppl_heldout is measured to check the choice, never optimised: use ppl_val")
     if any(o.startswith("vllm_") for o in s.objectives) and not cfg.eval.vllm_python:
         raise ValueError(f"the objectives {s.objectives} need vLLM: set eval.vllm_python (Colab), or every try fails")
+    if missing := [m for m in s.extra_stage1 if m not in s.stage1_methods]:
+        raise ValueError(f"search.extra_stage1 {missing} must be in search.stage1_methods")
+    if s.accuracy_tasks:
+        try:
+            import lm_eval  # noqa: F401 - checked now, not after hours of tries
+        except ImportError as e:
+            raise ValueError("search.accuracy_tasks needs lm-eval: pip install -e .[downstream]") from e
     space = technique_space(cfg)
     _, handle, loader = setup(ctx, None, tokenizer, text_loader)
     val, held = eval_windows(loader(cfg.eval.dataset, "test"), handle.tokenizer, cfg.eval.seq_len, cfg.eval.max_windows)
@@ -381,8 +388,12 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
         SEARCHERS[name](rec, space, s.budget, cfg.run.seed, **extra)
         trials += rec.trials
         atomic_write_text(ctx.run_dir / "search" / "trials.json", json.dumps(trials, indent=2, default=str))
-    extras = extra_tries(ctx, trials, s.extra_stage1, full, **kw)
-    accuracy = final_accuracy(ctx, trials, s.accuracy_tasks, **kw)
+    extras, accuracy = [], None
+    try:  # neither may cost the report of hours of tries
+        extras = extra_tries(ctx, trials, s.extra_stage1, full, **kw)
+        accuracy = final_accuracy(ctx, trials, s.accuracy_tasks, **kw)
+    except Exception:  # noqa: BLE001
+        log.exception("the steps after the search failed; the report is written without them")
     from sdf.reporting.search import write_search_report
 
     return write_search_report(ctx, trials, space, extras=extras, accuracy=accuracy)
@@ -397,13 +408,16 @@ def final_accuracy(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[st
     best = min((t for t in trials if t["full"] and t["met"]), key=lambda t: t["metrics"]["ppl_val"], default=None)
     if not tasks or best is None:
         return None
+    from sdf.stage0.run import fp16_key, setup
+
     cfg = ctx.cfg.with_overrides({"eval.downstream_tasks": list(tasks)})
-    r = evaluate(RunContext(cfg, ctx.run_id, ctx.run_dir, ctx.cache), best["point"], **kw)
-    rows = Path(r["dir"]) / "stage_3" / "results.json"
-    fp16 = next((x["metrics"] for x in json.loads(rows.read_text())["rows"] if x["variant"] == "fp16"), {}) \
-        if rows.exists() else {}
-    return {"searcher": best["searcher"], "n": best["n"], "point": best["point"],
-            "fp16": {m: v for m, v in fp16.items() if m.startswith("acc_")},
+    actx = RunContext(cfg, ctx.run_id, ctx.run_dir, ctx.cache)
+    r = evaluate(actx, best["point"], **kw)
+    # the uncompressed model's accuracy, as the run_stage call measured and cached it (a cached point builds nothing)
+    entry = ctx.cache.path("fp16_downstream", {**fp16_key(actx, setup(actx)[0]), "tasks": list(tasks),
+                                               "limit": cfg.eval.downstream_limit})
+    fp16 = json.loads(entry.read_text(encoding="utf-8"))["value"] if entry.exists() else {}
+    return {"searcher": best["searcher"], "n": best["n"], "point": best["point"], "fp16": fp16,
             **{k: r.get(k) for k in ("metrics", "error", "dir")}}
 
 
