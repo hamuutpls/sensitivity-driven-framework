@@ -25,7 +25,8 @@ def test_extra_tries_swap_only_the_stage1_technique_of_the_best_try(cfg, monkeyp
 
     def fake(ctx, point, max_windows=None, **kw):
         seen.append((point, max_windows))
-        return {"metrics": {"ppl_val": 11.0, "decode_ms_per_token_mean": 1.0, "predicted_weight_memory_gb": 0.5},
+        return {"metrics": {"ppl_val": 11.0, "decode_ms_per_token_mean": 1.0, "predicted_weight_memory_gb": 0.5,
+                            "decoder_weight_bits": 4.5, "avg_activation_bits": 8},
                 "met": True, "shortfall": {}, "dir": "d", "cached": False}
 
     monkeypatch.setattr(search, "evaluate", fake)
@@ -41,7 +42,7 @@ def test_extra_tries_swap_only_the_stage1_technique_of_the_best_try(cfg, monkeyp
     extra_tries(start_run(c), [{**worse, "met": False}], ["awq_with_rtn_act"], 6)
     assert seen[0][0] == technique_space(c).make({"stage1_method": "awq_with_rtn_act"})
     report = write_search_report(start_run(c), [best, worse], technique_space(c), extras=out)["search_report"]
-    assert "## Extra Stage 1 techniques" in report.read_text()
+    assert "## Extra Stage 1 techniques" in report.read_text() and "| W4.5A8 |" in report.read_text()
 
 
 def test_the_lowest_perplexity_final_model_is_tested_for_accuracy_next_to_the_uncompressed_one(  # noqa: F811
@@ -70,6 +71,18 @@ def test_the_lowest_perplexity_final_model_is_tested_for_accuracy_next_to_the_un
                            **_kw(tiny_llama, tokenizer))
     assert len(calls) == 2 and again["fp16"] == acc["fp16"] and again["metrics"] == acc["metrics"]
     assert json.dumps(acc, default=str)
+
+
+def test_a_failing_after_step_drops_only_itself(cfg, monkeypatch):  # noqa: F811
+    from test_search import _fake_evaluate
+
+    monkeypatch.setattr(search, "evaluate", _fake_evaluate(over=lambda p: False))
+    monkeypatch.setattr(search, "extra_tries", lambda *a, **k: 1 / 0)
+    monkeypatch.setattr(search, "final_accuracy", lambda *a, **k: {"searcher": "mobo", "n": 1, "fp16": {},
+                                                                   "metrics": {"acc_arc_easy": 0.4}})
+    c = cfg.with_overrides({"search.budget": 1, "search.searchers": ["mobo"]})
+    text = search.run_search(start_run(c))["search_report"].read_text()
+    assert "## Accuracy of the final model" in text and "Extra Stage 1" not in text
 
 
 def test_the_search_checks_its_after_steps_before_any_try(cfg, monkeypatch):  # noqa: F811

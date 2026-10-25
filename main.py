@@ -146,7 +146,7 @@ TARGET_PPL = 11.0  # the final model's validation perplexity must be at most thi
 # perplexity must be 11"; None: no limit)
 SEARCH_REFINE_ROUNDS = 0  # MODE "search": Stage 0 joint refinement rounds in each try (Mohammad, 2026-10-25: "no
 # refinement for any stage")
-SEARCHERS = ["mobo", "mfbo", "nsga3"]  # each gets the same budget and seed
+SEARCHERS = ["mobo", "mfbo"]  # each gets the same budget and seed (Mohammad, 2026-10-25: MOBO and MFBO; "nsga3" also works)
 SEARCH_BUDGET = 100  # full tries per searcher (MFBO's rough tries count by their share of the windows, so it builds
 # more models); a try over the limit is not built and not counted
 SEARCH_OBJECTIVES = ["ppl_val", "vllm_decode_ms_per_token"]  # made as small as possible; vLLM needs VLLM_PYTHON
@@ -160,12 +160,12 @@ SEARCH_STAGE1 = [f"{w}_with_{a}" for w in ("rtn", "gptq", "awq", "omniquant", "s
 SEARCH_STAGE2 = ["unstructured_prune", "structured_prune"]  # pruning techniques (low-rank cannot follow Stage 1)
 SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]  # KV-cache techniques
 SEARCH_FINALISTS = 3  # MODE "stage_search": chained models built and measured under the limit, best pairs first
-# MODE "search": one chained try each after the search (the best setting with only its Stage 1 technique changed), for
-# those no search method measured (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"); shown in
-# the report, not compared
 # MODE "search": lm-eval tasks the lowest-perplexity final model under the limit is tested on (Mohammad, 2026-10-25:
 # "the final model that has the best perplexity is then tested for accuracy"); [] = no accuracy test
 SEARCH_ACCURACY_TASKS = ["arc_easy", "piqa", "hellaswag", "winogrande"]  # full sets; picked as quick and standard
+# MODE "search": one chained try each after the search (the best setting with only its Stage 1 technique changed), for
+# those no search method measured (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"); shown in
+# the report, not compared
 SEARCH_EXTRA_STAGE1 = ["spqr_with_rtn_act", "quip_with_rtn_act", "quipsharp_with_rtn_act"]
 
 

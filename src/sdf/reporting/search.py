@@ -183,6 +183,9 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         acc = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("acc_", "downstream_acc"))}
         lines += [
             "## Accuracy of the final model", "",
+            "**What this shows:** how many test questions the best final model still answers correctly, next to "
+            "the uncompressed TinyLlama. **What it means:** a small change says the compression kept the model's "
+            "ability; a large drop says the lower perplexity did not carry over to answering questions.", "",
             f"The final model with the lowest validation perplexity under the limit ({accuracy['searcher'].upper()} "
             f"try #{accuracy['n']}) was built again and tested on multiple-choice tasks: the share of questions it "
             "answers correctly (higher is better), next to the uncompressed model's on the same tasks, measured in the "
@@ -195,12 +198,14 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
     if extras:
         lines += [
             "## Extra Stage 1 techniques", "",
-            "Stage 1 techniques asked for in the results that no search method measured on all the windows: one "
-            "chained try each, the best setting under the limit with only its Stage 1 technique changed. They are "
-            "not part of the comparison or the trade-off line.", "",
-            _md([["Stage 1 technique", "Under the limit"] + [label(m) + " (lower is better)" for m in shown]
-                 + ["Why it failed"]]
-                + [[setting_value("stage1_method", t["point"]["stage1_method"]), "yes" if t["met"] else "no"]
+            "**What this shows:** SpQR, QuIP and QuIP# (the techniques asked for) when no search method built them: "
+            "one chained try each, the best setting under the limit with only its Stage 1 technique changed. "
+            "**What it means:** how each would have done in the best model; they are not part of the comparison or "
+            "the trade-off line.", "",
+            _md([["Stage 1 technique", "Our method WxAy (average bits)", "Under the limit"]
+                 + [label(m) + " (lower is better)" for m in shown] + ["Why it failed"]]
+                + [[setting_value("stage1_method", t["point"]["stage1_method"]), _wxay(t["metrics"]),
+                    "yes" if t["met"] else "no"]
                    + [_fmt(t["metrics"].get(m)) for m in shown] + [str(t["error"] or "")] for t in extras])]
     outputs["search_report"] = d / "search_report.md"
     atomic_write_text(outputs["search_report"], "\n".join(lines))
@@ -214,6 +219,12 @@ def _req(cfg) -> str:
                                                      ("decode_ms_per_token_mean", r.target_latency_ms),
                                                      ("predicted_kv_memory_gb", r.kv_budget_gb)) if v is not None]
     return "; ".join(parts) or "no limits set"
+
+
+def _wxay(metrics: dict[str, Any]) -> str:
+    """The row's average weight and activation bits as "W4.5A8", or "" when not measured."""
+    w, a = metrics.get("decoder_weight_bits"), metrics.get("avg_activation_bits")
+    return f"W{w:.3g}A{a:.3g}" if isinstance(w, (int, float)) and isinstance(a, (int, float)) else ""
 
 
 def _fmt(v: Any) -> str:

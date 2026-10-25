@@ -389,11 +389,14 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
         trials += rec.trials
         atomic_write_text(ctx.run_dir / "search" / "trials.json", json.dumps(trials, indent=2, default=str))
     extras, accuracy = [], None
-    try:  # neither may cost the report of hours of tries
+    try:  # neither step may cost the report of hours of tries, nor the other step
         extras = extra_tries(ctx, trials, s.extra_stage1, full, **kw)
+    except Exception:  # noqa: BLE001
+        log.exception("the extra Stage 1 tries failed; the report is written without them")
+    try:
         accuracy = final_accuracy(ctx, trials, s.accuracy_tasks, **kw)
     except Exception:  # noqa: BLE001
-        log.exception("the steps after the search failed; the report is written without them")
+        log.exception("the accuracy test failed; the report is written without it")
     from sdf.reporting.search import write_search_report
 
     return write_search_report(ctx, trials, space, extras=extras, accuracy=accuracy)
