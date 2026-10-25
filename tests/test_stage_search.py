@@ -111,6 +111,7 @@ def test_run_stage_search_writes_each_stage_and_the_final_choice(cfg, tiny_llama
     assert {t["searcher"] for t in trials} == {"mobo", "nsga3"} and "stage2_method" not in trials[0]["point"]
     text = out["stage_search_report"].read_text()
     assert "The final model:" in text and "Pairs tried" in text and "at most 1.0" in text
+    assert "with 2 search methods (MOBO, NSGA-III)" in text  # the run's searchers, not always three
     assert "Stage 1 searched its own settings" in out["stage_1_search_report"].read_text()
 
 

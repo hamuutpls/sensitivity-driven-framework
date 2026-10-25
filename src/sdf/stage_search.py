@@ -160,6 +160,12 @@ def winner(cfg: FrameworkConfig, tried: list[dict[str, Any]]) -> dict[str, Any] 
                default=None)
 
 
+def _searchers(names: list[str]) -> str:
+    """The search methods in words, e.g. "2 search methods (MOBO, MFBO)"."""
+    words = [{"nsga3": "NSGA-III"}.get(n, n.upper()) for n in names]
+    return f"{len(words)} search method{'s' * (len(words) != 1)} ({', '.join(words)})"
+
+
 def _finite(v: Any) -> bool:
     return isinstance(v, (int, float)) and math.isfinite(v)
 
@@ -255,7 +261,7 @@ def _report(cfg: FrameworkConfig, fronts, kv: str, kv_rows, tried, best) -> str:
     lines = [
         "# Settings search inside the stages", "",
         "## What this shows", "",
-        "Each stage searched its own settings with the three search methods instead of one search over the whole "
+        f"Each stage searched its own settings with {_searchers(s.searchers)} instead of one search over the whole "
         "chain: Stage 1 (quantization) and Stage 2 (pruning) each kept their best trade-off line, and Stage 3 tried "
         "every KV-cache technique once. The pairing step then put the best Stage 1 and Stage 2 settings together, "
         "built only the most promising pairs as full models (with Stage 3's technique) and kept the best one that "
