@@ -132,3 +132,30 @@ def test_the_kv_pick_keeps_to_the_kv_memory_limit(cfg, tiny_llama, tokenizer):  
     assert kv in ("rtn_kv", "h2o") and len(rows) == 2
     tight = c.with_overrides({"requirement.kv_budget_gb": 1e-12})  # no technique fits
     assert pick_kv(start_run(tight), full_candidate(tight, {}), **_kw(tiny_llama, tokenizer))[0] is None
+
+
+def test_extra_tries_measure_only_the_techniques_no_searcher_measured(cfg, monkeypatch):  # noqa: F811
+    from sdf.stage_search import _report, extra_tries
+
+    seen = []
+
+    def fake(ctx, point, max_windows=None, stage=1, **kw):
+        seen.append((point, max_windows, stage))
+        return {"metrics": {"ppl_val": 11.0, "vllm_decode_ms_per_token": 30.0, "decode_ms_per_token_mean": 30.0,
+                            "predicted_weight_memory_gb": 0.9},
+                "met": True, "dir": "d", "cached": False}
+
+    monkeypatch.setattr(stage_search, "evaluate_stage", fake)
+    c = cfg.with_overrides({"hyperparams.calib_samples": 64, "search.stage1_methods": ["rtn_with_rtn_act",
+                            "gptq_with_rtn_act", "awq_with_rtn_act", "awq_with_smoothquant"]})
+    measured = {"full": True, "ok": True, "point": {"stage1_method": "gptq_with_smoothquant"}}
+    rough = {"full": False, "ok": True, "point": {"stage1_method": "awq_with_rtn_act"}}
+    out = extra_tries(start_run(c), [measured, rough], ["gptq_with_rtn_act", "awq_with_rtn_act"], 6)
+    # gptq was measured on all the windows (with another activation option); awq only on fewer, so it gets its try
+    assert [p["stage1_method"] for p, _, _ in seen] == ["awq_with_rtn_act"]
+    assert seen[0][1:] == (None, 1) and seen[0][0]["calib_samples"] == 64  # all windows, the run's own settings
+    assert out[0]["searcher"] == "extra" and out[0]["ok"]
+    assert extra_tries(start_run(c), [measured], [], 6) == []
+    text = _report(c, {1: [], 2: []}, "rtn_kv", [], [], None, out)
+    assert "## Stage 1: extra techniques" in text and "11" in text.split("extra techniques")[1]
+    assert "extra techniques" not in _report(c, {1: [], 2: []}, "rtn_kv", [], [], None)

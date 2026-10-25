@@ -155,6 +155,9 @@ SEARCH_STAGE1 = [f"{w}_with_{a}" for w in ("rtn", "gptq", "awq", "omniquant", "s
 SEARCH_STAGE2 = ["unstructured_prune", "structured_prune"]  # pruning techniques (low-rank cannot follow Stage 1)
 SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]  # KV-cache techniques
 SEARCH_FINALISTS = 3  # MODE "stage_search": chained models built and measured under the limit, best pairs first
+# MODE "stage_search": one Stage 1 try each after the search, for those no search method measured (Mohammad,
+# 2026-10-25: "i want to see spqr quip quip# results included"); shown in the report, not paired
+SEARCH_EXTRA_STAGE1 = ["spqr_with_rtn_act", "quip_with_rtn_act", "quipsharp_with_rtn_act"]
 
 
 # =====================================================================================================
@@ -185,6 +188,7 @@ def build_config():
         "search.stage2_methods": SEARCH_STAGE2,
         "search.stage3_methods": SEARCH_STAGE3,
         "search.finalists": SEARCH_FINALISTS,
+        "search.extra_stage1": SEARCH_EXTRA_STAGE1,
         "stage0.score": SENSITIVITY_SCORE,
         "stage0.normalization": NORMALIZATION,
         "stage0.protected_bits": PROTECTED_BITS,

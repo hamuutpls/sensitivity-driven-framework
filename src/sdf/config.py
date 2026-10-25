@@ -224,6 +224,8 @@ class SearchConfig:
     memory_metric: str = "predicted_weight_memory_gb"
     mfbo_eta: int = 3  # successive halving: keep the best 1/eta at each rung, with eta times the windows
     finalists: int = 3  # MODE "stage_search": chained models built under the limit from the best Stage 1 + Stage 2 pairs
+    extra_stage1: list[str] = field(default_factory=list)  # MODE "stage_search": one Stage 1 try each, after the
+    # search, for those whose weight technique no searcher measured (in the report, not paired)
 
 
 @dataclass
