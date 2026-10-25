@@ -9,7 +9,7 @@ from sdf import search
 from sdf.eval import downstream
 from sdf.reporting.search import write_search_report
 from sdf.run import start_run
-from sdf.search import extra_tries, final_accuracy, technique_space
+from sdf.search import extra_tries, final_model, technique_space
 from test_search import _kw, _point, cfg  # noqa: F401 - the cfg fixture
 
 
@@ -59,15 +59,15 @@ def test_the_lowest_perplexity_final_model_is_tested_for_accuracy_next_to_the_un
     better = _trial(_point(c, calib_samples=16, sensitive_threshold=0.2), 1, ppl_val=10.0)
     worse = _trial(_point(c, calib_samples=16, sensitive_threshold=0.8), 2, ppl_val=12.0)
     over = _trial(_point(c, calib_samples=16), 3, met=False, ppl_val=9.0)
-    assert final_accuracy(ctx, [better], [], **_kw(tiny_llama, tokenizer)) is None  # no task: no test
-    assert final_accuracy(ctx, [over], ["arc_easy"], **_kw(tiny_llama, tokenizer)) is None
-    acc = final_accuracy(ctx, [worse, over, better], ["arc_easy"], **_kw(tiny_llama, tokenizer))
+    assert final_model(ctx, [better], [], **_kw(tiny_llama, tokenizer)) is None  # no task: no test
+    assert final_model(ctx, [over], ["arc_easy"], **_kw(tiny_llama, tokenizer)) is None
+    acc = final_model(ctx, [worse, over, better], ["arc_easy"], **_kw(tiny_llama, tokenizer))
     assert acc["n"] == 1 and calls == [["arc_easy"], ["arc_easy"]]
     assert acc["metrics"]["acc_arc_easy"] == 0.4 and acc["fp16"] == {"acc_arc_easy": 0.5, "downstream_acc_mean": 0.5}
     text = write_search_report(ctx, [worse, better], technique_space(c), accuracy=acc)["search_report"].read_text()
     assert "## Accuracy of the final model" in text and text.count("| 0.4 | 0.5 | -0.1 | -20 |") == 2  # + the mean
     # a rerun in a new run folder finds the point cached, builds nothing, and still has the uncompressed accuracy
-    again = final_accuracy(start_run(c.with_overrides({"run.run_id": "again"})), [better], ["arc_easy"],
+    again = final_model(start_run(c.with_overrides({"run.run_id": "again"})), [better], ["arc_easy"],
                            **_kw(tiny_llama, tokenizer))
     assert len(calls) == 2 and again["fp16"] == acc["fp16"] and again["metrics"] == acc["metrics"]
     assert json.dumps(acc, default=str)
@@ -78,11 +78,32 @@ def test_a_failing_after_step_drops_only_itself(cfg, monkeypatch):  # noqa: F811
 
     monkeypatch.setattr(search, "evaluate", _fake_evaluate(over=lambda p: False))
     monkeypatch.setattr(search, "extra_tries", lambda *a, **k: 1 / 0)
-    monkeypatch.setattr(search, "final_accuracy", lambda *a, **k: {"searcher": "mobo", "n": 1, "fp16": {},
+    monkeypatch.setattr(search, "final_model", lambda *a, **k: {"searcher": "mobo", "n": 1, "fp16": {},
                                                                    "metrics": {"acc_arc_easy": 0.4}})
     c = cfg.with_overrides({"search.budget": 1, "search.searchers": ["mobo"]})
     text = search.run_search(start_run(c))["search_report"].read_text()
     assert "## Accuracy of the final model" in text and "Extra Stage 1" not in text
+
+
+def test_tries_run_no_backend_and_the_final_model_runs_them_in_stage4(cfg, monkeypatch):  # noqa: F811
+    seen = []
+
+    def fake(ctx, point, max_windows=None, **kw):
+        seen.append(ctx.cfg.eval.vllm_python)
+        vllm = {"vllm_decode_ms_per_token": 3.0} if ctx.cfg.eval.vllm_python else {}
+        return {"metrics": {"ppl_val": 10.0 + point["sensitive_threshold"], "predicted_weight_memory_gb": 0.5, **vllm},
+                "met": True, "shortfall": {}, "dir": "d", "cached": False}
+
+    monkeypatch.setattr(search, "evaluate", fake)
+    c = cfg.with_overrides({"search.budget": 2, "search.searchers": ["mobo"], "eval.vllm_python": "py",
+                            "search.objectives": ["ppl_val", "predicted_weight_memory_gb"],
+                            "search.extra_stage1": [], "search.accuracy_tasks": []})
+    out = search.run_search(start_run(c))
+    assert seen[:-1] and all(v is None for v in seen[:-1]) and seen[-1] == "py"  # tries none; the final model vLLM
+    text = out["search_report"].read_text()
+    assert "## The final model on the backends (Stage 4)" in text and "| 3 |" in text
+    # nothing to test in Stage 4 (no backend, no task): no final step
+    assert final_model(start_run(cfg), [_trial(_point(cfg), 1, ppl_val=10.0)], []) is None
 
 
 def test_the_search_checks_its_after_steps_before_any_try(cfg, monkeypatch):  # noqa: F811

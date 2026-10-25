@@ -149,8 +149,10 @@ SEARCH_REFINE_ROUNDS = 0  # MODE "search": Stage 0 joint refinement rounds in ea
 SEARCHERS = ["mobo", "mfbo"]  # each gets the same budget and seed (Mohammad, 2026-10-25: MOBO and MFBO; "nsga3" also works)
 SEARCH_BUDGET = 100  # full tries per searcher (MFBO's rough tries count by their share of the windows, so it builds
 # more models); a try over the limit is not built and not counted
-SEARCH_OBJECTIVES = ["ppl_val", "vllm_decode_ms_per_token"]  # made as small as possible; vLLM needs VLLM_PYTHON
-VLLM_PYTHON = None  # the Python of the vLLM install (Linux/Colab only), e.g. "/content/vllm-venv/bin/python"
+SEARCH_OBJECTIVES = ["ppl_val", "predicted_weight_memory_gb"]  # made as small as possible, on Hugging Face: tries run no
+# backend (Mohammad, 2026-10-25: "we do not test backends in stages 1 and 2. we test them in stage 4"); the backends
+# below measure only the final model
+VLLM_PYTHON = None  # the Python of the vLLM install (Linux/Colab only), e.g. "/content/vllm-venv/bin/python"; final model only
 # WxAy techniques Stage 1 may pick: every working weight technique with round-to-nearest or SmoothQuant activations
 # (Mohammad, 2026-10-19: "all the ones that work"; QuaRot/SpinQuant left out: vLLM cannot measure rotated models;
 # RPTQ: its Our method rows are skipped; AQLM, BiLLM, QTIP, ABQ-LLM do not work here)

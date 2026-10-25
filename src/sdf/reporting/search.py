@@ -89,7 +89,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
                         accuracy: dict[str, Any] | None = None) -> dict[str, Path]:
     """`intro`: the report's opening paragraph when the search is not the chained one (a per-stage search).
     `extras`: tries made apart from the searchers (sdf.search.extra_tries), in a section of their own. `accuracy`:
-    the lowest-perplexity final model's task accuracy (sdf.search.final_accuracy)."""
+    the lowest-perplexity final model's Stage 4 test, backends and task accuracy (sdf.search.final_model)."""
     cfg = ctx.cfg
     s = cfg.search
     d = ctx.run_dir / "search"
@@ -181,7 +181,17 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
     ]
     if accuracy:
         acc = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("acc_", "downstream_acc"))}
+        backends = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("vllm_", "llamacpp_", "trtllm_"))}
         lines += [
+            "## The final model on the backends (Stage 4)", "",
+            "**What this shows:** the final model with the lowest validation perplexity under the limit "
+            f"({accuracy['searcher'].upper()} try #{accuracy['n']}) measured on each serving backend; the tries "
+            "themselves ran on Hugging Face only. **What it means:** how fast and how accurate the chosen model is "
+            "where it would be deployed. A backend re-rounds the model into its own file format, so its perplexity "
+            "is that file's, not the verdict.", "",
+            _md([["Measure", "Value"]] + [[label(m), _fmt(v)] for m, v in backends.items()])
+            if backends else "No backend result (none set, or each failed: "
+            f"{accuracy.get('error') or ', '.join(f'{k}: {v}' for k, v in (accuracy.get('errors') or {}).items()) or 'none set'}).", "",
             "## Accuracy of the final model", "",
             "**What this shows:** how many test questions the best final model still answers correctly, next to "
             "the uncompressed TinyLlama. **What it means:** a small change says the compression kept the model's "
@@ -194,7 +204,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
                 + [[label(m), _fmt(v), _fmt(base := accuracy["fp16"].get(m)),
                     _fmt(v - base) if base is not None else "",
                     _fmt(100 * (v - base) / base) if base else ""] for m, v in acc.items()])
-            if acc else f"The accuracy test failed: {accuracy.get('error') or 'no task result'}.", ""]
+            if acc else f"No accuracy result: {accuracy.get('error') or 'no task set, or the test failed'}.", ""]
     if extras:
         lines += [
             "## Extra Stage 1 techniques", "",

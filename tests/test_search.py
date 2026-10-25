@@ -150,9 +150,10 @@ def test_vllm_latency_is_measured_on_the_stage2_model(cfg, tiny_llama, tokenizer
     assert not rec(_point(c, prune_ratio_aggressive=0.5))["cached"]  # a failure is tried again, not cached
 
 
-def test_a_vllm_objective_without_vllm_stops_before_any_try(cfg):
-    c = cfg.with_overrides({"search.objectives": ["ppl_val", "vllm_decode_ms_per_token"]})
-    with pytest.raises(ValueError, match="eval.vllm_python"):
+def test_a_backend_objective_stops_before_any_try(cfg):
+    # backends test only the final model (Stage 4), so no try has a backend metric to optimise
+    c = cfg.with_overrides({"eval.vllm_python": "py", "search.objectives": ["ppl_val", "vllm_decode_ms_per_token"]})
+    with pytest.raises(ValueError, match="Stage 4"):
         run_search(start_run(c))
 
 

@@ -354,7 +354,9 @@ SEARCHERS = {"mobo": run_mobo, "mfbo": run_mfbo, "nsga3": run_nsga3}
 
 def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer=None,
                text_loader: Callable | None = None) -> dict[str, Path]:
-    """Every searcher in cfg.search.searchers with the same budget and seed, then the report."""
+    """Every searcher in cfg.search.searchers with the same budget and seed, then the report. Tries run no backend
+    (Mohammad, 2026-10-25: "we do not test backends in stages 1 and 2. we test them in stage 4"): the backends set in
+    cfg.eval measure only the final model (final_model)."""
     from sdf.data import eval_windows
     from sdf.stage0.run import setup
 
@@ -367,8 +369,9 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
                          "the predicted size is known before a model is built")
     if "ppl_heldout" in s.objectives:
         raise ValueError("ppl_heldout is measured to check the choice, never optimised: use ppl_val")
-    if any(o.startswith("vllm_") for o in s.objectives) and not cfg.eval.vllm_python:
-        raise ValueError(f"the objectives {s.objectives} need vLLM: set eval.vllm_python (Colab), or every try fails")
+    if backend := [o for o in s.objectives if o.startswith(BACKEND_PREFIXES)]:
+        raise ValueError(f"the objectives {backend} come from a backend; tries run none (backends test only the "
+                         "final model, in Stage 4): use HF metrics such as ppl_val and predicted_weight_memory_gb")
     if missing := [m for m in s.extra_stage1 if m not in s.stage1_methods]:
         raise ValueError(f"search.extra_stage1 {missing} must be in search.stage1_methods")
     if s.accuracy_tasks:
@@ -381,35 +384,40 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     val, held = eval_windows(loader(cfg.eval.dataset, "test"), handle.tokenizer, cfg.eval.seq_len, cfg.eval.max_windows)
     full = len(val) + len(held)
     kw = dict(model_factory=model_factory, tokenizer=tokenizer, text_loader=text_loader)
+    tries = RunContext(cfg.with_overrides(NO_BACKENDS), ctx.run_id, ctx.run_dir, ctx.cache)
     trials: list[dict[str, Any]] = []
     for name in s.searchers:
-        rec = Recorder(ctx, name, full, **kw)
+        rec = Recorder(tries, name, full, **kw)
         extra = {"eta": s.mfbo_eta} if name == "mfbo" else {}
         SEARCHERS[name](rec, space, s.budget, cfg.run.seed, **extra)
         trials += rec.trials
         atomic_write_text(ctx.run_dir / "search" / "trials.json", json.dumps(trials, indent=2, default=str))
-    extras, accuracy = [], None
+    extras, final = [], None
     try:  # neither step may cost the report of hours of tries, nor the other step
-        extras = extra_tries(ctx, trials, s.extra_stage1, full, **kw)
+        extras = extra_tries(tries, trials, s.extra_stage1, full, **kw)
     except Exception:  # noqa: BLE001
         log.exception("the extra Stage 1 tries failed; the report is written without them")
     try:
-        accuracy = final_accuracy(ctx, trials, s.accuracy_tasks, **kw)
+        final = final_model(ctx, trials, s.accuracy_tasks, **kw)
     except Exception:  # noqa: BLE001
-        log.exception("the accuracy test failed; the report is written without it")
+        log.exception("the final model's Stage 4 test failed; the report is written without it")
     from sdf.reporting.search import write_search_report
 
-    return write_search_report(ctx, trials, space, extras=extras, accuracy=accuracy)
+    return write_search_report(ctx, trials, space, extras=extras, accuracy=final)
 
 
-def final_accuracy(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[str], **kw: Any) -> dict[str, Any] | None:
-    """The final model with the lowest validation perplexity under the limit, built again and tested for accuracy on
-    `tasks` (eval.downstream_tasks, lm-eval; Mohammad, 2026-10-25: "the final model that has the best perplexity is
-    then tested for accuracy", "then that accuracy will be compared with tinyllama accuracy"): "fp16" holds the
-    uncompressed model's accuracy, measured in the same run under the same conditions. None when no task is set or no
-    try met the limit."""
+BACKEND_PREFIXES = ("vllm_", "llamacpp_", "trtllm_")
+NO_BACKENDS = {"eval.vllm_python": None, "eval.trtllm_python": None, "eval.llamacpp_dir": None}
+
+
+def final_model(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[str], **kw: Any) -> dict[str, Any] | None:
+    """Stage 4 for the final model with the lowest validation perplexity under the limit: built again with the
+    backends in ctx.cfg.eval and tested for accuracy on `tasks` (eval.downstream_tasks, lm-eval; Mohammad,
+    2026-10-25: "the final model that has the best perplexity is then tested for accuracy", "then that accuracy will
+    be compared with tinyllama accuracy"): "fp16" holds the uncompressed model's accuracy, measured in the same run
+    under the same conditions. None when there is nothing to test (no task, no backend) or no try met the limit."""
     best = min((t for t in trials if t["full"] and t["met"]), key=lambda t: t["metrics"]["ppl_val"], default=None)
-    if not tasks or best is None:
+    if best is None or not tasks and all(getattr(ctx.cfg.eval, k.split(".")[1]) is None for k in NO_BACKENDS):
         return None
     from sdf.stage0.run import fp16_key, setup
 
@@ -421,7 +429,7 @@ def final_accuracy(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[st
                                                "limit": cfg.eval.downstream_limit})
     fp16 = json.loads(entry.read_text(encoding="utf-8"))["value"] if entry.exists() else {}
     return {"searcher": best["searcher"], "n": best["n"], "point": best["point"], "fp16": fp16,
-            **{k: r.get(k) for k in ("metrics", "error", "dir")}}
+            **{k: r.get(k) for k in ("metrics", "error", "errors", "dir")}}
 
 
 def extra_tries(ctx: RunContext, trials: list[dict[str, Any]], methods: list[str], full_windows: int,
