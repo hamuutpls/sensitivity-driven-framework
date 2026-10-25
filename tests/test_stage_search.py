@@ -39,6 +39,9 @@ def test_a_stage1_try_builds_only_the_joint_row_without_refinement_and_has_no_li
     assert "refinement" not in joint["info"]  # the one-shot joint plan
     again = evaluate_stage(ctx, point, stage=1, **_kw(tiny_llama, tokenizer))
     assert again["cached"] and {**again, "cached": False} == r
+    # a run setting the point does not search (here the pruning share in Stage 1) is part of the key
+    other = start_run(cfg.with_overrides({"requirement.target_memory_gb": 1e-9, "hyperparams.prune_ratio_aggressive": 0.5}))
+    assert evaluate_stage(other, point, stage=1, **_kw(tiny_llama, tokenizer))["dir"] != r["dir"]
 
 
 def test_a_stage2_try_prunes_the_uncompressed_model_with_no_backend(cfg, tiny_llama, tokenizer,  # noqa: F811
@@ -88,6 +91,10 @@ def test_pairs_are_built_best_estimate_first_until_enough_meet_the_limit(cfg, mo
     assert tried[1]["stage1"] == ["mfbo", 4] and tried[1]["stage2"] == ["nsga3", 2]
     assert winner(cfg, tried)["metrics"]["ppl_val"] == pytest.approx(10.6)  # 0.6 + 0.0 beats 0.2 + 0.5
     assert winner(cfg, tried[:1]) is None
+    # a limit no pair meets: it stops after finalists x max_tries_per_budget pairs, not after every pair
+    monkeypatch.setattr(stage_search, "evaluate", lambda ctx, point, **kw: {**fake(ctx, point), "met": False})
+    c = cfg.with_overrides({"search.max_tries_per_budget": 1})
+    assert len(pair_up(start_run(c), ones, twos, "h2o", finalists=3)) == 3
 
 
 def test_run_stage_search_writes_each_stage_and_the_final_choice(cfg, tiny_llama, tokenizer):  # noqa: F811
@@ -112,3 +119,15 @@ def test_a_stage_search_needs_perplexity_first_and_vllm_for_a_vllm_objective(cfg
         run_stage_search(start_run(cfg.with_overrides({"search.objectives": ["decode_ms_per_token_mean"]})))
     with pytest.raises(ValueError, match="eval.vllm_python"):
         run_stage_search(start_run(cfg.with_overrides({"search.objectives": ["ppl_val", "vllm_decode_ms_per_token"]})))
+    with pytest.raises(ValueError, match="target_memory_gb"):
+        run_stage_search(start_run(cfg.with_overrides({"requirement.target_memory_gb": None})))
+
+
+def test_the_kv_pick_keeps_to_the_kv_memory_limit(cfg, tiny_llama, tokenizer):  # noqa: F811
+    from sdf.stage_search import full_candidate, pick_kv
+
+    c = cfg.with_overrides({"hyperparams.calib_samples": 16})
+    kv, rows, _ = pick_kv(start_run(c), full_candidate(c, {}), **_kw(tiny_llama, tokenizer))
+    assert kv in ("rtn_kv", "h2o") and len(rows) == 2
+    tight = c.with_overrides({"requirement.kv_budget_gb": 1e-12})  # no technique fits
+    assert pick_kv(start_run(tight), full_candidate(tight, {}), **_kw(tiny_llama, tokenizer))[0] is None

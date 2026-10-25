@@ -40,11 +40,14 @@ from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
 
+VERSION = 1  # bump when a change here changes a stage try's numbers (the cache key)
+
 # the search-space settings each stage searches; quarot_k_bits is left out: Our method rows do not read it
 STAGE_PARAMS = {1: ("sensitive_threshold", "calib_dataset", "calib_samples", "gptq_groupsize", "smoothquant_alpha"),
                 2: ("prune_ratio_aggressive",)}
-# Stage 2 and 3 objectives need no backend, so a try does not run them
+# backends no stage objective reads, so a try does not run them (Stage 1 keeps vLLM, for its speed objective)
 NO_BACKENDS = {"eval.vllm_python": None, "eval.trtllm_python": None, "eval.llamacpp_dir": None}
+STAGE1_BACKENDS_OFF = {"eval.trtllm_python": None, "eval.llamacpp_dir": None}
 NO_REFINE = {"stage0.pruning_levels": [], "stage0.joint_plan": True, "stage0.joint_refine_rounds": 0}
 
 
@@ -72,9 +75,11 @@ def evaluate_stage(ctx: RunContext, point: dict[str, Any], max_windows: int | No
     """Build and measure one stage's Our method row of `point` (sdf.search.evaluate's arguments and result), cached;
     every measured point "meets" (a stage keeps a trade-off line, the limit is for the final model)."""
     point = stage_space(ctx.cfg, stage).validate(point)
-    cfg = ctx.cfg.with_overrides({**NO_REFINE, **(NO_BACKENDS if stage != 1 else {}),
+    cfg = ctx.cfg.with_overrides({**NO_REFINE, **(NO_BACKENDS if stage != 1 else STAGE1_BACKENDS_OFF),
                                   **({"eval.max_windows": max_windows} if max_windows else {})})
-    key = {**point_key(ctx, cfg, point, [point[f"stage{stage}_method"]]), "stage": stage}
+    # the run's settings the point does not search (cfg.hyperparams) build its Stage 0 plan too
+    key = {**point_key(ctx, cfg, point, [point[f"stage{stage}_method"]]), "stage": stage,
+           "candidate": full_candidate(cfg, point), "stage_search": VERSION}
     tdir = ctx.run_dir / "points" / config_hash(key, length=10)
     return cached_point(ctx, "stage_search_point", key, tdir, lambda run_ctx: _build_stage(
         run_ctx, stage, point, model_factory, tokenizer, text_loader), cfg, limit=False)
@@ -106,7 +111,7 @@ def _build_stage(ctx: RunContext, stage: int, point: dict[str, Any], model_facto
 def pick_kv(ctx: RunContext, candidate: dict[str, Any], model_factory=None, tokenizer=None,
             text_loader=None) -> tuple[str | None, list[dict[str, Any]], dict[str, Path]]:
     """Every Stage 3 technique once (Our method rows, on the uncompressed model), and the one with the lowest
-    validation perplexity (None if every row failed). Returns (technique, finished rows, report paths)."""
+    validation perplexity among those within the KV memory limit, if one is set (None if none is left). Returns (technique, finished rows, report paths)."""
     from sdf.stage0.run import run_stage0
     from sdf.stages.runner import run_stage
 
@@ -118,7 +123,8 @@ def pick_kv(ctx: RunContext, candidate: dict[str, Any], model_factory=None, toke
     out = run_stage(run_ctx, 3, cfg.search.stage3_methods, candidate, stage0_dir, only="framework", subdir="stage_3",
                     model_factory=model_factory, **kw)
     rows = [r for r in json.loads(out["json"].read_text())["rows"]
-            if r["variant"] == "framework" and r["status"] == "ok" and _finite(r["metrics"].get("ppl_val"))]
+            if r["variant"] == "framework" and r["status"] == "ok" and _finite(r["metrics"].get("ppl_val"))
+            and "kv_budget_gb" not in cfg.requirement.check(r["metrics"]).shortfall]
     best = min(rows, key=lambda r: r["metrics"]["ppl_val"], default=None)
     return (best["method"] if best else None), rows, out
 
@@ -126,12 +132,14 @@ def pick_kv(ctx: RunContext, candidate: dict[str, Any], model_factory=None, toke
 def pair_up(ctx: RunContext, ones: list[dict[str, Any]], twos: list[dict[str, Any]], kv: str, finalists: int,
             **kw: Any) -> list[dict[str, Any]]:
     """Chained models of Stage 1 x Stage 2 trade-off points (trials), best estimated perplexity first, until
-    `finalists` are measured under the limit. Returns every pair tried, in order, with its evaluate() result."""
+    `finalists` are measured under the limit, or finalists x search.max_tries_per_budget pairs were tried (a limit no
+    pair meets would otherwise build them all). Returns every pair tried, in order, with its evaluate() result."""
     base = full_candidate(ctx.cfg, {})
-    estimate = lambda a, b: a["metrics"]["ppl_val"] + b["metrics"].get("ppl_rise", 0.0)  # noqa: E731
+    # a Stage 2 point without its rise (the uncompressed row was not measured) goes last
+    estimate = lambda a, b: a["metrics"]["ppl_val"] + b["metrics"].get("ppl_rise", math.inf)  # noqa: E731
     tried, done = [], 0
     for a, b in sorted(itertools.product(ones, twos), key=lambda ab: estimate(*ab)):
-        if done >= finalists:
+        if done >= finalists or len(tried) >= finalists * ctx.cfg.search.max_tries_per_budget:
             break
         point = technique_space(ctx.cfg).validate({**base, **a["point"], **b["point"], "stage3_method": kv})
         r = evaluate(ctx, point, **kw)
@@ -186,6 +194,8 @@ def run_stage_search(ctx: RunContext, model_factory: Callable | None = None, tok
                          f"{s.objectives}")
     if any(o.startswith("vllm_") for o in s.objectives) and not ctx.cfg.eval.vllm_python:
         raise ValueError(f"the objectives {s.objectives} need vLLM: set eval.vllm_python (Colab), or every try fails")
+    if ctx.cfg.requirement.target_memory_gb is None:
+        raise ValueError("set requirement.target_memory_gb: the pairing step keeps the pairs under it")
     root = ctx.run_dir / "stage_search"
     cfg = ctx.cfg.with_overrides({"stage0.joint_refine_rounds": 0})
     _, handle, loader = setup(ctx, None, tokenizer, text_loader)
@@ -239,7 +249,8 @@ def _report(cfg: FrameworkConfig, fronts, kv: str, kv_rows, tried, best) -> str:
                                              for i, t in enumerate(sorted(fronts[stage], key=lambda t: t["values"][0]))])
 
     def outcome(t: dict[str, Any]) -> str:
-        return "measured, under the limit" if t["met"] else (t["not_built"] or t["error"] or "measured, over the limit")
+        return ("measured, under the limit" if t["met"] else t["not_built"] or t["error"]
+                or ("measured, over the limit" if t["ok"] else "measured, but an objective is missing"))
 
     lines = [
         "# Settings search inside the stages", "",
@@ -259,7 +270,8 @@ def _report(cfg: FrameworkConfig, fronts, kv: str, kv_rows, tried, best) -> str:
         "## Stage 1: best trade-off line", "", front_table(1),
         "## Stage 2: best trade-off line", "", front_table(2),
         "Perplexity rise over the uncompressed model is what the pairing step adds to a Stage 1 point to estimate "
-        "the pair.", "",
+        "the pair. The Stage 2 points were measured with the run's own Stage 0 settings, while a pair is built with "
+        "its Stage 1 point's, so the estimate only sets the order; the built pairs' measured numbers decide.", "",
         "## Stage 3: KV-cache techniques", "",
         _md([["Technique", "Validation perplexity (lower is better)", "Held-out perplexity (lower is better)"]]
             + [[setting_value("stage3_method", r["method"]) + (" (chosen)" if r["method"] == kv else ""),
