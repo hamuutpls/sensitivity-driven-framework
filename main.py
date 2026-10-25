@@ -15,6 +15,9 @@ MODE = "single"  # "single": one Stage 0 run with the settings in section 2
 #                  "stages": Stages 1-3 with the methods in section 7, on top of a Stage 0 plan
 #                  "search": find the settings (section 2 + a technique per stage) that meet the requirement in
 #                            section 8 with the lowest perplexity and latency; MOBO, MFBO and NSGA-III compared
+#                  "stage_search": the search folded into the stages (Mohammad, 2026-10-25): Stage 1 and Stage 2
+#                            each search their own settings, Stage 3 tries every KV technique, then the best Stage 1 +
+#                            Stage 2 pairs are built as chained models under the limit in section 8; no refinement
 #                  "chain": Stages 0 -> 1 -> 2 -> 3 -> 4 in a row: every row on a side's memory vs perplexity trade-off
 #                           line (Standard and Our method each their own; Stage 1: WxAy rows) goes into the next stage
 
@@ -137,8 +140,13 @@ QUAROT_K_BITS = 4  # 2 | 3 | 4 | 8: key bits for QuaRot KV (standard method)
 #    (Our method) from section 2's parameters and one technique per stage, and measures it. Stage 1 always follows
 #    the joint weight x activation plan (Mohammad, 2026-10-20: "the goal is joint planning").
 # =====================================================================================================
-TARGET_MEMORY_GB = 1.1  # the model size (predicted from the plan) must be at most this (Mohammad, 2026-10-20: 1 GB + 10%)
-SEARCHERS = ["mobo", "mfbo", "nsga3"]  # each gets the same budget and seed
+TARGET_MEMORY_GB = 1.0  # the final model's size (predicted from the plan) must be at most this (Mohammad, 2026-10-25:
+# "the size must not be more than 1 GB ... for the FINAL model"; was 1.1)
+TARGET_PPL = 11.0  # the final model's validation perplexity must be at most this (Mohammad, 2026-10-25: "the limit of
+# perplexity must be 11"; None: no limit)
+SEARCH_REFINE_ROUNDS = 0  # MODE "search": Stage 0 joint refinement rounds in each try (Mohammad, 2026-10-25: "no
+# refinement for any stage")
+SEARCHERS = ["mobo", "mfbo"]  # each gets the same budget and seed (Mohammad, 2026-10-25: MOBO and MFBO; "nsga3" also works)
 SEARCH_BUDGET = 100  # full tries per searcher (MFBO's rough tries count by their share of the windows, so it builds
 # more models); a try over the limit is not built and not counted
 SEARCH_OBJECTIVES = ["ppl_val", "vllm_decode_ms_per_token"]  # made as small as possible; vLLM needs VLLM_PYTHON
@@ -151,6 +159,14 @@ SEARCH_STAGE1 = [f"{w}_with_{a}" for w in ("rtn", "gptq", "awq", "omniquant", "s
                  for a in ("rtn_act", "smoothquant")]
 SEARCH_STAGE2 = ["unstructured_prune", "structured_prune"]  # pruning techniques (low-rank cannot follow Stage 1)
 SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]  # KV-cache techniques
+SEARCH_FINALISTS = 3  # MODE "stage_search": chained models built and measured under the limit, best pairs first
+# MODE "search": lm-eval tasks the lowest-perplexity final model under the limit is tested on (Mohammad, 2026-10-25:
+# "the final model that has the best perplexity is then tested for accuracy"); [] = no accuracy test
+SEARCH_ACCURACY_TASKS = ["arc_easy", "piqa", "hellaswag", "winogrande"]  # full sets; picked as quick and standard
+# MODE "search": one chained try each after the search (the best setting with only its Stage 1 technique changed), for
+# those no search method measured (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"); shown in
+# the report, not compared
+SEARCH_EXTRA_STAGE1 = ["spqr_with_rtn_act", "quip_with_rtn_act", "quipsharp_with_rtn_act"]
 
 
 # =====================================================================================================
@@ -173,6 +189,7 @@ def build_config():
         "stages.stage2_after": STAGE2_AFTER,
         "stages.stage3_methods": STAGE3_METHODS,
         "requirement.target_memory_gb": TARGET_MEMORY_GB,
+        "requirement.target_ppl": TARGET_PPL,
         "eval.vllm_python": VLLM_PYTHON,
         "search.searchers": SEARCHERS,
         "search.budget": SEARCH_BUDGET,
@@ -180,6 +197,9 @@ def build_config():
         "search.stage1_methods": SEARCH_STAGE1,
         "search.stage2_methods": SEARCH_STAGE2,
         "search.stage3_methods": SEARCH_STAGE3,
+        "search.finalists": SEARCH_FINALISTS,
+        "search.extra_stage1": SEARCH_EXTRA_STAGE1,
+        "search.accuracy_tasks": SEARCH_ACCURACY_TASKS,
         "stage0.score": SENSITIVITY_SCORE,
         "stage0.normalization": NORMALIZATION,
         "stage0.protected_bits": PROTECTED_BITS,
@@ -268,7 +288,11 @@ def main():
     elif MODE == "search":
         from sdf.search import run_search
 
-        outputs = run_search(start_run(cfg))
+        outputs = run_search(start_run(cfg.with_overrides({"stage0.joint_refine_rounds": SEARCH_REFINE_ROUNDS})))
+    elif MODE == "stage_search":
+        from sdf.stage_search import run_stage_search
+
+        outputs = run_stage_search(start_run(cfg))
     elif MODE == "chain":
         from sdf.stage0.run import run_stage0
         from sdf.stages.runner import run_chain
@@ -282,7 +306,7 @@ def main():
         outputs.update(run_chain(ctx, candidate, stage0_dir, measure_fp16=MEASURE_FP16))
     else:
         raise SystemExit("MODE must be 'single', 'sweep', 'compare_scores', 'prune_sweep', 'threshold_sweep', 'stages', "
-                         f"'chain' or 'search', not {MODE!r}")
+                         f"'chain', 'search' or 'stage_search', not {MODE!r}")
     for name, path in outputs.items():
         print(f"{name}: {path}")
 

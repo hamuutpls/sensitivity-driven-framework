@@ -117,11 +117,11 @@ results folder (`/content/thesis_compression` on Colab, no Google Drive), and (p
 |---|---|---|---|---|
 | SS-CORE | Shared core: configuration, run setup, measurement, reporting, cache, deployment requirement | `config.py`, `run.py`, `cli.py`, `data.py`, `requirements.py`, `search_space.py`, `eval/metrics.py`, `reporting/`, `utils/` | Implemented (master report planned) | CFG-*, CMP-*, MET-*, REP-*, USE-* |
 | SS-0 | Stage 0: sensitivity profiling and planning | `stage0/sensitivity.py`, `stage0/planner.py`, `stage0/run.py` | Implemented | S0-*, PIPE-03 |
-| SS-1 | Stage 1: quantization (weights, activations) | `stages/weights.py`, `stages/methods.py` | Implemented (weights, RTN activations) | S1-* |
+| SS-1 | Stage 1: quantization (weights, activations) | `stages/weights.py`, `stages/methods.py` | Implemented (simulated; joint weight x activation plan) | S1-* |
 | SS-2 | Stage 2: pruning | `stages/pruning.py`, `stages/methods.py` | Implemented | S2-* |
 | SS-3 | Stage 3: KV-cache compression | `stages/kv_methods.py`, `stages/methods.py` | Done (simulated on HF) | S3-*, MET-06 |
-| SS-4 | Stage 4: evaluation across backends | `stage4/` *(planned)*; HF measurement in `eval/metrics.py` today | Partial | S4-*, MET-03 |
-| SS-SRCH | Search layer | `search/` *(planned)*; `search_space.py` today | Partial | SRCH-* |
+| SS-4 | Stage 4: evaluation across backends | `eval/metrics.py` (HF), `eval/vllm_backend.py`, `eval/llamacpp.py`, `eval/trtllm_backend.py`, `eval/downstream.py` (lm-eval accuracy) | Implemented | S4-*, MET-03 |
+| SS-SRCH | Search layer | `search.py`, `search_space.py`, `reporting/search.py` | Implemented (chained tries, 2026-10-25) | SRCH-* |
 
 ```mermaid
 flowchart TB
@@ -163,14 +163,18 @@ Dashed boxes are planned.
 ### 3.4 Interaction view: a full run
 
 The full-run sequence (search loop, then full comparisons on the final candidates, then the master report) is
-drawn in [`docs/diagrams/search.md`](../diagrams/search.md#sequence-diagram) (planned; today's run without search: [`seq-full-run`](../diagrams/seq-full-run.svg)). In short:
+described in [`docs/diagrams/search.md`](../diagrams/search.md#current-design-2026-10-25) (the diagrams there are
+the original plan; run without search: [`seq-full-run`](../diagrams/seq-full-run.svg)). In short (as built, 2026-10-25):
 
 1. Load the configuration and start the run (§4.1, §4.2).
-2. For each searcher, until its trial budget is used: ask for a candidate, run Stage 0 (cached profile, new
-   plan), run Stages 1 to 3 on that plan, evaluate on Stage 4, tell the searcher the objectives (§10).
-3. Take each searcher's Pareto front and the best configuration per objective.
-4. For those configurations only, run the full three-variant comparison in every stage (SRCH-07).
-5. Write the master report (§4.7).
+2. For each searcher (MOBO, then MFBO), until its trial budget is used: ask for a candidate, run Stage 0 (cached
+   profile, one-shot joint plan, no refinement), then build one chained model, Stage 1 then Stage 2 on it then
+   Stage 3 on that, measure the final model (HF and vLLM), and tell the searcher the objectives (§10). Only the final
+   model is judged against the limits: size at most 1 GB and validation perplexity at most 11.
+3. Take each searcher's Pareto front among the models that meet the limits.
+4. One extra try each for the Stage 1 techniques asked for that no searcher built (SpQR, QuIP, QuIP#).
+5. Test the lowest-perplexity final model for accuracy (lm-eval) next to the uncompressed model, then write the
+   search report.
 
 ### 3.5 Information view: run folder
 

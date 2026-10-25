@@ -52,39 +52,53 @@ def evaluate(ctx: RunContext, point: dict[str, Any], max_windows: int | None = N
     """Build and measure the chained model of `point` on `max_windows` evaluation windows (None: cfg.eval's).
     Cached by point and settings, so a point two searchers try is built once. Returns {"metrics", "met",
     "shortfall", "dir"}, or {"error", "dir"} when the setting cannot be built or measured."""
+    point = technique_space(ctx.cfg).validate(point)
+    cfg = ctx.cfg.with_overrides({"stage0.pruning_levels": [], "stage0.joint_plan": True,
+                                  **({"eval.max_windows": max_windows} if max_windows else {})})
+    key = point_key(ctx, cfg, point, [point["stage1_method"], point["stage2_method"], point["stage3_method"]])
+    tdir = ctx.run_dir / "search" / "points" / config_hash(key, length=10)
+    return cached_point(ctx, "search_point", key, tdir, lambda run_ctx: _build_and_measure(
+        run_ctx, point, model_factory, tokenizer, text_loader), cfg)
+
+
+def point_key(ctx: RunContext, cfg: FrameworkConfig, point: dict[str, Any], names: list[str]) -> dict[str, Any]:
+    """What decides a point's numbers: the point, the settings `cfg` builds it with and its techniques' versions."""
     from sdf.eval import vllm_backend
     from sdf.stage0.run import fp16_key, setup
     from sdf.stages.methods import METHODS
 
-    point = technique_space(ctx.cfg).validate(point)
-    cfg = ctx.cfg.with_overrides({"stage0.pruning_levels": [], "stage0.joint_plan": True,
-                                  **({"eval.max_windows": max_windows} if max_windows else {})})
-    names = [point["stage1_method"], point["stage2_method"], point["stage3_method"]]
-    key = {"point": point, "model": asdict(cfg.model), "eval": asdict(cfg.eval), "calibration": asdict(cfg.calibration),
-           "stage0": asdict(cfg.stage0), "seed": cfg.run.seed, "data": asdict(cfg.data),
-           "hardware": fp16_key(ctx, setup(ctx)[0])["hardware"], "vllm": vllm_backend.VERSION, "search": VERSION,
-           "versions": [_version(n, METHODS) for n in names]}
-    tdir = ctx.run_dir / "search" / "points" / config_hash(key, length=10)
+    return {"point": point, "model": asdict(cfg.model), "eval": asdict(cfg.eval), "calibration": asdict(cfg.calibration),
+            "stage0": asdict(cfg.stage0), "seed": cfg.run.seed, "data": asdict(cfg.data),
+            "hardware": fp16_key(ctx, setup(ctx)[0])["hardware"], "vllm": vllm_backend.VERSION, "search": VERSION,
+            "versions": [_version(n, METHODS) for n in names]}
 
-    def build() -> dict[str, Any]:
+
+def cached_point(ctx: RunContext, kind: str, key: dict[str, Any], tdir: Path, build: Callable[[RunContext], dict],
+                 cfg: FrameworkConfig, limit: bool = True) -> dict[str, Any]:
+    """`build` (given a RunContext writing into `tdir`) cached under `kind` and `key`; a failure is returned as
+    {"error"} and not cached, nor is a point not built. `limit`: check ctx.cfg's requirement on the metrics (after
+    the cache, so a changed limit applies to points already measured); without it every measured point meets it
+    (a per-stage search keeps a trade-off line, not a limit)."""
+    point = key["point"]
+
+    def run() -> dict[str, Any]:
         try:
-            return _build_and_measure(RunContext(cfg, ctx.run_id, tdir, ctx.cache), point, model_factory, tokenizer,
-                                      text_loader)
+            return build(RunContext(cfg, ctx.run_id, tdir, ctx.cache))
         except Exception as e:  # noqa: BLE001 - a setting that fails is a result of the search, not a crash
             log.exception("search point failed: %s", point)
             return {"error": f"{type(e).__name__}: {e}"}
 
-    path = ctx.cache.path("search_point", key)
+    path = ctx.cache.path(kind, key)
     cached = path.exists()
     if cached:
         result = json.loads(path.read_text(encoding="utf-8"))["value"]
     else:
-        result = build()
+        result = run()
         if "error" not in result and not result.get("errors") and "not_built" not in result:  # a failure may be passing (a crash, out of
             atomic_write_text(path, json.dumps({"key": key, "value": result}, default=str))  # memory): retried
-    if "error" not in result:  # checked after the cache, so a changed limit applies to points already measured
-        check = check_requirement(ctx.cfg, result["metrics"])
-        result = {**result, "met": check.met is True, "shortfall": check.shortfall}
+    if "error" not in result:
+        check = check_requirement(ctx.cfg, result["metrics"]) if limit else None
+        result = {**result, "met": check.met is True if check else True, "shortfall": check.shortfall if check else {}}
     return {**result, "dir": str(tdir), "cached": cached}
 
 
@@ -158,10 +172,11 @@ class Recorder:
     """Every evaluation a searcher asks for, in order, with its cost: its share of the full evaluation windows for a
     model built for this searcher (even if measuring it then failed), else 0 (a point the plan puts over the limit, a
     crash before building, or a point this searcher already tried on as many windows that came back from the cache).
-    Only built models use up the budget."""
+    Only built models use up the budget. `evaluator`: what measures a point, with evaluate()'s arguments and result
+    (default evaluate(), the chained model); a per-stage search passes its own stage's."""
 
-    def __init__(self, ctx: RunContext, searcher: str, full_windows: int, **kw: Any):
-        self.ctx, self.searcher, self.full, self.kw = ctx, searcher, full_windows, kw
+    def __init__(self, ctx: RunContext, searcher: str, full_windows: int, evaluator: Callable | None = None, **kw: Any):
+        self.ctx, self.searcher, self.full, self.evaluator, self.kw = ctx, searcher, full_windows, evaluator, kw
         self.trials: list[dict[str, Any]] = []
         s = ctx.cfg.search
         self.objectives = s.objectives
@@ -183,7 +198,7 @@ class Recorder:
     def __call__(self, point: dict[str, Any], windows: int | None = None) -> dict[str, Any]:
         windows = windows or self.full
         t0 = time.perf_counter()
-        r = evaluate(self.ctx, point, None if windows == self.full else windows, **self.kw)
+        r = (self.evaluator or evaluate)(self.ctx, point, None if windows == self.full else windows, **self.kw)
         values = [r.get("metrics", {}).get(o) for o in self.objectives]
         built = "not_built" not in r and ("error" not in r or r.get("attempted", False))
         repeat = r["cached"] and any(t["point"] == point and t["windows"] == windows and t["built"]
@@ -201,7 +216,7 @@ class Recorder:
                                          or f"no {[o for o, v in zip(self.objectives, values) if v is None]}")}
         self.trials.append(t)
         log.info("search %s #%d (%d windows): %s -> %s", self.searcher, t["n"], windows,
-                 {k: point[k] for k in ("stage1_method", "stage2_method", "stage3_method")},
+                 {k: v for k, v in point.items() if k.endswith("_method")},  # a per-stage search has one
                  "failed: " + str(t["error"]) if not ok else dict(zip(self.objectives, values), met=t["met"]))
         return t
 
@@ -354,6 +369,13 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
         raise ValueError("ppl_heldout is measured to check the choice, never optimised: use ppl_val")
     if any(o.startswith("vllm_") for o in s.objectives) and not cfg.eval.vllm_python:
         raise ValueError(f"the objectives {s.objectives} need vLLM: set eval.vllm_python (Colab), or every try fails")
+    if missing := [m for m in s.extra_stage1 if m not in s.stage1_methods]:
+        raise ValueError(f"search.extra_stage1 {missing} must be in search.stage1_methods")
+    if s.accuracy_tasks:
+        try:
+            import lm_eval  # noqa: F401 - checked now, not after hours of tries
+        except ImportError as e:
+            raise ValueError("search.accuracy_tasks needs lm-eval: pip install -e .[downstream]") from e
     space = technique_space(cfg)
     _, handle, loader = setup(ctx, None, tokenizer, text_loader)
     val, held = eval_windows(loader(cfg.eval.dataset, "test"), handle.tokenizer, cfg.eval.seq_len, cfg.eval.max_windows)
@@ -366,6 +388,56 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
         SEARCHERS[name](rec, space, s.budget, cfg.run.seed, **extra)
         trials += rec.trials
         atomic_write_text(ctx.run_dir / "search" / "trials.json", json.dumps(trials, indent=2, default=str))
+    extras, accuracy = [], None
+    try:  # neither step may cost the report of hours of tries, nor the other step
+        extras = extra_tries(ctx, trials, s.extra_stage1, full, **kw)
+    except Exception:  # noqa: BLE001
+        log.exception("the extra Stage 1 tries failed; the report is written without them")
+    try:
+        accuracy = final_accuracy(ctx, trials, s.accuracy_tasks, **kw)
+    except Exception:  # noqa: BLE001
+        log.exception("the accuracy test failed; the report is written without it")
     from sdf.reporting.search import write_search_report
 
-    return write_search_report(ctx, trials, space)
+    return write_search_report(ctx, trials, space, extras=extras, accuracy=accuracy)
+
+
+def final_accuracy(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[str], **kw: Any) -> dict[str, Any] | None:
+    """The final model with the lowest validation perplexity under the limit, built again and tested for accuracy on
+    `tasks` (eval.downstream_tasks, lm-eval; Mohammad, 2026-10-25: "the final model that has the best perplexity is
+    then tested for accuracy", "then that accuracy will be compared with tinyllama accuracy"): "fp16" holds the
+    uncompressed model's accuracy, measured in the same run under the same conditions. None when no task is set or no
+    try met the limit."""
+    best = min((t for t in trials if t["full"] and t["met"]), key=lambda t: t["metrics"]["ppl_val"], default=None)
+    if not tasks or best is None:
+        return None
+    from sdf.stage0.run import fp16_key, setup
+
+    cfg = ctx.cfg.with_overrides({"eval.downstream_tasks": list(tasks)})
+    actx = RunContext(cfg, ctx.run_id, ctx.run_dir, ctx.cache)
+    r = evaluate(actx, best["point"], **kw)
+    # the uncompressed model's accuracy, as the run_stage call measured and cached it (a cached point builds nothing)
+    entry = ctx.cache.path("fp16_downstream", {**fp16_key(actx, setup(actx)[0]), "tasks": list(tasks),
+                                               "limit": cfg.eval.downstream_limit})
+    fp16 = json.loads(entry.read_text(encoding="utf-8"))["value"] if entry.exists() else {}
+    return {"searcher": best["searcher"], "n": best["n"], "point": best["point"], "fp16": fp16,
+            **{k: r.get(k) for k in ("metrics", "error", "dir")}}
+
+
+def extra_tries(ctx: RunContext, trials: list[dict[str, Any]], methods: list[str], full_windows: int,
+                **kw: Any) -> list[dict[str, Any]]:
+    """One chained try for each of `methods` (Stage 1 techniques) whose weight technique no searcher measured on all
+    the windows (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"): the search's best try
+    under the limit (lowest first objective) with only its Stage 1 technique swapped, or the run's own settings if
+    no try met the limit. Kept apart from the searchers' trials, so they change no comparison or trade-off line."""
+    cfg = ctx.cfg
+    space = technique_space(cfg)
+    done = {t["point"]["stage1_method"].split("_with_")[0] for t in trials if t["full"] and t["ok"]}
+    best = min((t for t in trials if t["full"] and t["met"]), key=lambda t: t["values"][0], default=None)
+    base = best["point"] if best else space.make({k: v for k, v in cfg.hyperparams.items()
+                                                  if k in {p.name for p in SEARCH_SPACE.params}})
+    rec = Recorder(ctx, "extra", full_windows, **kw)
+    for m in methods:
+        if m.split("_with_")[0] not in done:
+            rec({**base, "stage1_method": m})
+    return rec.trials

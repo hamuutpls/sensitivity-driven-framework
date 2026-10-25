@@ -1,7 +1,28 @@
-# Search layer (planned)
+# Search layer
 
-Not written yet, except the search space itself (`src/sdf/search_space.py`). Drawn from the design (v2_1
-diagram, "Search Loop" page) and the thesis spec; other names are proposals. Back to the [overview](README.md).
+Back to the [overview](README.md).
+
+## Current design (2026-10-25)
+
+Written in `src/sdf/search.py` (MODE "search" in `main.py`). Mohammad, 2026-10-25: "the framework is sequential",
+"stage 1 then 2 then 3 then see if its the best model".
+
+1. A searcher (MOBO, then MFBO; NSGA-III is available) proposes a setting: the search-space numbers plus one
+   technique per stage.
+2. The try builds one chained model: Stage 0 plans it (the one-shot joint plan, no refinement:
+   `SEARCH_REFINE_ROUNDS = 0`), then Stage 1 quantizes, Stage 2 prunes that model, Stage 3 compresses its KV cache.
+3. Only that final model is judged, against the final-model limits: predicted size at most 1 GB
+   (`TARGET_MEMORY_GB`) and validation perplexity at most 11 (`TARGET_PPL`). A setting whose plan is already over
+   the size limit is not built. Among the models that meet the limits the search keeps the trade-off line of
+   validation perplexity against vLLM speed (Stage 4).
+4. After the searchers: Stage 1 techniques in `SEARCH_EXTRA_STAGE1` (SpQR, QuIP, QuIP#) that no searcher built get
+   one try each (the best setting with only its Stage 1 technique changed), and the final model with the lowest
+   perplexity is tested for accuracy (`SEARCH_ACCURACY_TASKS`: ARC-Easy, PIQA, HellaSwag, WinoGrande, lm-eval) next
+   to the uncompressed TinyLlama measured in the same run.
+
+Outputs: `results/<run_id>/search/` with `search_report.md`, `search_results.xlsx`, `trials.json` and the plots.
+MODE "stage_search" (each stage searched on its own, then combined) is kept in `src/sdf/stage_search.py` but is
+not the design. The class and sequence diagrams below are the original plan and differ in names.
 
 ## In plain words
 

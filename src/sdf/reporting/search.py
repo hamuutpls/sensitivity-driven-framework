@@ -84,7 +84,12 @@ def hypervolume_curve(trials: list[dict[str, Any]], searcher: str, ref: list[flo
     return [(sum(t["cost"] for t in ts[: i + 1]), hypervolume(ts[: i + 1], ref)) for i in range(len(ts))]
 
 
-def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: SearchSpace) -> dict[str, Path]:
+def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: SearchSpace,
+                        intro: str | None = None, extras: list[dict[str, Any]] = (),
+                        accuracy: dict[str, Any] | None = None) -> dict[str, Path]:
+    """`intro`: the report's opening paragraph when the search is not the chained one (a per-stage search).
+    `extras`: tries made apart from the searchers (sdf.search.extra_tries), in a section of their own. `accuracy`:
+    the lowest-perplexity final model's task accuracy (sdf.search.final_accuracy)."""
     cfg = ctx.cfg
     s = cfg.search
     d = ctx.run_dir / "search"
@@ -121,7 +126,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
 
     # --- report
     shown = [m for m in (s.objectives[0], s.memory_metric, *s.objectives[1:], "ppl_heldout") if m]
-    tech = ["stage1_method", "stage2_method", "prune_ratio_aggressive", "stage3_method"]
+    tech = [n for n in ("stage1_method", "stage2_method", "prune_ratio_aggressive", "stage3_method") if n in names]
     rest = [n for n in names if n not in tech]
     lines = [
         "# Settings search", "",
@@ -134,19 +139,22 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         f"text and so on). Only settings that meet the limit count ({_req(cfg)}). Among those the search looks for "
         "the lowest " + " and the lowest ".join(label(o).lower() for o in s.objectives) + ". Speed comes from vLLM, "
         "which runs the model up to Stage 2 (it cannot run the Stage 3 techniques); unstructured pruning keeps the "
-        "removed numbers as zeros, so it does not make vLLM faster. Three search methods each had the same budget of "
+        "removed numbers as zeros, so it does not make vLLM faster. "
+        + ("Stage 0's refinement was off: every plan is the one-shot joint plan. "
+           if cfg.stage0.joint_refine_rounds == 0 else "")
+        + f"{len(s.searchers)} search method{'s' * (len(s.searchers) != 1)} each had the same budget of "
         f"{s.budget} full tries, where a full try is one model measured on all the evaluation windows. MFBO's rough "
         "tries use fewer windows and count by that share, so it builds more models for the same budget (see Models "
         "built below). A setting whose plan is already over the limit is not built and does not count, nor does one "
         "that failed before building or a repeat of the method's own try that came from the cache. The methods: "
-        + "; ".join(SEARCHER_NAMES[n] for n in s.searchers if n in SEARCHER_NAMES) + ".", "",
+        + "; ".join(SEARCHER_NAMES[n] for n in s.searchers if n in SEARCHER_NAMES) + "." if intro is None else intro, "",
         "## What it means", "",
         f"{len(front)} setting(s) are on the best trade-off line: none of them can get better on one goal without "
         "getting worse on another, so each is a fair choice depending on what matters more. They are listed below, "
         "lowest perplexity first (lower perplexity means more accurate; lower time means faster). Held-out perplexity "
         "was measured but never used to choose, so it shows how well the choice holds on unseen text.", "",
         "## Best trade-off settings", "",
-        _md([["#", "Stage 1 quantization", "Stage 2 pruning", "Pruning share", "Stage 3 technique"]
+        _md([["#"] + [{"stage3_method": "Stage 3 technique"}.get(n, SETTING_NAMES[n]) for n in tech]
              + [label(m) + " (lower is better)" for m in shown]]
             + [[str(i + 1)] + [setting_value(n, t["point"][n]) for n in tech] + [_fmt(t["metrics"].get(m)) for m in shown]
                for i, t in enumerate(front)]),
@@ -171,6 +179,34 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         f"{sum(1 for t in trials if not t['ok'] and not t.get('over_limit'))} of "
         f"{len(trials)}; the reasons are in the Trials sheet of search_results.xlsx.", "",
     ]
+    if accuracy:
+        acc = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("acc_", "downstream_acc"))}
+        lines += [
+            "## Accuracy of the final model", "",
+            "**What this shows:** how many test questions the best final model still answers correctly, next to "
+            "the uncompressed TinyLlama. **What it means:** a small change says the compression kept the model's "
+            "ability; a large drop says the lower perplexity did not carry over to answering questions.", "",
+            f"The final model with the lowest validation perplexity under the limit ({accuracy['searcher'].upper()} "
+            f"try #{accuracy['n']}) was built again and tested on multiple-choice tasks: the share of questions it "
+            "answers correctly (higher is better), next to the uncompressed model's on the same tasks, measured in the "
+            "same run.", "",
+            _md([["Task", "Final model", "Uncompressed model", "Change", "Change, %"]]
+                + [[label(m), _fmt(v), _fmt(base := accuracy["fp16"].get(m)),
+                    _fmt(v - base) if base is not None else "",
+                    _fmt(100 * (v - base) / base) if base else ""] for m, v in acc.items()])
+            if acc else f"The accuracy test failed: {accuracy.get('error') or 'no task result'}.", ""]
+    if extras:
+        lines += [
+            "## Extra Stage 1 techniques", "",
+            "**What this shows:** SpQR, QuIP and QuIP# (the techniques asked for) when no search method built them: "
+            "one chained try each, the best setting under the limit with only its Stage 1 technique changed. "
+            "**What it means:** how each would have done in the best model; they are not part of the comparison or "
+            "the trade-off line.", "",
+            _md([["Stage 1 technique", "Our method WxAy (average bits)", "Under the limit"]
+                 + [label(m) + " (lower is better)" for m in shown] + ["Why it failed"]]
+                + [[setting_value("stage1_method", t["point"]["stage1_method"]), _wxay(t["metrics"]),
+                    "yes" if t["met"] else "no"]
+                   + [_fmt(t["metrics"].get(m)) for m in shown] + [str(t["error"] or "")] for t in extras])]
     outputs["search_report"] = d / "search_report.md"
     atomic_write_text(outputs["search_report"], "\n".join(lines))
     return outputs
@@ -183,6 +219,12 @@ def _req(cfg) -> str:
                                                      ("decode_ms_per_token_mean", r.target_latency_ms),
                                                      ("predicted_kv_memory_gb", r.kv_budget_gb)) if v is not None]
     return "; ".join(parts) or "no limits set"
+
+
+def _wxay(metrics: dict[str, Any]) -> str:
+    """The row's average weight and activation bits as "W4.5A8", or "" when not measured."""
+    w, a = metrics.get("decoder_weight_bits"), metrics.get("avg_activation_bits")
+    return f"W{w:.3g}A{a:.3g}" if isinstance(w, (int, float)) and isinstance(a, (int, float)) else ""
 
 
 def _fmt(v: Any) -> str:
@@ -217,7 +259,7 @@ def _plots(d: Path, trials, front, objectives, memory, comparison) -> dict[str, 
     out = {}
     ok = [t for t in trials if t["full"] and t["ok"]]
     colors = dict(zip(dict.fromkeys(t["searcher"] for t in trials), ("#0072B2", "#E69F00", "#009E73", "#CC79A7")))
-    for x in [memory] + objectives[1:]:
+    for x in dict.fromkeys([memory] + objectives[1:]):  # a stage search may have the memory among its objectives
         fig, ax = plt.subplots(figsize=(6, 4))
         for name, c in colors.items():
             pts = [t for t in ok if t["searcher"] == name and t["metrics"].get(x) is not None]

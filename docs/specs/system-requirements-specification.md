@@ -234,9 +234,9 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | S1-02 | In the framework variant, each layer's bit width shall come from the Stage 0 quantization plan (`quant_plan.json`, S0-18), which carries no pruning ratios. | M | Implemented | T | DEC (2026-10-07) | SDD §6 |
 | S1-03 | GPTQ group size shall be the search parameter `gptq_groupsize`. | M | Implemented | I | SPEC | SDD §6 |
 | S1-04 | Stage 1 shall measure real (not predicted) size and accuracy, and report predicted vs measured memory. | M | Planned | T | SPEC | SDD §6 |
-| S1-05 | Stage 1 shall support RTN, SmoothQuant, QuaRot, RPTQ and SpinQuant for activations (formerly S2-01). | M | Partly (RTN) | T | DEC (2026-10-07) | SDD §6 |
+| S1-05 | Stage 1 shall support RTN, SmoothQuant, QuaRot, RPTQ and SpinQuant for activations (formerly S2-01). | M | Implemented (simulated) | T | DEC (2026-10-07) | SDD §6 |
 | S1-06 | In the framework variant, per-layer activation precision shall follow the Stage 0 activation plan (`activation_plan.json`, S0-15; formerly S2-02). | M | Implemented (RTN) | T | DEC (2026-10-07) | SDD §6 |
-| S1-07 | SmoothQuant's migration strength shall be the search parameter `smoothquant_alpha` (formerly S2-03). | M | Planned | I | SPEC | SDD §6 |
+| S1-07 | SmoothQuant's migration strength shall be the search parameter `smoothquant_alpha` (formerly S2-03). | M | Implemented | I | SPEC | SDD §6 |
 
 #### 3.1.8 Stage 2: pruning (S2)
 
@@ -253,13 +253,13 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 | S3-01 | Stage 3 shall support QuaRot KV, KVQuant, H2O, SnapKV and InfiniGen. | M | Done (simulated on HF, 2026-10-18) | T | SPEC | SDD §8 |
 | S3-02 | In the framework variant, per-layer key bits, value bits and token budget shall follow the Stage 0 KV cache plan (`kv_cache_plan.json`). | M | Done (simulated on HF, 2026-10-18) | T | SPEC | SDD §8 |
 | S3-03 | QuaRot key-cache bit width shall be the search parameter `quarot_k_bits`. | M | Done (simulated on HF, 2026-10-18) | I | SPEC | SDD §8 |
-| S3-04 | Stage 3 shall report KV-cache memory and check it against `kv_budget_gb`. | M | Planned | T | SPEC | SDD §8 |
+| S3-04 | Stage 3 shall report KV-cache memory and check it against `kv_budget_gb`. | M | Implemented | T | SPEC | SDD §8 |
 
 #### 3.1.10 Stage 4: evaluation across backends (S4)
 
 | ID | Requirement | Pri | Status | Ver | Source | Design |
 |---|---|---|---|---|---|---|
-| S4-01 | Stage 4 shall evaluate compressed models on HF Transformers, llama.cpp, vLLM and TensorRT-LLM. | M | Partial (HF measurement exists) | T | SPEC | SDD §9 |
+| S4-01 | Stage 4 shall evaluate compressed models on HF Transformers, llama.cpp, vLLM and TensorRT-LLM. | M | Implemented (vLLM and TensorRT-LLM on Linux/Colab) | T | SPEC | SDD §9 |
 | S4-02 | Each backend shall report the same metrics (MET-01 to MET-08) under the same conditions. | M | Planned | T | SPEC | SDD §9 |
 | S4-03 | A backend that cannot load a format shall be recorded as unsupported for that row, not crash the stage. | M | Planned | T | SPEC (error capture) | SDD §9 |
 
@@ -267,14 +267,17 @@ The plain-language glossary used in reports is in `src/sdf/reporting/reporter.py
 
 | ID | Requirement | Pri | Status | Ver | Source | Design |
 |---|---|---|---|---|---|---|
-| SRCH-01 | The search space shall be defined in one place and contain `sensitive_threshold`, `prune_ratio_aggressive`, `gptq_groupsize`, `smoothquant_alpha`, `quarot_k_bits`, `calib_dataset`, `calib_samples`. | M | Partial (5 of 7; `smoothquant_alpha`, `quarot_k_bits` arrive with Stages 2 and 3) | T | SPEC | SDD §10 |
+| SRCH-01 | The search space shall be defined in one place and contain `sensitive_threshold`, `prune_ratio_aggressive`, `gptq_groupsize`, `smoothquant_alpha`, `quarot_k_bits`, `calib_dataset`, `calib_samples`. | M | Implemented | T | SPEC | SDD §10 |
 | SRCH-02 | Adding a parameter to the space shall be a one-line change. | D | Implemented | T | DEC | SDD §10 |
-| SRCH-03 | Search objectives shall be validation perplexity, memory, latency and build cost. Held-out perplexity shall be measured for every trial but never optimised. | M | Planned | I, A | SPEC | SDD §10 |
-| SRCH-04 | The system shall provide three searchers, MOBO (Optuna), MFBO (successive halving) and NSGA-III (pymoo), run on the same space and the same trial budget, and kept separate (not pooled). | M | Planned | T | SPEC | SDD §10 |
-| SRCH-05 | The searchers shall be benchmarked on efficiency, speed-to-best, hypervolume and share of the combined Pareto front. | M | Planned | T | SPEC | SDD §10 |
-| SRCH-06 | Trials that miss the `DeploymentRequirement` shall be kept and record their shortfall. | M | Planned (check exists) | T | SPEC | SDD §10 |
+| SRCH-03 | Search objectives shall be validation perplexity, memory, latency and build cost. Held-out perplexity shall be measured for every trial but never optimised. | M | Partial (validation perplexity and vLLM latency optimised, memory as a limit; held-out measured, never optimised) | I, A | SPEC | SDD §10 |
+| SRCH-04 | The system shall provide three searchers, MOBO (Optuna), MFBO (successive halving) and NSGA-III (pymoo), run on the same space and the same trial budget, and kept separate (not pooled). | M | Implemented (the 2026-10-25 run uses MOBO and MFBO) | T | SPEC | SDD §10 |
+| SRCH-05 | The searchers shall be benchmarked on efficiency, speed-to-best, hypervolume and share of the combined Pareto front. | M | Implemented | T | SPEC | SDD §10 |
+| SRCH-06 | Trials that miss the `DeploymentRequirement` shall be kept and record their shortfall. | M | Implemented | T | SPEC | SDD §10 |
 | SRCH-07 | Full per-stage comparisons shall run only for the final Pareto candidates and the best configuration per objective. | M | Planned | I | SPEC | SDD §10 |
-| SRCH-08 | The search shall write, under `results/<run_id>/search/`: `search_report.md`; `search_results.xlsx` with sheets Trials, Pareto, Searcher comparison, Best configs; Pareto plots (accuracy vs memory, accuracy vs latency); hypervolume-over-trials per searcher. | M | Planned | T | SPEC | SDD §10 |
+| SRCH-08 | The search shall write, under `results/<run_id>/search/`: `search_report.md`; `search_results.xlsx` with sheets Trials, Pareto, Searcher comparison, Best configs; Pareto plots (accuracy vs memory, accuracy vs latency); hypervolume-over-trials per searcher. | M | Implemented | T | SPEC | SDD §10 |
+| SRCH-09 | Each try shall build one chained model, Stage 1 then Stage 2 on it then Stage 3 on that, with the one-shot Stage 0 joint plan (no refinement); only the final model shall be judged, against size at most 1 GB and validation perplexity at most 11. | M | Implemented | T | DEC (2026-10-25) | `search.py` |
+| SRCH-10 | The final model with the lowest validation perplexity under the limits shall be tested for accuracy on standard tasks (ARC-Easy, PIQA, HellaSwag, WinoGrande) and compared with the uncompressed model under the same conditions (change and change in %). | M | Implemented | T | DEC (2026-10-25) | `search.py` |
+| SRCH-11 | Stage 1 techniques asked for in the results (SpQR, QuIP, QuIP#) that no searcher built shall get one try each after the search, reported apart. | S | Implemented | T | DEC (2026-10-25) | `search.py` |
 
 ### 3.2 Usability requirements
 

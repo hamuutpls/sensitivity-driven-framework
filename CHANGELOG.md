@@ -1,5 +1,38 @@
 # Changelog
 
+## 2026-10-25: The chained search again, judged on the final model, with an accuracy test
+
+- Mohammad (2026-10-25): "the framework is sequential now", "stage 1 then 2 then 3 then see if its the best model":
+  MODE "search" (each try builds one chained model 0 -> 1 -> 2 -> 3) is the run again; MODE "stage_search" is kept
+  but not used. The final model must be at most 1 GB (`TARGET_MEMORY_GB`, was 1.1) with validation perplexity at
+  most 11 (`TARGET_PPL`). `SEARCH_REFINE_ROUNDS = 0`: no Stage 0 refinement in a try.
+- After the searchers: `search.extra_stage1` (SpQR, QuIP, QuIP#) gets one chained try each when no searcher measured
+  that weight technique on all the windows (the best try with only its Stage 1 technique changed), and
+  `search.accuracy_tasks` (ARC-Easy, PIQA, HellaSwag, WinoGrande, full sets) tests the lowest-perplexity final model
+  under the limit, next to the uncompressed TinyLlama measured in the same run (change and change in %). Both have
+  their own sections in search_report.md. The search report names the number of searchers and says when Stage 0's
+  refinement was off. Both are checked before the first try (lm-eval installed; the extra techniques allowed), and
+  the uncompressed model's accuracy is read from its cache entry, so a rerun that finds the point cached still has it.
+- Docs: README stage and search table, docs/diagrams/search.md (current design), the SDD's subsystem table and full
+  run flow, and the SRS statuses (S1, S3, S4, SRCH) with new SRCH-09 to SRCH-11 describe the chained design.
+
+## 2026-10-25: The settings search inside the stages (MODE "stage_search")
+
+- Mohammad (2026-10-24/25): the separate search layer, which rebuilt Stages 0-3 for every try, is folded into the
+  stages (option B, "1a 2a", "no refinement for any stage"). New `sdf/stage_search.py`:
+  Stage 1 searches its technique, protection threshold, calibration text and passages, group size and SmoothQuant
+  strength on a Stage 1 model alone (joint plan); Stage 2 searches its technique and share removed on the
+  uncompressed model; each runs MOBO, MFBO and NSGA-III with the same budget and seed and keeps its trade-off line
+  (no limit inside a stage). Stage 3 tries every KV technique once and keeps the lowest validation perplexity. The
+  pairing step builds the chained model for Stage 1 x Stage 2 pairs, best estimated perplexity first (Stage 1's plus
+  Stage 2's rise over FP16), until `search.finalists` (3) are measured under the limit; the winner has the lowest
+  objectives in order. Stage 0's joint refinement is off everywhere.
+- Stage 2 and Stage 3 tries run no backend (their objectives do not use one). `quarot_k_bits` is not searched (Our
+  method rows do not read it).
+- Shared code: `Recorder(evaluator=...)`, `search.point_key` and `search.cached_point` (from `evaluate`, unchanged
+  numbers and cache keys), `run_stage(plan_keys=...)` to build one Our method row, `write_search_report(intro=...)`.
+  MODE "search" (the chained search) is unchanged.
+
 ## 2026-10-22: Faster perplexity for Stage 3 rows that forget words (speed-up option 1)
 
 - H2O's word-by-word loop ran once per perplexity window, so a model whose KV plan forgets words took about 40 min
