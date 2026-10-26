@@ -239,7 +239,8 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             "**What this shows:** SpQR, QuIP and QuIP# (the techniques asked for) when no search method built them: "
             "one chained try each, the best setting under the limit with only its Stage 1 technique changed. "
             "**What it means:** how each would have done in the best model; they are not part of the comparison or "
-            "the trade-off line.", "",
+            "the trade-off line, but one is the final model (Stage 4 above) when it is the smallest under the "
+            "limit.", "",
             _md([["Stage 1 technique", "Our method WxAy (average bits)", "Under the limit"]
                  + [label(m) + " (lower is better)" for m in shown] + ["Why it failed"]]
                 + [[setting_value("stage1_method", t["point"]["stage1_method"]), _wxay(t["metrics"]),
