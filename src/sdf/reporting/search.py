@@ -11,9 +11,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 
 from sdf.eval import vllm_backend  # noqa: F401 - registers the vLLM metric names
-from sdf.reporting.metrics import label
+from sdf.reporting.metrics import is_number, label
 from sdf.run import RunContext
-from sdf.search import FAILED, hypervolume, pareto
+from sdf.search import FAILED, hypervolume, pareto, tried_path
 from sdf.search_space import SearchSpace
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.logging import get_logger
@@ -40,8 +40,9 @@ def compare_searchers(trials: list[dict[str, Any]], objectives: list[str]) -> li
         mine = {json.dumps(t["point"], sort_keys=True) for t in full_met}
         out.append({
             "Search method": SEARCHER_NAMES.get(name, name), "Tries": len(ts),
-            "Models built": sum(1 for t in ts if t["cost"] > 0),
-            "Of those, on all evaluation windows": sum(1 for t in ts if t["cost"] > 0 and t["full"]),
+            "Models built": sum(1 for t in ts if t["cost"] > 0 and not t.get("earlier_run")),
+            "Of those, on all evaluation windows": sum(1 for t in ts if t["cost"] > 0 and t["full"]
+                                                       and not t.get("earlier_run")),
             "Cost, in full tries": round(sum(t["cost"] for t in ts), 3),
             "Time, minutes": round(sum(t.get("time_s", 0.0) for t in ts) / 60, 1),
             "Share of tries under the limit (higher is better)": len([t for t in ts if t["met"]]) / len(ts),
@@ -84,12 +85,23 @@ def hypervolume_curve(trials: list[dict[str, Any]], searcher: str, ref: list[flo
     return [(sum(t["cost"] for t in ts[: i + 1]), hypervolume(ts[: i + 1], ref)) for i in range(len(ts))]
 
 
+def _backend_rows(backends: dict[str, Any]) -> list[list[str]]:
+    """One row per backend measure, each per-token latency followed by its tokens per second (report rules)."""
+    rows = []
+    for m, v in backends.items():
+        rows.append([label(m), _fmt(v)])
+        if m.endswith("_decode_ms_per_token") and is_number(v) and v > 0 and \
+                m.replace("_ms_per_token", "_tokens_per_s") not in backends:
+            rows.append([f"{label(m)}, as tokens per second", _fmt(1000.0 / v)])
+    return rows
+
+
 def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: SearchSpace,
                         intro: str | None = None, extras: list[dict[str, Any]] = (),
                         accuracy: dict[str, Any] | None = None) -> dict[str, Path]:
     """`intro`: the report's opening paragraph when the search is not the chained one (a per-stage search).
     `extras`: tries made apart from the searchers (sdf.search.extra_tries), in a section of their own. `accuracy`:
-    the lowest-perplexity final model's task accuracy (sdf.search.final_accuracy)."""
+    the Stage 4 test of the final model best on the first objective, backends and task accuracy (sdf.search.final_model)."""
     cfg = ctx.cfg
     s = cfg.search
     d = ctx.run_dir / "search"
@@ -125,7 +137,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
     outputs.update(_plots(d, trials, front, s.objectives, s.memory_metric, comparison))
 
     # --- report
-    shown = [m for m in (s.objectives[0], s.memory_metric, *s.objectives[1:], "ppl_heldout") if m]
+    shown = list(dict.fromkeys(m for m in (s.objectives[0], s.memory_metric, *s.objectives[1:], "ppl_heldout") if m))
     tech = [n for n in ("stage1_method", "stage2_method", "prune_ratio_aggressive", "stage3_method") if n in names]
     rest = [n for n in names if n not in tech]
     lines = [
@@ -151,7 +163,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         "## What it means", "",
         f"{len(front)} setting(s) are on the best trade-off line: none of them can get better on one goal without "
         "getting worse on another, so each is a fair choice depending on what matters more. They are listed below, "
-        "lowest perplexity first (lower perplexity means more accurate; lower time means faster). Held-out perplexity "
+        f"best {label(s.objectives[0]).lower()} first (lower is better on every goal). Held-out perplexity "
         "was measured but never used to choose, so it shows how well the choice holds on unseen text.", "",
         "## Best trade-off settings", "",
         _md([["#"] + [{"stage3_method": "Stage 3 technique"}.get(n, SETTING_NAMES[n]) for n in tech]
@@ -166,8 +178,9 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             + [[_fmt(v) for v in c.values()] for c in comparison]),
         "A full try measures on every evaluation window (a slice of the test text); MFBO's rough tries use fewer "
         "windows and count by that share, though each still builds the whole model, so its time column is the fairer "
-        "cost. Hypervolume measures how much of the space of good results (low perplexity and low time) the method's "
-        "settings under the limit cover; larger is better.", "",
+        "cost. Hypervolume measures how much of the space of good results (low "
+        + " and low ".join(label(o).lower() for o in s.objectives) + ") the method's settings under the limit cover; "
+        "larger is better.", "",
         "## Conditions", "",
         f"- Model: {cfg.model.name}; seed {cfg.run.seed}; evaluation windows: {cfg.eval.max_windows or 'all'} of "
         f"{cfg.eval.seq_len} tokens.",
@@ -175,26 +188,41 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         + "; Stage 2 " + ", ".join(setting_value("stage2_method", m) for m in s.stage2_methods)
         + "; Stage 3 " + ", ".join(setting_value("stage3_method", m) for m in s.stage3_methods) + ".",
         f"- Tries over the limit, so not built: {sum(1 for t in trials if t.get('over_limit'))} of {len(trials)}.",
+        f"- Combinations tried in an earlier run, so not built again (their earlier result is used): "
+        f"{sum(1 for t in trials if t.get('earlier_run'))} of {len(trials)}. Every combination tried so far is listed "
+        f"in {tried_path(ctx)}.",
         f"- Tries that failed (could not be built or measured): "
         f"{sum(1 for t in trials if not t['ok'] and not t.get('over_limit'))} of "
         f"{len(trials)}; the reasons are in the Trials sheet of search_results.xlsx.", "",
     ]
     if accuracy:
         acc = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("acc_", "downstream_acc"))}
+        backends = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("vllm_", "llamacpp_", "trtllm_"))}
+        pick = f"the final model under the limit with the best {label(s.objectives[0]).lower()}"
         lines += [
+            "## The final model on the backends (Stage 4)", "",
+            f"**What this shows:** {pick} ({accuracy['searcher'].upper()} try #{accuracy['n']}) measured on each serving backend; the tries "
+            "themselves ran on Hugging Face only. **What it means:** how fast and how accurate the chosen model is "
+            "where it would be deployed. A backend re-rounds the model into its own file format, so its perplexity "
+            "is that file's, not the verdict.", "",
+            _md([["Measure", "Value"]] + _backend_rows(backends))
+            if backends else (f"The final model could not be built again: {accuracy['error']}." if accuracy.get("error")
+                              else "No backend result: " + ("; ".join(f"{k} failed: {v}" for k, v in
+                                                                      accuracy["errors"].items())
+                                                            if accuracy.get("errors") else "no backend was set") + "."),
+            "",
             "## Accuracy of the final model", "",
             "**What this shows:** how many test questions the best final model still answers correctly, next to "
             "the uncompressed TinyLlama. **What it means:** a small change says the compression kept the model's "
             "ability; a large drop says the lower perplexity did not carry over to answering questions.", "",
-            f"The final model with the lowest validation perplexity under the limit ({accuracy['searcher'].upper()} "
-            f"try #{accuracy['n']}) was built again and tested on multiple-choice tasks: the share of questions it "
+            f"{pick[0].upper() + pick[1:]} ({accuracy['searcher'].upper()} try #{accuracy['n']}) was built again and tested on multiple-choice tasks: the share of questions it "
             "answers correctly (higher is better), next to the uncompressed model's on the same tasks, measured in the "
             "same run.", "",
             _md([["Task", "Final model", "Uncompressed model", "Change", "Change, %"]]
                 + [[label(m), _fmt(v), _fmt(base := accuracy["fp16"].get(m)),
                     _fmt(v - base) if base is not None else "",
                     _fmt(100 * (v - base) / base) if base else ""] for m, v in acc.items()])
-            if acc else f"The accuracy test failed: {accuracy.get('error') or 'no task result'}.", ""]
+            if acc else f"No accuracy result: {accuracy.get('error') or 'no task set, or the test failed'}.", ""]
     if extras:
         lines += [
             "## Extra Stage 1 techniques", "",
@@ -259,7 +287,7 @@ def _plots(d: Path, trials, front, objectives, memory, comparison) -> dict[str, 
     out = {}
     ok = [t for t in trials if t["full"] and t["ok"]]
     colors = dict(zip(dict.fromkeys(t["searcher"] for t in trials), ("#0072B2", "#E69F00", "#009E73", "#CC79A7")))
-    for x in dict.fromkeys([memory] + objectives[1:]):  # a stage search may have the memory among its objectives
+    for x in [o for o in dict.fromkeys([memory, *objectives]) if o != "ppl_val"]:  # each against perplexity
         fig, ax = plt.subplots(figsize=(6, 4))
         for name, c in colors.items():
             pts = [t for t in ok if t["searcher"] == name and t["metrics"].get(x) is not None]

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-26: The search makes the final model as small as it can at perplexity 11 or lower
+
+- Mohammad (2026-10-26): "lets see how much smaller can we get the model, while keeping 11 ppl or lower". No size
+  limit any more (`TARGET_MEMORY_GB = None`, was 1.0), so no try is skipped before it is built; the search objectives
+  are predicted size first, then validation perplexity, with perplexity at most 11 (`TARGET_PPL`) as the limit.
+- The final model tested in Stage 4 (backends and accuracy) is the one under the limit that is best on the first
+  objective, so the smallest with perplexity at most 11 (was the lowest perplexity).
+- Searcher tries run no backend and no accuracy test; only the final model does (Mohammad, 2026-10-25: "we test them
+  in stage 4"). Backend latency rows in the report get tokens per second next to them.
+
 ## 2026-10-25: The chained search again, judged on the final model, with an accuracy test
 
 - Mohammad (2026-10-25): "the framework is sequential now", "stage 1 then 2 then 3 then see if its the best model":

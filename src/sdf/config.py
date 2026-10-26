@@ -219,8 +219,8 @@ class SearchConfig:
     stage2_methods: list[str] = field(default_factory=lambda: ["unstructured_prune", "structured_prune"])
     stage3_methods: list[str] = field(default_factory=lambda: ["rtn_kv"])
     # the two numbers to make small, and the metric the memory limit is checked against
-    # (Mohammad, 2026-10-19: memory is the model size; latency from vLLM, so eval.vllm_python must be set)
-    objectives: list[str] = field(default_factory=lambda: ["ppl_val", "vllm_decode_ms_per_token"])
+    # (Mohammad, 2026-10-19: memory is the model size; 2026-10-25: backends only in Stage 4, so no vLLM objective)
+    objectives: list[str] = field(default_factory=lambda: ["ppl_val", "predicted_weight_memory_gb"])
     memory_metric: str = "predicted_weight_memory_gb"
     mfbo_eta: int = 3  # successive halving: keep the best 1/eta at each rung, with eta times the windows
     finalists: int = 3  # MODE "stage_search": chained models built under the limit from the best Stage 1 + Stage 2 pairs

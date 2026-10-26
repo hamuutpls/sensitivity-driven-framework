@@ -150,10 +150,19 @@ def test_vllm_latency_is_measured_on_the_stage2_model(cfg, tiny_llama, tokenizer
     assert not rec(_point(c, prune_ratio_aggressive=0.5))["cached"]  # a failure is tried again, not cached
 
 
-def test_a_vllm_objective_without_vllm_stops_before_any_try(cfg):
-    c = cfg.with_overrides({"search.objectives": ["ppl_val", "vllm_decode_ms_per_token"]})
-    with pytest.raises(ValueError, match="eval.vllm_python"):
+def test_a_backend_objective_stops_before_any_try(cfg):
+    # backends test only the final model (Stage 4), so no try has a backend metric to optimise
+    c = cfg.with_overrides({"eval.vllm_python": "py", "search.objectives": ["ppl_val", "vllm_decode_ms_per_token"]})
+    with pytest.raises(ValueError, match="Stage 4"):
         run_search(start_run(c))
+
+
+def test_a_try_and_the_final_model_never_share_a_cache_entry(cfg):
+    # the final model runs the backends; a try's backend-free numbers must not be read back for it
+    ctx = start_run(cfg.with_overrides({"eval.vllm_python": "py"}))
+    point = technique_space(cfg).make({})
+    tries = ctx.cfg.with_overrides(search.NO_BACKENDS)
+    assert search.point_key(ctx, tries, point, []) != search.point_key(ctx, ctx.cfg, point, [])
 
 
 def test_mfbo_measures_the_best_on_more_windows(cfg, tiny_llama, tokenizer):
@@ -222,6 +231,52 @@ def _fake_evaluate(over=lambda p: p["sensitive_threshold"] > 0.3, crash=lambda p
                                     "decode_ms_per_token_mean": 1 + point["prune_ratio_aggressive"],
                                     "predicted_weight_memory_gb": size}, "errors": {}, "met": True, "shortfall": {}}
     return fake
+
+
+def test_more_tries_never_rebuild_a_combination_an_earlier_run_tried(cfg, monkeypatch):
+    # Mohammad, 2026-10-26: "if we run 30 tries and we do not find a suitable model, we add 10 more tries of
+    # DIFFERENT combinations"; the combinations tried are kept in a CSV with the cache
+    built = []
+    fake = _fake_evaluate(over=lambda p: False)
+    monkeypatch.setattr(search, "evaluate", lambda ctx, point, max_windows=None, **kw:
+                        built.append((ctx.run_id, json.dumps([point, max_windows], sort_keys=True)))
+                        or fake(ctx, point, max_windows))
+    c = cfg.with_overrides({"search.searchers": ["mobo"], "search.extra_stage1": []})
+    first = start_run(c.with_overrides({"search.budget": 2, "run.run_id": "b2"}))
+    run_search(first)
+    csv_path = search.tried_path(first)
+    assert csv_path.exists() and len(csv_path.read_text().splitlines()) == 1 + 2
+    second = start_run(c.with_overrides({"search.budget": 4, "run.run_id": "b4"}))
+    out = run_search(second)
+    old = {k for r, k in built if r == "b2"}
+    new = [k for r, k in built if r == "b4"]
+    assert len(new) == 2 and not old & set(new)  # 2 more, both new: the first 2 came back from the CSV
+    trials = json.loads(out["search_trials"].read_text())
+    assert [t["earlier_run"] for t in trials] == ["b2", "b2", None, None]
+    assert len(csv_path.read_text().splitlines()) == 1 + 4
+    assert "tried in an earlier run, so not built again" in out["search_report"].read_text()
+
+
+def test_the_tried_log_reuses_only_good_results_under_the_same_settings(cfg):
+    ctx = start_run(cfg.with_overrides({"run.run_id": "a"}))
+    log = search.TriedLog(search.tried_path(ctx), "a")
+    space = technique_space(cfg)
+    good, bad = space.make({"sensitive_threshold": 0.3}), space.make({"sensitive_threshold": 0.6})
+    trial = {"n": 1, "windows": 6, "over_limit": False, "ok": True, "met": True, "metrics": {"ppl_val": 10.5}}
+    log.add(ctx, "mobo", {**trial, "point": good}, {"metrics": {"ppl_val": 10.5}, "dir": "d"})
+    log.add(ctx, "mobo", {**trial, "point": bad, "ok": False}, {"error": "OutOfMemoryError", "dir": "d"})
+    with search.tried_path(ctx).open("a", encoding="utf-8") as f:
+        f.write('x,b,mobo,3,6,"{\\"metr')  # a row cut short by a crash
+    later = search.TriedLog(search.tried_path(ctx), "b")
+    assert later.get(ctx, good, 6)["metrics"] == {"ppl_val": 10.5} and later.get(ctx, good, 6)["run_id"] == "a"
+    assert later.get(ctx, bad, 6) is None  # a failure may pass next time: built again
+    assert later.get(ctx, good, 3) is None  # more or fewer windows: a new measurement
+    changed = start_run(cfg.with_overrides({"run.run_id": "b", "calibration.seq_len": 64}))
+    assert later.get(changed, good, 6) is None  # other settings: a new combination
+    other = space.make({"sensitive_threshold": 0.4})
+    log.add(ctx, "mobo", {**trial, "point": other, "n": 3}, {"metrics": {"ppl_val": 10.7}, "dir": "d"})
+    again = search.TriedLog(search.tried_path(ctx), "c")  # the row after the cut one starts on its own line
+    assert len(again.rows) == 2 and again.get(ctx, other, 6)["metrics"] == {"ppl_val": 10.7}
 
 
 def test_only_models_built_for_this_searcher_use_up_the_budget(cfg, monkeypatch):
