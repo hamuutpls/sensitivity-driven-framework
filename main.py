@@ -140,8 +140,9 @@ QUAROT_K_BITS = 4  # 2 | 3 | 4 | 8: key bits for QuaRot KV (standard method)
 #    (Our method) from section 2's parameters and one technique per stage, and measures it. Stage 1 always follows
 #    the joint weight x activation plan (Mohammad, 2026-10-20: "the goal is joint planning").
 # =====================================================================================================
-TARGET_MEMORY_GB = 1.0  # the final model's size (predicted from the plan) must be at most this (Mohammad, 2026-10-25:
-# "the size must not be more than 1 GB ... for the FINAL model"; was 1.1)
+TARGET_MEMORY_GB = None  # no size limit: the search makes the final model as small as it can while its perplexity
+# stays at most TARGET_PPL (Mohammad, 2026-10-26: "lets see how much smaller can we get the model, while keeping 11 ppl
+# or lower"; was 1.0, before that 1.1)
 TARGET_PPL = 11.0  # the final model's validation perplexity must be at most this (Mohammad, 2026-10-25: "the limit of
 # perplexity must be 11"; None: no limit)
 SEARCH_REFINE_ROUNDS = 0  # MODE "search": Stage 0 joint refinement rounds in each try (Mohammad, 2026-10-25: "no
@@ -149,7 +150,8 @@ SEARCH_REFINE_ROUNDS = 0  # MODE "search": Stage 0 joint refinement rounds in ea
 SEARCHERS = ["mobo", "mfbo"]  # each gets the same budget and seed (Mohammad, 2026-10-25: MOBO and MFBO; "nsga3" also works)
 SEARCH_BUDGET = 100  # full tries per searcher (MFBO's rough tries count by their share of the windows, so it builds
 # more models); a try over the limit is not built and not counted
-SEARCH_OBJECTIVES = ["ppl_val", "predicted_weight_memory_gb"]  # made as small as possible, on Hugging Face: tries run no
+SEARCH_OBJECTIVES = ["predicted_weight_memory_gb", "ppl_val"]  # made as small as possible, size first (the final model
+# tested in Stage 4 is the smallest with perplexity at most TARGET_PPL), on Hugging Face: tries run no
 # backend (Mohammad, 2026-10-25: "we do not test backends in stages 1 and 2. we test them in stage 4"); the backends
 # below measure only the final model
 VLLM_PYTHON = None  # the Python of the vLLM install (Linux/Colab only), e.g. "/content/vllm-venv/bin/python"; final model only
@@ -162,8 +164,8 @@ SEARCH_STAGE1 = [f"{w}_with_{a}" for w in ("rtn", "gptq", "awq", "omniquant", "s
 SEARCH_STAGE2 = ["unstructured_prune", "structured_prune"]  # pruning techniques (low-rank cannot follow Stage 1)
 SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]  # KV-cache techniques
 SEARCH_FINALISTS = 3  # MODE "stage_search": chained models built and measured under the limit, best pairs first
-# MODE "search": lm-eval tasks the lowest-perplexity final model under the limit is tested on (Mohammad, 2026-10-25:
-# "the final model that has the best perplexity is then tested for accuracy"); [] = no accuracy test
+# MODE "search": lm-eval tasks the smallest final model with perplexity at most TARGET_PPL is tested on (Mohammad,
+# 2026-10-26: "how much smaller can we get the model, while keeping 11 ppl or lower"); [] = no accuracy test
 SEARCH_ACCURACY_TASKS = ["arc_easy", "piqa", "hellaswag", "winogrande"]  # full sets; picked as quick and standard
 # MODE "search": one chained try each after the search (the best setting with only its Stage 1 technique changed), for
 # those no search method measured (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"); shown in

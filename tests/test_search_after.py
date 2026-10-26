@@ -73,6 +73,19 @@ def test_the_lowest_perplexity_final_model_is_tested_for_accuracy_next_to_the_un
     assert json.dumps(acc, default=str)
 
 
+def test_the_final_model_is_the_best_on_the_first_objective(cfg, monkeypatch):  # noqa: F811
+    # size first (Mohammad, 2026-10-26: "how much smaller can we get the model, while keeping 11 ppl or lower"):
+    # the smallest final model under the limit goes to Stage 4, not the one with the lowest perplexity
+    built = []
+    monkeypatch.setattr(search, "evaluate", lambda ctx, point, **kw: built.append(point) or {"metrics": {}, "dir": "d"})
+    c = cfg.with_overrides({"eval.vllm_python": "py"})
+    small = {**_trial(_point(c, sensitive_threshold=0.9), 1, ppl_val=10.9), "values": [0.7, 10.9]}
+    accurate = {**_trial(_point(c, sensitive_threshold=0.3), 2, ppl_val=10.2), "values": [0.95, 10.2]}
+    smaller_over = {**_trial(_point(c, sensitive_threshold=0.8), 3, met=False, ppl_val=11.5), "values": [0.6, 11.5]}
+    out = final_model(start_run(c), [accurate, smaller_over, small], [])
+    assert out["n"] == 1 and built == [small["point"]]
+
+
 def test_a_failing_after_step_drops_only_itself(cfg, monkeypatch):  # noqa: F811
     from test_search import _fake_evaluate
 

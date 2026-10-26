@@ -233,6 +233,30 @@ def _fake_evaluate(over=lambda p: p["sensitive_threshold"] > 0.3, crash=lambda p
     return fake
 
 
+def test_more_tries_never_rebuild_a_combination_an_earlier_run_tried(cfg, monkeypatch):
+    # Mohammad, 2026-10-26: "if we run 30 tries and we do not find a suitable model, we add 10 more tries of
+    # DIFFERENT combinations"; the combinations tried are kept in a CSV with the cache
+    built = []
+    fake = _fake_evaluate(over=lambda p: False)
+    monkeypatch.setattr(search, "evaluate", lambda ctx, point, max_windows=None, **kw:
+                        built.append((ctx.run_id, json.dumps([point, max_windows], sort_keys=True)))
+                        or fake(ctx, point, max_windows))
+    c = cfg.with_overrides({"search.searchers": ["mobo"], "search.extra_stage1": []})
+    first = start_run(c.with_overrides({"search.budget": 2, "run.run_id": "b2"}))
+    run_search(first)
+    csv_path = search.tried_path(first)
+    assert csv_path.exists() and len(csv_path.read_text().splitlines()) == 1 + 2
+    second = start_run(c.with_overrides({"search.budget": 4, "run.run_id": "b4"}))
+    out = run_search(second)
+    old = {k for r, k in built if r == "b2"}
+    new = [k for r, k in built if r == "b4"]
+    assert len(new) == 2 and not old & set(new)  # 2 more, both new: the first 2 came back from the CSV
+    trials = json.loads(out["search_trials"].read_text())
+    assert [t["earlier_run"] for t in trials] == ["b2", "b2", None, None]
+    assert len(csv_path.read_text().splitlines()) == 1 + 4
+    assert "tried in an earlier run, so not built again" in out["search_report"].read_text()
+
+
 def test_only_models_built_for_this_searcher_use_up_the_budget(cfg, monkeypatch):
     crash = {128: "before", 64: "building"}
     monkeypatch.setattr(search, "evaluate", _fake_evaluate(crash=lambda p: crash.get(p["calib_samples"])))

@@ -13,7 +13,7 @@ from openpyxl.styles import Font
 from sdf.eval import vllm_backend  # noqa: F401 - registers the vLLM metric names
 from sdf.reporting.metrics import is_number, label
 from sdf.run import RunContext
-from sdf.search import FAILED, hypervolume, pareto
+from sdf.search import FAILED, hypervolume, pareto, tried_path
 from sdf.search_space import SearchSpace
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.logging import get_logger
@@ -100,7 +100,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
                         accuracy: dict[str, Any] | None = None) -> dict[str, Path]:
     """`intro`: the report's opening paragraph when the search is not the chained one (a per-stage search).
     `extras`: tries made apart from the searchers (sdf.search.extra_tries), in a section of their own. `accuracy`:
-    the lowest-perplexity final model's Stage 4 test, backends and task accuracy (sdf.search.final_model)."""
+    the Stage 4 test of the final model best on the first objective, backends and task accuracy (sdf.search.final_model)."""
     cfg = ctx.cfg
     s = cfg.search
     d = ctx.run_dir / "search"
@@ -186,6 +186,9 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         + "; Stage 2 " + ", ".join(setting_value("stage2_method", m) for m in s.stage2_methods)
         + "; Stage 3 " + ", ".join(setting_value("stage3_method", m) for m in s.stage3_methods) + ".",
         f"- Tries over the limit, so not built: {sum(1 for t in trials if t.get('over_limit'))} of {len(trials)}.",
+        f"- Combinations tried in an earlier run, so not built again (their earlier result is used): "
+        f"{sum(1 for t in trials if t.get('earlier_run'))} of {len(trials)}. Every combination tried so far is listed "
+        f"in {tried_path(ctx)}.",
         f"- Tries that failed (could not be built or measured): "
         f"{sum(1 for t in trials if not t['ok'] and not t.get('over_limit'))} of "
         f"{len(trials)}; the reasons are in the Trials sheet of search_results.xlsx.", "",
@@ -193,10 +196,10 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
     if accuracy:
         acc = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("acc_", "downstream_acc"))}
         backends = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("vllm_", "llamacpp_", "trtllm_"))}
+        pick = f"the final model under the limit with the best {label(s.objectives[0]).lower()}"
         lines += [
             "## The final model on the backends (Stage 4)", "",
-            "**What this shows:** the final model with the lowest validation perplexity under the limit "
-            f"({accuracy['searcher'].upper()} try #{accuracy['n']}) measured on each serving backend; the tries "
+            f"**What this shows:** {pick} ({accuracy['searcher'].upper()} try #{accuracy['n']}) measured on each serving backend; the tries "
             "themselves ran on Hugging Face only. **What it means:** how fast and how accurate the chosen model is "
             "where it would be deployed. A backend re-rounds the model into its own file format, so its perplexity "
             "is that file's, not the verdict.", "",
@@ -210,8 +213,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             "**What this shows:** how many test questions the best final model still answers correctly, next to "
             "the uncompressed TinyLlama. **What it means:** a small change says the compression kept the model's "
             "ability; a large drop says the lower perplexity did not carry over to answering questions.", "",
-            f"The final model with the lowest validation perplexity under the limit ({accuracy['searcher'].upper()} "
-            f"try #{accuracy['n']}) was built again and tested on multiple-choice tasks: the share of questions it "
+            f"{pick[0].upper() + pick[1:]} ({accuracy['searcher'].upper()} try #{accuracy['n']}) was built again and tested on multiple-choice tasks: the share of questions it "
             "answers correctly (higher is better), next to the uncompressed model's on the same tasks, measured in the "
             "same run.", "",
             _md([["Task", "Final model", "Uncompressed model", "Change", "Change, %"]]

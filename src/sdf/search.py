@@ -15,6 +15,7 @@ search_report.md, search_results.xlsx (Trials, Pareto, Searcher comparison, Best
 
 from __future__ import annotations
 
+import csv
 import json
 import math
 import random
@@ -175,8 +176,10 @@ class Recorder:
     Only built models use up the budget. `evaluator`: what measures a point, with evaluate()'s arguments and result
     (default evaluate(), the chained model); a per-stage search passes its own stage's."""
 
-    def __init__(self, ctx: RunContext, searcher: str, full_windows: int, evaluator: Callable | None = None, **kw: Any):
+    def __init__(self, ctx: RunContext, searcher: str, full_windows: int, evaluator: Callable | None = None,
+                 tried: TriedLog | None = None, **kw: Any):
         self.ctx, self.searcher, self.full, self.evaluator, self.kw = ctx, searcher, full_windows, evaluator, kw
+        self.tried = tried  # combinations tried in earlier runs: their result is reused, never rebuilt
         self.trials: list[dict[str, Any]] = []
         s = ctx.cfg.search
         self.objectives = s.objectives
@@ -198,7 +201,8 @@ class Recorder:
     def __call__(self, point: dict[str, Any], windows: int | None = None) -> dict[str, Any]:
         windows = windows or self.full
         t0 = time.perf_counter()
-        r = (self.evaluator or evaluate)(self.ctx, point, None if windows == self.full else windows, **self.kw)
+        earlier = self.tried.get(self.ctx, point, windows) if self.tried else None
+        r = earlier or (self.evaluator or evaluate)(self.ctx, point, None if windows == self.full else windows, **self.kw)
         values = [r.get("metrics", {}).get(o) for o in self.objectives]
         built = "not_built" not in r and ("error" not in r or r.get("attempted", False))
         repeat = r["cached"] and any(t["point"] == point and t["windows"] == windows and t["built"]
@@ -214,11 +218,75 @@ class Recorder:
              "time_s": time.perf_counter() - t0, "cached": r["cached"],
              "error": r.get("error") or r.get("not_built") or (None if ok else "; ".join(f"{k}: {v}" for k, v in r.get("errors", {}).items())
                                          or f"no {[o for o, v in zip(self.objectives, values) if v is None]}")}
+        t["earlier_run"] = earlier["run_id"] if earlier else None
+        if self.tried and not earlier:
+            self.tried.add(self.ctx, self.searcher, t, r)
         self.trials.append(t)
         log.info("search %s #%d (%d windows): %s -> %s", self.searcher, t["n"], windows,
                  {k: v for k, v in point.items() if k.endswith("_method")},  # a per-stage search has one
                  "failed: " + str(t["error"]) if not ok else dict(zip(self.objectives, values), met=t["met"]))
         return t
+
+
+class TriedLog:
+    """Every combination the search has tried, in a CSV kept with the cache, so it outlives a run (Mohammad,
+    2026-10-26: "adding tries to our runtime must not retry combinations we already tried", "maybe we should make a
+    csv of all the combinations"). A combination is the point (numbers to 3 decimals) on a number of windows, so MFBO
+    can still measure a point on more windows. Proposed again in a later run, it is not built: its earlier result
+    comes back, the requirement checked again, and it counts as that run's try. A point not built (over a size limit)
+    is not logged: nothing was tried. Within one run the cache already builds a point once."""
+
+    METRICS = ("ppl_val", "ppl_heldout", "predicted_weight_memory_gb")
+
+    def __init__(self, path: Path, run_id: str):
+        self.path, self.run_id = Path(path), run_id
+        self.rows: dict[str, dict[str, Any]] = {}
+        if self.path.exists():
+            with self.path.open(newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    if row["run_id"] != run_id:  # this run's own rows are its cache's business
+                        self.rows[row["combination"]] = row
+
+    @staticmethod
+    def combination(ctx: RunContext, point: dict[str, Any], windows: int) -> str:
+        return json.dumps({"model": ctx.cfg.model.name, "windows": windows,
+                           **{k: round(v, 3) if isinstance(v, float) else v for k, v in sorted(point.items())}},
+                          sort_keys=True)
+
+    def get(self, ctx: RunContext, point: dict[str, Any], windows: int) -> dict[str, Any] | None:
+        row = self.rows.get(self.combination(ctx, point, windows))
+        if row is None:
+            return None
+        r = json.loads(row["result"])
+        if "error" not in r:
+            check = check_requirement(ctx.cfg, r["metrics"])
+            r.update(met=check.met is True, shortfall=check.shortfall)
+        return {**r, "cached": True, "run_id": row["run_id"]}
+
+    def add(self, ctx: RunContext, searcher: str, t: dict[str, Any], r: dict[str, Any]) -> None:
+        if t["over_limit"]:
+            return
+        keep = {k: r[k] for k in ("metrics", "error", "errors", "attempted", "dir") if k in r}
+        row = {"combination": self.combination(ctx, t["point"], t["windows"]), "run_id": self.run_id,
+               "searcher": searcher, "n": t["n"], "windows": t["windows"], **t["point"],
+               "status": "ok" if t["ok"] else "failed", "met": t["met"],
+               **{m: t["metrics"].get(m) for m in self.METRICS}, "result": json.dumps(keep, default=str)}
+        new = not self.path.exists()
+        if new:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fields = list(row)
+        else:  # the file's own columns; "combination" and "result" hold everything a reuse needs
+            with self.path.open(newline="", encoding="utf-8") as f:
+                fields = next(csv.reader(f))
+        with self.path.open("a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+            if new:
+                w.writeheader()
+            w.writerow(row)
+
+
+def tried_path(ctx: RunContext) -> Path:
+    return Path(ctx.cache.root) / "search_tried.csv"
 
 
 def violation(result: dict[str, Any]) -> float:
@@ -387,15 +455,16 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     tries = RunContext(cfg.with_overrides({**NO_BACKENDS, "eval.downstream_tasks": []}), ctx.run_id, ctx.run_dir,
                        ctx.cache)  # accuracy tasks also only on the final model
     trials: list[dict[str, Any]] = []
+    tried = TriedLog(tried_path(ctx), ctx.run_id)
     for name in s.searchers:
-        rec = Recorder(tries, name, full, **kw)
+        rec = Recorder(tries, name, full, tried=tried, **kw)
         extra = {"eta": s.mfbo_eta} if name == "mfbo" else {}
         SEARCHERS[name](rec, space, s.budget, cfg.run.seed, **extra)
         trials += rec.trials
         atomic_write_text(ctx.run_dir / "search" / "trials.json", json.dumps(trials, indent=2, default=str))
     extras, final = [], None
     try:  # neither step may cost the report of hours of tries, nor the other step
-        extras = extra_tries(tries, trials, s.extra_stage1, full, **kw)
+        extras = extra_tries(tries, trials, s.extra_stage1, full, tried=tried, **kw)
     except Exception:  # noqa: BLE001
         log.exception("the extra Stage 1 tries failed; the report is written without them")
     try:
@@ -412,12 +481,12 @@ NO_BACKENDS = {"eval.vllm_python": None, "eval.trtllm_python": None, "eval.llama
 
 
 def final_model(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[str], **kw: Any) -> dict[str, Any] | None:
-    """Stage 4 for the final model with the lowest validation perplexity under the limit: built again with the
-    backends in ctx.cfg.eval and tested for accuracy on `tasks` (eval.downstream_tasks, lm-eval; Mohammad,
-    2026-10-25: "the final model that has the best perplexity is then tested for accuracy", "then that accuracy will
-    be compared with tinyllama accuracy"): "fp16" holds the uncompressed model's accuracy, measured in the same run
+    """Stage 4 for the final model under the limit that is best on the first objective (Mohammad, 2026-10-26: "lets
+    see how much smaller can we get the model, while keeping 11 ppl or lower", so main.py puts the size first): built
+    again with the backends in ctx.cfg.eval and tested for accuracy on `tasks` (eval.downstream_tasks, lm-eval;
+    Mohammad, 2026-10-25: "then that accuracy will be compared with tinyllama accuracy"): "fp16" holds the uncompressed model's accuracy, measured in the same run
     under the same conditions. None when there is nothing to test (no task, no backend) or no try met the limit."""
-    best = min((t for t in trials if t["full"] and t["met"]), key=lambda t: t["metrics"]["ppl_val"], default=None)
+    best = min((t for t in trials if t["full"] and t["met"]), key=lambda t: t["values"][0], default=None)
     if best is None or not tasks and all(getattr(ctx.cfg.eval, k.split(".")[1]) is None for k in NO_BACKENDS):
         return None
     from sdf.stage0.run import fp16_key, setup

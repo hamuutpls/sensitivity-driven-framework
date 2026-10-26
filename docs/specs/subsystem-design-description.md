@@ -170,10 +170,10 @@ the original plan; run without search: [`seq-full-run`](../diagrams/seq-full-run
 2. For each searcher (MOBO, then MFBO), until its trial budget is used: ask for a candidate, run Stage 0 (cached
    profile, one-shot joint plan, no refinement), then build one chained model, Stage 1 then Stage 2 on it then
    Stage 3 on that, measure the final model (HF and vLLM), and tell the searcher the objectives (§10). Only the final
-   model is judged against the limits: size at most 1 GB and validation perplexity at most 11.
+   model is judged: validation perplexity at most 11, made as small as possible (no size limit, 2026-10-26).
 3. Take each searcher's Pareto front among the models that meet the limits.
 4. One extra try each for the Stage 1 techniques asked for that no searcher built (SpQR, QuIP, QuIP#).
-5. Test the lowest-perplexity final model for accuracy (lm-eval) next to the uncompressed model, then write the
+5. Test the smallest final model with perplexity at most 11 on the backends (Stage 4) and for accuracy (lm-eval) next to the uncompressed model, then write the
    search report.
 
 ### 3.5 Information view: run folder
