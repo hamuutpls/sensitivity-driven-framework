@@ -254,7 +254,71 @@ def test_more_tries_never_rebuild_a_combination_an_earlier_run_tried(cfg, monkey
     trials = json.loads(out["search_trials"].read_text())
     assert [t["earlier_run"] for t in trials] == ["b2", "b2", None, None]
     assert len(csv_path.read_text().splitlines()) == 1 + 4
-    assert "tried in an earlier run, so not built again" in out["search_report"].read_text()
+    assert "an earlier run already built, so not built again" in out["search_report"].read_text()
+
+
+def test_the_final_pick_sees_an_earlier_runs_good_tries_this_run_did_not_propose_again(cfg, monkeypatch):
+    # the limit changed (Mohammad, 2026-10-26: "then increase the threshold to 11.5"), so the searcher proposes other
+    # points; the earlier run's models under the new limit must still count for the final model
+    monkeypatch.setattr(search, "evaluate", _fake_evaluate(over=lambda p: False))
+    picked = []
+    monkeypatch.setattr(search, "final_model", lambda ctx, trials, tasks, **kw: picked.extend(trials))
+    c = cfg.with_overrides({"search.searchers": ["mobo"], "search.extra_stage1": [], "search.budget": 1})
+    first = start_run(c.with_overrides({"run.run_id": "a"}))
+    windows = json.loads(run_search(first)["search_trials"].read_text())[0]["windows"]
+    log = search.TriedLog(search.tried_path(first), "a")
+    good, over = _point(c, sensitive_threshold=1 / 3), _point(c, sensitive_threshold=0.7)
+    trial = {"windows": windows, "over_limit": False, "ok": True, "met": True}
+    wide = start_run(c.with_overrides({"run.run_id": "a", "search.stage1_methods": ["rtn_with_rtn_act",
+                                                                                     "gptq_with_rtn_act"]}))
+    gptq = {**good, "stage1_method": "gptq_with_rtn_act"}  # since taken out of search.stage1_methods
+    for n, point, size in ((5, good, 0.5), (6, over, 1.5), (7, gptq, 0.2)):  # 1.5 GB: over the 1 GB limit now
+        metrics = {"ppl_val": 9.0, "decode_ms_per_token_mean": 1.0, "predicted_weight_memory_gb": size}
+        log.add(wide, "mobo", {**trial, "n": n, "point": point, "metrics": metrics}, {"metrics": metrics, "dir": "d"})
+    log.add(first, "extra", {**trial, "n": 8, "point": {**good, "sensitive_threshold": 0.15}, "metrics": metrics},
+            {"metrics": metrics, "dir": "d"})  # the extra tries stay apart from the pick, as in their own run
+    picked.clear()
+    run_search(start_run(c.with_overrides({"run.run_id": "b"})))
+    earlier = {t["n"]: t for t in picked if t.get("from_log") and t["n"] in (5, 6, 7, 8)}
+    assert earlier[5]["point"] == good and earlier[5]["met"] and earlier[5]["values"] == [9.0, 1.0]  # full precision
+    assert not earlier[6]["met"]  # the requirement checked again, not copied
+    assert 7 not in earlier and 8 not in earlier  # 7 is outside this run's search space (building it would fail); 8 is an extra try
+    assert len(picked) == len({json.dumps([t["point"], t["windows"]], sort_keys=True) for t in picked})  # no doubles
+    picked.clear()
+    run_search(start_run(c.with_overrides({"run.run_id": "b2", "calibration.seq_len": 64})))
+    assert not [t for t in picked if t.get("earlier_run") == "a" and t["n"] in (5, 6)]  # other settings: not the same
+
+
+def test_a_setting_the_techniques_do_not_read_never_makes_a_new_model(cfg, monkeypatch):
+    # Colab, 2026-10-26: MOBO #22 and #23 differed only in QuaRot's key bits under RTN KV and built the same model
+    # twice; Mohammad: "must not retry combinations we already tried"
+    built = []
+    fake = _fake_evaluate(over=lambda p: False)
+
+    def evaluate(ctx, point, max_windows=None, **kw):
+        r = fake(ctx, point, max_windows)
+        built.extend([] if r["cached"] else [point])
+        return r
+
+    monkeypatch.setattr(search, "evaluate", evaluate)
+    c = cfg.with_overrides({"search.stage3_methods": ["rtn_kv", "quarot_kv"],
+                            "search.stage1_methods": ["rtn_with_rtn_act", "rtn_with_smoothquant"]})
+    ctx = start_run(c.with_overrides({"run.run_id": "a"}))
+    log = search.TriedLog(search.tried_path(ctx), "a")
+    rec = Recorder(ctx, "mobo", 6, tried=log)
+    base = _point(c, stage3_method="rtn_kv", quarot_k_bits=4, smoothquant_alpha=0.5)
+    first = rec(base)
+    same = rec({**base, "quarot_k_bits": 2, "smoothquant_alpha": 0.9})  # RTN KV and RTN activations read neither
+    assert len(built) == 1 and same["values"] == first["values"] and same["earlier_run"] == "a"
+    assert rec(base)["earlier_run"] is None and len(built) == 1  # the very same point: the cache, as before
+    rec({**base, "stage3_method": "quarot_kv"})
+    rec({**base, "stage3_method": "quarot_kv", "quarot_k_bits": 2})  # only QuaRot KV's standard row reads them
+    rec({**base, "smoothquant_alpha": 0.9, "stage1_method": "rtn_with_smoothquant"})
+    rec({**base, "smoothquant_alpha": 0.2, "stage1_method": "rtn_with_smoothquant"})  # SmoothQuant reads its strength
+    assert len(built) == 4
+    later = Recorder(start_run(c.with_overrides({"run.run_id": "b"})), "mobo", 6,
+                     tried=search.TriedLog(search.tried_path(ctx), "b"))
+    assert later({**base, "quarot_k_bits": 8})["earlier_run"] == "a" and len(built) == 4  # nor in a later run
 
 
 def test_the_tried_log_reuses_only_good_results_under_the_same_settings(cfg):

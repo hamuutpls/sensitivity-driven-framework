@@ -188,9 +188,11 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         + "; Stage 2 " + ", ".join(setting_value("stage2_method", m) for m in s.stage2_methods)
         + "; Stage 3 " + ", ".join(setting_value("stage3_method", m) for m in s.stage3_methods) + ".",
         f"- Tries over the limit, so not built: {sum(1 for t in trials if t.get('over_limit'))} of {len(trials)}.",
-        f"- Combinations tried in an earlier run, so not built again (their earlier result is used): "
-        f"{sum(1 for t in trials if t.get('earlier_run'))} of {len(trials)}. Every combination tried so far is listed "
-        f"in {tried_path(ctx)}.",
+        f"- Tries whose model an earlier run already built, so not built again (its earlier result is used): "
+        f"{sum(1 for t in trials if t.get('earlier_run') not in (None, ctx.run_id))} of {len(trials)}. Tries that "
+        f"were the same model as an earlier try of this run (they differ only in a setting their techniques do not "
+        f"read), so not built either: {sum(1 for t in trials if t.get('earlier_run') == ctx.run_id)}. Every "
+        f"combination tried so far is listed in {tried_path(ctx)}.",
         f"- Tries that failed (could not be built or measured): "
         f"{sum(1 for t in trials if not t['ok'] and not t.get('over_limit'))} of "
         f"{len(trials)}; the reasons are in the Trials sheet of search_results.xlsx.", "",
@@ -199,9 +201,16 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         acc = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("acc_", "downstream_acc"))}
         backends = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("vllm_", "llamacpp_", "trtllm_"))}
         pick = f"the final model under the limit with the best {label(s.objectives[0]).lower()}"
+        which = f"{accuracy['searcher'].upper()} try #{accuracy['n']}" + (
+            f" of the earlier run {accuracy['earlier_run']}, a combination this run did not try again"
+            if accuracy.get("earlier_run") else "")
         lines += [
             "## The final model on the backends (Stage 4)", "",
-            f"**What this shows:** {pick} ({accuracy['searcher'].upper()} try #{accuracy['n']}) measured on each serving backend; the tries "
+            f"The final model is {which}: " + ", ".join(
+                f"{label(m).lower()} {_fmt(v)}" for m, v in (accuracy.get("try_metrics") or {}).items()
+                if m in ("predicted_weight_memory_gb", "ppl_val", "ppl_heldout")) + "; settings: " + ", ".join(
+                f"{SETTING_NAMES.get(k, k).lower()} {setting_value(k, v)}" for k, v in sorted((accuracy.get("point") or {}).items())) + ".", "",
+            f"**What this shows:** {pick} ({which}) measured on each serving backend; the tries "
             "themselves ran on Hugging Face only. **What it means:** how fast and how accurate the chosen model is "
             "where it would be deployed. A backend re-rounds the model into its own file format, so its perplexity "
             "is that file's, not the verdict.", "",
@@ -215,7 +224,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             "**What this shows:** how many test questions the best final model still answers correctly, next to "
             "the uncompressed TinyLlama. **What it means:** a small change says the compression kept the model's "
             "ability; a large drop says the lower perplexity did not carry over to answering questions.", "",
-            f"{pick[0].upper() + pick[1:]} ({accuracy['searcher'].upper()} try #{accuracy['n']}) was built again and tested on multiple-choice tasks: the share of questions it "
+            f"{pick[0].upper() + pick[1:]} ({which}) was built again and tested on multiple-choice tasks: the share of questions it "
             "answers correctly (higher is better), next to the uncompressed model's on the same tasks, measured in the "
             "same run.", "",
             _md([["Task", "Final model", "Uncompressed model", "Change", "Change, %"]]
