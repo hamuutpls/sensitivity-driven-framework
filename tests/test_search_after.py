@@ -109,6 +109,7 @@ def test_tries_run_no_backend_and_the_final_model_runs_them_in_stage4(cfg, monke
     assert last[0] == "py"  # the final model: vLLM
     text = out["search_report"].read_text()
     assert "## The final model on the backends (Stage 4)" in text and "| 3 |" in text
+    assert "as tokens per second | 333" in text  # 3 ms per token next to its 333 tokens/s
     # nothing to test in Stage 4 (no backend, no task): no final step
     assert final_model(start_run(cfg), [_trial(_point(cfg), 1, ppl_val=10.0)], []) is None
 

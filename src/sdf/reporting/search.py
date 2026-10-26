@@ -11,7 +11,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 
 from sdf.eval import vllm_backend  # noqa: F401 - registers the vLLM metric names
-from sdf.reporting.metrics import label
+from sdf.reporting.metrics import is_number, label
 from sdf.run import RunContext
 from sdf.search import FAILED, hypervolume, pareto
 from sdf.search_space import SearchSpace
@@ -82,6 +82,17 @@ def hypervolume_curve(trials: list[dict[str, Any]], searcher: str, ref: list[flo
     """(cost spent, hypervolume so far) after each of `searcher`'s evaluations."""
     ts = [t for t in trials if t["searcher"] == searcher]
     return [(sum(t["cost"] for t in ts[: i + 1]), hypervolume(ts[: i + 1], ref)) for i in range(len(ts))]
+
+
+def _backend_rows(backends: dict[str, Any]) -> list[list[str]]:
+    """One row per backend measure, each per-token latency followed by its tokens per second (report rules)."""
+    rows = []
+    for m, v in backends.items():
+        rows.append([label(m), _fmt(v)])
+        if m.endswith("_decode_ms_per_token") and is_number(v) and v > 0 and \
+                m.replace("_ms_per_token", "_tokens_per_s") not in backends:
+            rows.append([f"{label(m)}, as tokens per second", _fmt(1000.0 / v)])
+    return rows
 
 
 def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: SearchSpace,
@@ -189,7 +200,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             "themselves ran on Hugging Face only. **What it means:** how fast and how accurate the chosen model is "
             "where it would be deployed. A backend re-rounds the model into its own file format, so its perplexity "
             "is that file's, not the verdict.", "",
-            _md([["Measure", "Value"]] + [[label(m), _fmt(v)] for m, v in backends.items()])
+            _md([["Measure", "Value"]] + _backend_rows(backends))
             if backends else (f"The final model could not be built again: {accuracy['error']}." if accuracy.get("error")
                               else "No backend result: " + ("; ".join(f"{k} failed: {v}" for k, v in
                                                                       accuracy["errors"].items())
