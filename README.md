@@ -32,6 +32,8 @@ python main.py
 comparison report; `MODE = "prune_sweep"` really prunes the model at every level in `PRUNE_SWEEP_RATIOS`
 (10% to 100% by default) and measures the error, standard method vs framework, plus the fair test at the same size and share removed with the pruning placed by sensitivity (`stage_0_prune_sweep/`). The command-line tools below do the same with `--set` overrides.
 
+To run it on a model other than TinyLlama, see [docs/other-models.md](docs/other-models.md).
+
 ### On Google Colab
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hamuutpls/sensitivity-driven-framework/blob/main/notebooks/colab_run.ipynb)
