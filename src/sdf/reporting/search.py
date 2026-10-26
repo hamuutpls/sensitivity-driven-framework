@@ -40,8 +40,9 @@ def compare_searchers(trials: list[dict[str, Any]], objectives: list[str]) -> li
         mine = {json.dumps(t["point"], sort_keys=True) for t in full_met}
         out.append({
             "Search method": SEARCHER_NAMES.get(name, name), "Tries": len(ts),
-            "Models built": sum(1 for t in ts if t["cost"] > 0),
-            "Of those, on all evaluation windows": sum(1 for t in ts if t["cost"] > 0 and t["full"]),
+            "Models built": sum(1 for t in ts if t["cost"] > 0 and not t.get("earlier_run")),
+            "Of those, on all evaluation windows": sum(1 for t in ts if t["cost"] > 0 and t["full"]
+                                                       and not t.get("earlier_run")),
             "Cost, in full tries": round(sum(t["cost"] for t in ts), 3),
             "Time, minutes": round(sum(t.get("time_s", 0.0) for t in ts) / 60, 1),
             "Share of tries under the limit (higher is better)": len([t for t in ts if t["met"]]) / len(ts),
@@ -136,7 +137,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
     outputs.update(_plots(d, trials, front, s.objectives, s.memory_metric, comparison))
 
     # --- report
-    shown = [m for m in (s.objectives[0], s.memory_metric, *s.objectives[1:], "ppl_heldout") if m]
+    shown = list(dict.fromkeys(m for m in (s.objectives[0], s.memory_metric, *s.objectives[1:], "ppl_heldout") if m))
     tech = [n for n in ("stage1_method", "stage2_method", "prune_ratio_aggressive", "stage3_method") if n in names]
     rest = [n for n in names if n not in tech]
     lines = [
@@ -162,7 +163,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         "## What it means", "",
         f"{len(front)} setting(s) are on the best trade-off line: none of them can get better on one goal without "
         "getting worse on another, so each is a fair choice depending on what matters more. They are listed below, "
-        "lowest perplexity first (lower perplexity means more accurate; lower time means faster). Held-out perplexity "
+        f"best {label(s.objectives[0]).lower()} first (lower is better on every goal). Held-out perplexity "
         "was measured but never used to choose, so it shows how well the choice holds on unseen text.", "",
         "## Best trade-off settings", "",
         _md([["#"] + [{"stage3_method": "Stage 3 technique"}.get(n, SETTING_NAMES[n]) for n in tech]
@@ -177,8 +178,9 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             + [[_fmt(v) for v in c.values()] for c in comparison]),
         "A full try measures on every evaluation window (a slice of the test text); MFBO's rough tries use fewer "
         "windows and count by that share, though each still builds the whole model, so its time column is the fairer "
-        "cost. Hypervolume measures how much of the space of good results (low perplexity and low time) the method's "
-        "settings under the limit cover; larger is better.", "",
+        "cost. Hypervolume measures how much of the space of good results (low "
+        + " and low ".join(label(o).lower() for o in s.objectives) + ") the method's settings under the limit cover; "
+        "larger is better.", "",
         "## Conditions", "",
         f"- Model: {cfg.model.name}; seed {cfg.run.seed}; evaluation windows: {cfg.eval.max_windows or 'all'} of "
         f"{cfg.eval.seq_len} tokens.",
@@ -285,7 +287,7 @@ def _plots(d: Path, trials, front, objectives, memory, comparison) -> dict[str, 
     out = {}
     ok = [t for t in trials if t["full"] and t["ok"]]
     colors = dict(zip(dict.fromkeys(t["searcher"] for t in trials), ("#0072B2", "#E69F00", "#009E73", "#CC79A7")))
-    for x in dict.fromkeys([memory] + objectives[1:]):  # a stage search may have the memory among its objectives
+    for x in [o for o in dict.fromkeys([memory, *objectives]) if o != "ppl_val"]:  # each against perplexity
         fig, ax = plt.subplots(figsize=(6, 4))
         for name, c in colors.items():
             pts = [t for t in ok if t["searcher"] == name and t["metrics"].get(x) is not None]

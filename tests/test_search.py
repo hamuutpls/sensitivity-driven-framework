@@ -257,6 +257,28 @@ def test_more_tries_never_rebuild_a_combination_an_earlier_run_tried(cfg, monkey
     assert "tried in an earlier run, so not built again" in out["search_report"].read_text()
 
 
+def test_the_tried_log_reuses_only_good_results_under_the_same_settings(cfg):
+    ctx = start_run(cfg.with_overrides({"run.run_id": "a"}))
+    log = search.TriedLog(search.tried_path(ctx), "a")
+    space = technique_space(cfg)
+    good, bad = space.make({"sensitive_threshold": 0.3}), space.make({"sensitive_threshold": 0.6})
+    trial = {"n": 1, "windows": 6, "over_limit": False, "ok": True, "met": True, "metrics": {"ppl_val": 10.5}}
+    log.add(ctx, "mobo", {**trial, "point": good}, {"metrics": {"ppl_val": 10.5}, "dir": "d"})
+    log.add(ctx, "mobo", {**trial, "point": bad, "ok": False}, {"error": "OutOfMemoryError", "dir": "d"})
+    with search.tried_path(ctx).open("a", encoding="utf-8") as f:
+        f.write('x,b,mobo,3,6,"{\\"metr')  # a row cut short by a crash
+    later = search.TriedLog(search.tried_path(ctx), "b")
+    assert later.get(ctx, good, 6)["metrics"] == {"ppl_val": 10.5} and later.get(ctx, good, 6)["run_id"] == "a"
+    assert later.get(ctx, bad, 6) is None  # a failure may pass next time: built again
+    assert later.get(ctx, good, 3) is None  # more or fewer windows: a new measurement
+    changed = start_run(cfg.with_overrides({"run.run_id": "b", "calibration.seq_len": 64}))
+    assert later.get(changed, good, 6) is None  # other settings: a new combination
+    other = space.make({"sensitive_threshold": 0.4})
+    log.add(ctx, "mobo", {**trial, "point": other, "n": 3}, {"metrics": {"ppl_val": 10.7}, "dir": "d"})
+    again = search.TriedLog(search.tried_path(ctx), "c")  # the row after the cut one starts on its own line
+    assert len(again.rows) == 2 and again.get(ctx, other, 6)["metrics"] == {"ppl_val": 10.7}
+
+
 def test_only_models_built_for_this_searcher_use_up_the_budget(cfg, monkeypatch):
     crash = {128: "before", 64: "building"}
     monkeypatch.setattr(search, "evaluate", _fake_evaluate(crash=lambda p: crash.get(p["calib_samples"])))

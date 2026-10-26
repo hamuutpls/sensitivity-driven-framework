@@ -149,7 +149,8 @@ SEARCH_REFINE_ROUNDS = 0  # MODE "search": Stage 0 joint refinement rounds in ea
 # refinement for any stage")
 SEARCHERS = ["mobo", "mfbo"]  # each gets the same budget and seed (Mohammad, 2026-10-25: MOBO and MFBO; "nsga3" also works)
 SEARCH_BUDGET = 100  # full tries per searcher (MFBO's rough tries count by their share of the windows, so it builds
-# more models); a try over the limit is not built and not counted
+# more models); a try over the limit is not built and not counted. Combinations tried in an earlier run are not built
+# again (search_tried.csv in the cache) but count, so 10 more new tries = this raised by 10 with the same SEED
 SEARCH_OBJECTIVES = ["predicted_weight_memory_gb", "ppl_val"]  # made as small as possible, size first (the final model
 # tested in Stage 4 is the smallest with perplexity at most TARGET_PPL), on Hugging Face: tries run no
 # backend (Mohammad, 2026-10-25: "we do not test backends in stages 1 and 2. we test them in stage 4"); the backends

@@ -18,6 +18,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import random
 import time
 from dataclasses import asdict, replace
@@ -231,10 +232,13 @@ class Recorder:
 class TriedLog:
     """Every combination the search has tried, in a CSV kept with the cache, so it outlives a run (Mohammad,
     2026-10-26: "adding tries to our runtime must not retry combinations we already tried", "maybe we should make a
-    csv of all the combinations"). A combination is the point (numbers to 3 decimals) on a number of windows, so MFBO
-    can still measure a point on more windows. Proposed again in a later run, it is not built: its earlier result
-    comes back, the requirement checked again, and it counts as that run's try. A point not built (over a size limit)
-    is not logged: nothing was tried. Within one run the cache already builds a point once."""
+    csv of all the combinations"). A combination is the point (numbers to 6 decimals) on a number of windows, under
+    the same settings and technique versions as the point's cache key, so MFBO can still measure a point on more
+    windows and a changed setting or technique makes it new. Proposed again in a later run, it is not built: its
+    earlier result comes back, the requirement checked again, and it counts as that run's try (so 10 more tries =
+    the budget raised by 10 with the same seed). A try that failed is logged but built again (a failure may pass, as
+    in the cache), and a point not built (over a size limit) is not logged. Within one run the cache builds a point
+    once."""
 
     METRICS = ("ppl_val", "ppl_heldout", "predicted_weight_memory_gb")
 
@@ -244,13 +248,20 @@ class TriedLog:
         if self.path.exists():
             with self.path.open(newline="", encoding="utf-8") as f:
                 for row in csv.DictReader(f):
-                    if row["run_id"] != run_id:  # this run's own rows are its cache's business
+                    try:  # a row cut short by a crash while writing is skipped
+                        ok = row["status"] == "ok" and "error" not in json.loads(row["result"])
+                    except (TypeError, KeyError, ValueError):
+                        log.warning("search_tried.csv: skipping an unreadable row")
+                        continue
+                    if ok and row["run_id"] != run_id:  # this run's own rows are its cache's business
                         self.rows[row["combination"]] = row
 
     @staticmethod
     def combination(ctx: RunContext, point: dict[str, Any], windows: int) -> str:
-        return json.dumps({"model": ctx.cfg.model.name, "windows": windows,
-                           **{k: round(v, 3) if isinstance(v, float) else v for k, v in sorted(point.items())}},
+        settings = point_key(ctx, ctx.cfg, point, [point[k] for k in sorted(point) if k.endswith("_method")])
+        settings.pop("point")
+        return json.dumps({"settings": config_hash(settings, length=10), "windows": windows,
+                           **{k: round(v, 6) if isinstance(v, float) else v for k, v in sorted(point.items())}},
                           sort_keys=True)
 
     def get(self, ctx: RunContext, point: dict[str, Any], windows: int) -> dict[str, Any] | None:
@@ -258,10 +269,8 @@ class TriedLog:
         if row is None:
             return None
         r = json.loads(row["result"])
-        if "error" not in r:
-            check = check_requirement(ctx.cfg, r["metrics"])
-            r.update(met=check.met is True, shortfall=check.shortfall)
-        return {**r, "cached": True, "run_id": row["run_id"]}
+        check = check_requirement(ctx.cfg, r["metrics"])
+        return {**r, "met": check.met is True, "shortfall": check.shortfall, "cached": True, "run_id": row["run_id"]}
 
     def add(self, ctx: RunContext, searcher: str, t: dict[str, Any], r: dict[str, Any]) -> None:
         if t["over_limit"]:
@@ -278,11 +287,18 @@ class TriedLog:
         else:  # the file's own columns; "combination" and "result" hold everything a reuse needs
             with self.path.open(newline="", encoding="utf-8") as f:
                 fields = next(csv.reader(f))
+            with self.path.open("rb") as f:  # a line cut short by a crash: start on a new line
+                f.seek(-1, os.SEEK_END)
+                cut = f.read(1) not in (b"\n", b"\r")
         with self.path.open("a", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             if new:
                 w.writeheader()
+            elif cut:
+                f.write("\r\n")
             w.writerow(row)
+            f.flush()
+            os.fsync(f.fileno())
 
 
 def tried_path(ctx: RunContext) -> Path:
@@ -486,7 +502,7 @@ def final_model(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[str],
     again with the backends in ctx.cfg.eval and tested for accuracy on `tasks` (eval.downstream_tasks, lm-eval;
     Mohammad, 2026-10-25: "then that accuracy will be compared with tinyllama accuracy"): "fp16" holds the uncompressed model's accuracy, measured in the same run
     under the same conditions. None when there is nothing to test (no task, no backend) or no try met the limit."""
-    best = min((t for t in trials if t["full"] and t["met"]), key=lambda t: t["values"][0], default=None)
+    best = min((t for t in trials if t["full"] and t["met"]), key=lambda t: t["values"], default=None)
     if best is None or not tasks and all(getattr(ctx.cfg.eval, k.split(".")[1]) is None for k in NO_BACKENDS):
         return None
     from sdf.stage0.run import fp16_key, setup
@@ -511,7 +527,7 @@ def extra_tries(ctx: RunContext, trials: list[dict[str, Any]], methods: list[str
     cfg = ctx.cfg
     space = technique_space(cfg)
     done = {t["point"]["stage1_method"].split("_with_")[0] for t in trials if t["full"] and t["ok"]}
-    best = min((t for t in trials if t["full"] and t["met"]), key=lambda t: t["values"][0], default=None)
+    best = min((t for t in trials if t["full"] and t["met"]), key=lambda t: t["values"], default=None)
     base = best["point"] if best else space.make({k: v for k, v in cfg.hyperparams.items()
                                                   if k in {p.name for p in SEARCH_SPACE.params}})
     rec = Recorder(ctx, "extra", full_windows, **kw)
