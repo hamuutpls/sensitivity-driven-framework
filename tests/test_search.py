@@ -157,6 +157,14 @@ def test_a_backend_objective_stops_before_any_try(cfg):
         run_search(start_run(c))
 
 
+def test_a_try_and_the_final_model_never_share_a_cache_entry(cfg):
+    # the final model runs the backends; a try's backend-free numbers must not be read back for it
+    ctx = start_run(cfg.with_overrides({"eval.vllm_python": "py"}))
+    point = technique_space(cfg).make({})
+    tries = ctx.cfg.with_overrides(search.NO_BACKENDS)
+    assert search.point_key(ctx, tries, point, []) != search.point_key(ctx, ctx.cfg, point, [])
+
+
 def test_mfbo_measures_the_best_on_more_windows(cfg, tiny_llama, tokenizer):
     rec = Recorder(start_run(cfg), "mfbo", 6, **_kw(tiny_llama, tokenizer))
     run_mfbo(rec, technique_space(cfg), budget=2, seed=0, eta=2, rungs=2)

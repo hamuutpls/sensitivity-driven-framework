@@ -190,8 +190,11 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             "where it would be deployed. A backend re-rounds the model into its own file format, so its perplexity "
             "is that file's, not the verdict.", "",
             _md([["Measure", "Value"]] + [[label(m), _fmt(v)] for m, v in backends.items()])
-            if backends else "No backend result (none set, or each failed: "
-            f"{accuracy.get('error') or ', '.join(f'{k}: {v}' for k, v in (accuracy.get('errors') or {}).items()) or 'none set'}).", "",
+            if backends else (f"The final model could not be built again: {accuracy['error']}." if accuracy.get("error")
+                              else "No backend result: " + ("; ".join(f"{k} failed: {v}" for k, v in
+                                                                      accuracy["errors"].items())
+                                                            if accuracy.get("errors") else "no backend was set") + "."),
+            "",
             "## Accuracy of the final model", "",
             "**What this shows:** how many test questions the best final model still answers correctly, next to "
             "the uncompressed TinyLlama. **What it means:** a small change says the compression kept the model's "

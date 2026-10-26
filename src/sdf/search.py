@@ -384,7 +384,8 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     val, held = eval_windows(loader(cfg.eval.dataset, "test"), handle.tokenizer, cfg.eval.seq_len, cfg.eval.max_windows)
     full = len(val) + len(held)
     kw = dict(model_factory=model_factory, tokenizer=tokenizer, text_loader=text_loader)
-    tries = RunContext(cfg.with_overrides(NO_BACKENDS), ctx.run_id, ctx.run_dir, ctx.cache)
+    tries = RunContext(cfg.with_overrides({**NO_BACKENDS, "eval.downstream_tasks": []}), ctx.run_id, ctx.run_dir,
+                       ctx.cache)  # accuracy tasks also only on the final model
     trials: list[dict[str, Any]] = []
     for name in s.searchers:
         rec = Recorder(tries, name, full, **kw)

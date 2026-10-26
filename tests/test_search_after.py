@@ -89,17 +89,24 @@ def test_tries_run_no_backend_and_the_final_model_runs_them_in_stage4(cfg, monke
     seen = []
 
     def fake(ctx, point, max_windows=None, **kw):
-        seen.append(ctx.cfg.eval.vllm_python)
+        seen.append((ctx.cfg.eval.vllm_python, list(ctx.cfg.eval.downstream_tasks), point["stage1_method"]))
+        if point["stage1_method"].startswith("awq") and ctx.cfg.eval.vllm_python is None:
+            return {"error": "boom", "cached": False, "dir": "d"}  # never built in a try, so the extra try runs it
         vllm = {"vllm_decode_ms_per_token": 3.0} if ctx.cfg.eval.vllm_python else {}
         return {"metrics": {"ppl_val": 10.0 + point["sensitive_threshold"], "predicted_weight_memory_gb": 0.5, **vllm},
                 "met": True, "shortfall": {}, "dir": "d", "cached": False}
 
     monkeypatch.setattr(search, "evaluate", fake)
     c = cfg.with_overrides({"search.budget": 2, "search.searchers": ["mobo"], "eval.vllm_python": "py",
+                            "eval.downstream_tasks": ["arc_easy"],
                             "search.objectives": ["ppl_val", "predicted_weight_memory_gb"],
-                            "search.extra_stage1": [], "search.accuracy_tasks": []})
+                            "search.stage1_methods": ["rtn_with_rtn_act", "awq_with_rtn_act"],
+                            "search.extra_stage1": ["awq_with_rtn_act"], "search.accuracy_tasks": []})
     out = search.run_search(start_run(c))
-    assert seen[:-1] and all(v is None for v in seen[:-1]) and seen[-1] == "py"  # tries none; the final model vLLM
+    tries, last = seen[:-1], seen[-1]
+    assert any(m.startswith("awq") for _, _, m in tries)  # the extra try ran
+    assert all(v is None and t == [] for v, t, _ in tries)  # tries and extra tries: no backend, no accuracy test
+    assert last[0] == "py"  # the final model: vLLM
     text = out["search_report"].read_text()
     assert "## The final model on the backends (Stage 4)" in text and "| 3 |" in text
     # nothing to test in Stage 4 (no backend, no task): no final step
