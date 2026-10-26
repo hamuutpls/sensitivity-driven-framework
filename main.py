@@ -143,8 +143,8 @@ QUAROT_K_BITS = 4  # 2 | 3 | 4 | 8: key bits for QuaRot KV (standard method)
 TARGET_MEMORY_GB = None  # no size limit: the search makes the final model as small as it can while its perplexity
 # stays at most TARGET_PPL (Mohammad, 2026-10-26: "lets see how much smaller can we get the model, while keeping 11 ppl
 # or lower"; was 1.0, before that 1.1)
-TARGET_PPL = 11.0  # the final model's validation perplexity must be at most this (Mohammad, 2026-10-25: "the limit of
-# perplexity must be 11"; None: no limit)
+TARGET_PPL = 11.5  # the final model's validation perplexity must be at most this (Mohammad, 2026-10-26: "then increase
+# the threshold to 11.5"; was 11; None: no limit)
 SEARCH_REFINE_ROUNDS = 0  # MODE "search": Stage 0 joint refinement rounds in each try (Mohammad, 2026-10-25: "no
 # refinement for any stage")
 SEARCHERS = ["mobo", "mfbo"]  # each gets the same budget and seed (Mohammad, 2026-10-25: MOBO and MFBO; "nsga3" also works)
