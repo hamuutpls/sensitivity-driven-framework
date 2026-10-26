@@ -335,9 +335,13 @@ def test_an_extra_stage1_try_can_be_the_final_model(cfg, monkeypatch):
     c = cfg.with_overrides({"search.searchers": ["mobo"], "search.budget": 1,
                             "search.stage1_methods": ["rtn_with_rtn_act", "gptq_with_rtn_act"],
                             "search.extra_stage1": ["gptq_with_rtn_act"]})
-    run_search(start_run(c))
+    run_search(start_run(c.with_overrides({"run.run_id": "a"})))
     best = min((t for t in picked if t["full"] and t["met"]), key=lambda t: t["values"])
     assert best["searcher"] == "extra" and best["point"]["stage1_method"] == "gptq_with_rtn_act"
+    picked.clear()  # run again: the extra try comes back from the CSV and is also an earlier run's logged row
+    run_search(start_run(c.with_overrides({"run.run_id": "b"})))
+    best = min((t for t in picked if t["full"] and t["met"]), key=lambda t: t["values"])
+    assert best["searcher"] == "extra" and not best.get("from_log")  # this run's try, so this run's label
 
 
 def test_the_tried_log_reuses_only_good_results_under_the_same_settings(cfg):

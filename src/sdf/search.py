@@ -541,13 +541,16 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     extras, final = [], None
     # earlier runs' tries not proposed again in this one still count for the pick (Mohammad, 2026-10-26: "we add 10
     # more tries of DIFFERENT combinations"; the 30 already made are not thrown away)
-    known = trials + tried.known(tries, full, s.objectives, exclude=trials)
+    earlier = tried.known(tries, full, s.objectives, exclude=trials)
+    known = trials + earlier
     try:  # neither step may cost the report of hours of tries, nor the other step
         extras = extra_tries(tries, trials, s.extra_stage1, full, best_from=known, tried=tried, **kw)
     except Exception:  # noqa: BLE001
         log.exception("the extra Stage 1 tries failed; the report is written without them")
     try:
-        final = final_model(ctx, known + extras, s.accuracy_tasks, **kw)  # an extra try may be the smallest
+        # an extra try may be the smallest; this run's tries first, so a tie with the same model logged by an
+        # earlier run keeps this run's label
+        final = final_model(ctx, trials + extras + earlier, s.accuracy_tasks, **kw)
     except Exception:  # noqa: BLE001
         log.exception("the final model's Stage 4 test failed; the report is written without it")
     from sdf.reporting.search import write_search_report
