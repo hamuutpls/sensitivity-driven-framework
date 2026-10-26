@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-26: An extra Stage 1 try can be the final model
+
+- The final model is the smallest under the limit among the searchers' tries, the earlier runs' tries and the extra
+  SpQR/QuIP/QuIP# tries. In the 11.5 run the QuIP# extra try (0.88 GB at 11.02) beat every searcher's try (0.91 GB at
+  11.23) but could not be picked. The extra tries still stay out of the comparison and the trade-off line.
+
 ## 2026-10-26: The final pick counts the earlier runs' models
 
 - The final model (Stage 4) and the extra Stage 1 tries now choose among this run's tries and the earlier runs' good

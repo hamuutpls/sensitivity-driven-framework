@@ -170,7 +170,7 @@ SEARCH_FINALISTS = 3  # MODE "stage_search": chained models built and measured u
 SEARCH_ACCURACY_TASKS = ["arc_easy", "piqa", "hellaswag", "winogrande"]  # full sets; picked as quick and standard
 # MODE "search": one chained try each after the search (the best setting with only its Stage 1 technique changed), for
 # those no search method measured (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"); shown in
-# the report, not compared
+# the report, not compared, but one may be the final model when it is the smallest under the limit
 SEARCH_EXTRA_STAGE1 = ["spqr_with_rtn_act", "quip_with_rtn_act", "quipsharp_with_rtn_act"]
 
 

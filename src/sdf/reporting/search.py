@@ -201,7 +201,8 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         acc = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("acc_", "downstream_acc"))}
         backends = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("vllm_", "llamacpp_", "trtllm_"))}
         pick = f"the final model under the limit with the best {label(s.objectives[0]).lower()}"
-        which = f"{accuracy['searcher'].upper()} try #{accuracy['n']}" + (
+        which = (f"the extra {setting_value('stage1_method', accuracy['point']['stage1_method'])} try"
+                 if accuracy["searcher"] == "extra" else f"{accuracy['searcher'].upper()} try #{accuracy['n']}") + (
             f" of the earlier run {accuracy['earlier_run']}, a combination this run did not try again"
             if accuracy.get("earlier_run") else "")
         lines += [

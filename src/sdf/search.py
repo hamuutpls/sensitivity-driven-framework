@@ -311,7 +311,7 @@ class TriedLog:
         for c, row in self.rows.items():
             try:  # a row that no longer fits (a renamed technique, a changed space) is skipped, never the report
                 key = json.loads(c)
-                if key["windows"] != full_windows or self.same_model(c) in seen or row["searcher"] == "extra":
+                if key["windows"] != full_windows or self.same_model(c) in seen:
                     continue
                 r = json.loads(row["result"])
                 point = r.get("point") or {  # rows written before the point was kept: its columns, typed by the key
@@ -547,7 +547,7 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     except Exception:  # noqa: BLE001
         log.exception("the extra Stage 1 tries failed; the report is written without them")
     try:
-        final = final_model(ctx, known, s.accuracy_tasks, **kw)
+        final = final_model(ctx, known + extras, s.accuracy_tasks, **kw)  # an extra try may be the smallest
     except Exception:  # noqa: BLE001
         log.exception("the final model's Stage 4 test failed; the report is written without it")
     from sdf.reporting.search import write_search_report
@@ -589,7 +589,8 @@ def extra_tries(ctx: RunContext, trials: list[dict[str, Any]], methods: list[str
     the windows (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"): the search's best try
     under the limit (lowest first objective; among `best_from` when given, which adds the earlier runs' tries) with
     only its Stage 1 technique swapped, or the run's own settings if
-    no try met the limit. Kept apart from the searchers' trials, so they change no comparison or trade-off line."""
+    no try met the limit. Kept apart from the searchers' trials, so they change no comparison or trade-off line, but
+    one may be the final model: the 11.5 run's QuIP# extra try (0.88 GB at 11.02) beat every searcher's try."""
     cfg = ctx.cfg
     space = technique_space(cfg)
     done = {t["point"]["stage1_method"].split("_with_")[0] for t in trials if t["full"] and t["ok"]}

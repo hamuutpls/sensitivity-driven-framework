@@ -276,13 +276,13 @@ def test_the_final_pick_sees_an_earlier_runs_good_tries_this_run_did_not_propose
         metrics = {"ppl_val": 9.0, "decode_ms_per_token_mean": 1.0, "predicted_weight_memory_gb": size}
         log.add(wide, "mobo", {**trial, "n": n, "point": point, "metrics": metrics}, {"metrics": metrics, "dir": "d"})
     log.add(first, "extra", {**trial, "n": 8, "point": {**good, "sensitive_threshold": 0.15}, "metrics": metrics},
-            {"metrics": metrics, "dir": "d"})  # the extra tries stay apart from the pick, as in their own run
+            {"metrics": metrics, "dir": "d"})  # an extra try may be the final model too
     picked.clear()
     run_search(start_run(c.with_overrides({"run.run_id": "b"})))
     earlier = {t["n"]: t for t in picked if t.get("from_log") and t["n"] in (5, 6, 7, 8)}
     assert earlier[5]["point"] == good and earlier[5]["met"] and earlier[5]["values"] == [9.0, 1.0]  # full precision
     assert not earlier[6]["met"]  # the requirement checked again, not copied
-    assert 7 not in earlier and 8 not in earlier  # 7 is outside this run's search space (building it would fail); 8 is an extra try
+    assert 7 not in earlier and earlier[8]["searcher"] == "extra"  # 7 is outside this run's search space
     assert len(picked) == len({json.dumps([t["point"], t["windows"]], sort_keys=True) for t in picked})  # no doubles
     picked.clear()
     run_search(start_run(c.with_overrides({"run.run_id": "b2", "calibration.seq_len": 64})))
@@ -319,6 +319,25 @@ def test_a_setting_the_techniques_do_not_read_never_makes_a_new_model(cfg, monke
     later = Recorder(start_run(c.with_overrides({"run.run_id": "b"})), "mobo", 6,
                      tried=search.TriedLog(search.tried_path(ctx), "b"))
     assert later({**base, "quarot_k_bits": 8})["earlier_run"] == "a" and len(built) == 4  # nor in a later run
+
+
+def test_an_extra_stage1_try_can_be_the_final_model(cfg, monkeypatch):
+    # the 11.5 run: the QuIP# extra try (0.88 GB at 11.02) was smaller and better than every searcher's try, and the
+    # goal is the smallest model under the limit (Mohammad, 2026-10-26)
+    fake = _fake_evaluate(over=lambda p: False)
+    monkeypatch.setattr(search, "evaluate", lambda ctx, point, max_windows=None, **kw: (
+        lambda r: {**r, "metrics": {**r["metrics"], "ppl_val": 9.0}} if point["stage1_method"].startswith("gptq")
+        else r)(fake(ctx, point, max_windows)))
+    monkeypatch.setitem(search.SEARCHERS, "mobo", lambda rec, space, budget, seed, **kw: rec(
+        space.make({"stage1_method": "rtn_with_rtn_act"})))
+    picked = []
+    monkeypatch.setattr(search, "final_model", lambda ctx, trials, tasks, **kw: picked.extend(trials))
+    c = cfg.with_overrides({"search.searchers": ["mobo"], "search.budget": 1,
+                            "search.stage1_methods": ["rtn_with_rtn_act", "gptq_with_rtn_act"],
+                            "search.extra_stage1": ["gptq_with_rtn_act"]})
+    run_search(start_run(c))
+    best = min((t for t in picked if t["full"] and t["met"]), key=lambda t: t["values"])
+    assert best["searcher"] == "extra" and best["point"]["stage1_method"] == "gptq_with_rtn_act"
 
 
 def test_the_tried_log_reuses_only_good_results_under_the_same_settings(cfg):
