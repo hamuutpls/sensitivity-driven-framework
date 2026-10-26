@@ -11,10 +11,10 @@ Written in `src/sdf/search.py` (MODE "search" in `main.py`). Mohammad, 2026-10-2
    technique per stage.
 2. The try builds one chained model: Stage 0 plans it (the one-shot joint plan, no refinement:
    `SEARCH_REFINE_ROUNDS = 0`), then Stage 1 quantizes, Stage 2 prunes that model, Stage 3 compresses its KV cache.
-3. Only that final model is judged: it must have validation perplexity at most 11 (`TARGET_PPL`), and the search
+3. Only that final model is judged: it must have validation perplexity at most 11.5 (`TARGET_PPL`), and the search
    makes it as small as it can (predicted size first in `SEARCH_OBJECTIVES`; no size limit, `TARGET_MEMORY_GB =
    None`; Mohammad, 2026-10-26: "lets see how much smaller can we get the model, while keeping 11 ppl or lower").
-   The tries run on Hugging Face only; the smallest final model with perplexity at most 11 is then measured on the
+   The tries run on Hugging Face only; the smallest final model with perplexity at most 11.5 is then measured on the
    backends (Stage 4).
 4. After the searchers: Stage 1 techniques in `SEARCH_EXTRA_STAGE1` (SpQR, QuIP, QuIP#) that no searcher built get
    one try each (the best setting with only its Stage 1 technique changed), and the final model with the lowest

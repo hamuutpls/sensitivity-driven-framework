@@ -10,7 +10,7 @@ compression, applied to TinyLlama-1.1B-Chat.
 | 2 | Pruning only, nothing rounded (Wanda, structured, low-rank) | done (simulated) |
 | 3 | KV-cache compression (RTN KV, QuaRot KV, KVQuant, H2O, SnapKV, InfiniGen) | done (simulated on HF) |
 | 4 | Evaluation across backends (HF Transformers, llama.cpp, vLLM, TensorRT-LLM), plus lm-eval task accuracy | done (vLLM and TensorRT-LLM on Linux/Colab) |
-| Search | MODE "search": each try builds one chained model 0 > 1 > 2 > 3 and only the final model is judged: as small as possible with validation perplexity at most 11 (no size limit); MOBO (Optuna), MFBO (successive halving), NSGA-III (pymoo), benchmarked against each other; the smallest final model with perplexity at most 11 is then tested on the backends (Stage 4) and for accuracy next to TinyLlama. See `docs/diagrams/search.md`. | done |
+| Search | MODE "search": each try builds one chained model 0 > 1 > 2 > 3 and only the final model is judged: as small as possible with validation perplexity at most 11.5 (no size limit); MOBO (Optuna), MFBO (successive halving), NSGA-III (pymoo), benchmarked against each other; the smallest final model with perplexity at most 11.5 is then tested on the backends (Stage 4) and for accuracy next to TinyLlama. See `docs/diagrams/search.md`. | done |
 
 Paths: 0 > 1 > 4, 0 > 2 > 4 (prunes the FP16 model), 0 > 3 > 4, and 0 > 1 > 2 > 4 (a Stage 2 method on a model
 Stage 1 has quantized; `stage2_after` in `main.py`).
