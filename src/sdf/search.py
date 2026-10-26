@@ -272,6 +272,30 @@ class TriedLog:
         check = check_requirement(ctx.cfg, r["metrics"])
         return {**r, "met": check.met is True, "shortfall": check.shortfall, "cached": True, "run_id": row["run_id"]}
 
+    def known(self, ctx: RunContext, full_windows: int, objectives: list[str]) -> list[dict[str, Any]]:
+        """The earlier runs' good tries on all the windows that are still the same combination under ctx's settings,
+        as trials (requirement checked again), so the final pick sees the best model found so far even when this
+        run's searchers never propose it again."""
+        out = []
+        for c, row in self.rows.items():
+            key = json.loads(c)
+            if key["windows"] != full_windows:
+                continue
+            # the CSV keeps the point at full precision (the combination rounds it); the key gives each value's type
+            point = {k: (type(v)(row[k]) if row.get(k) not in (None, "") and isinstance(v, (int, float)) else v)
+                     for k, v in key.items() if k not in ("settings", "windows")}
+            if self.combination(ctx, point, full_windows) != c:  # a setting or technique changed since
+                continue
+            r = self.get(ctx, point, full_windows)
+            values = [r["metrics"].get(o) for o in objectives]
+            if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in values):
+                continue
+            out.append({"searcher": row["searcher"], "n": int(row["n"]), "point": point, "windows": full_windows,
+                        "cost": 0.0, "built": True, "over_limit": False, "full": True, "ok": True, "met": r["met"],
+                        "values": values, "violation": violation(r), "metrics": r["metrics"], "dir": r.get("dir"),
+                        "cached": True, "error": None, "earlier_run": row["run_id"]})
+        return out
+
     def add(self, ctx: RunContext, searcher: str, t: dict[str, Any], r: dict[str, Any]) -> None:
         if t["over_limit"]:
             return
@@ -479,12 +503,17 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
         trials += rec.trials
         atomic_write_text(ctx.run_dir / "search" / "trials.json", json.dumps(trials, indent=2, default=str))
     extras, final = [], None
+    # earlier runs' tries not proposed again in this one still count for the pick (Mohammad, 2026-10-26: "we add 10
+    # more tries of DIFFERENT combinations"; the 30 already made are not thrown away)
+    seen = {TriedLog.combination(tries, t["point"], t["windows"]) for t in trials}
+    known = trials + [t for t in tried.known(tries, full, s.objectives)
+                      if TriedLog.combination(tries, t["point"], full) not in seen]
     try:  # neither step may cost the report of hours of tries, nor the other step
-        extras = extra_tries(tries, trials, s.extra_stage1, full, tried=tried, **kw)
+        extras = extra_tries(tries, known, s.extra_stage1, full, tried=tried, **kw)
     except Exception:  # noqa: BLE001
         log.exception("the extra Stage 1 tries failed; the report is written without them")
     try:
-        final = final_model(ctx, trials, s.accuracy_tasks, **kw)
+        final = final_model(ctx, known, s.accuracy_tasks, **kw)
     except Exception:  # noqa: BLE001
         log.exception("the final model's Stage 4 test failed; the report is written without it")
     from sdf.reporting.search import write_search_report
@@ -514,7 +543,8 @@ def final_model(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[str],
     entry = ctx.cache.path("fp16_downstream", {**fp16_key(actx, setup(actx)[0]), "tasks": list(tasks),
                                                "limit": cfg.eval.downstream_limit})
     fp16 = json.loads(entry.read_text(encoding="utf-8"))["value"] if entry.exists() else {}
-    return {"searcher": best["searcher"], "n": best["n"], "point": best["point"], "fp16": fp16,
+    return {"searcher": best["searcher"], "n": best["n"], "earlier_run": best.get("earlier_run"),
+            "point": best["point"], "fp16": fp16,
             **{k: r.get(k) for k in ("metrics", "error", "errors", "dir")}}
 
 

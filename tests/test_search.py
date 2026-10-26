@@ -257,6 +257,32 @@ def test_more_tries_never_rebuild_a_combination_an_earlier_run_tried(cfg, monkey
     assert "tried in an earlier run, so not built again" in out["search_report"].read_text()
 
 
+def test_the_final_pick_sees_an_earlier_runs_good_tries_this_run_did_not_propose_again(cfg, monkeypatch):
+    # the limit changed (Mohammad, 2026-10-26: "then increase the threshold to 11.5"), so the searcher proposes other
+    # points; the earlier run's models under the new limit must still count for the final model
+    monkeypatch.setattr(search, "evaluate", _fake_evaluate(over=lambda p: False))
+    picked = []
+    monkeypatch.setattr(search, "final_model", lambda ctx, trials, tasks, **kw: picked.extend(trials))
+    c = cfg.with_overrides({"search.searchers": ["mobo"], "search.extra_stage1": [], "search.budget": 1})
+    first = start_run(c.with_overrides({"run.run_id": "a"}))
+    windows = json.loads(run_search(first)["search_trials"].read_text())[0]["windows"]
+    log = search.TriedLog(search.tried_path(first), "a")
+    good, over = _point(c, sensitive_threshold=1 / 3), _point(c, sensitive_threshold=0.7)
+    trial = {"windows": windows, "over_limit": False, "ok": True, "met": True}
+    for n, point, size in ((5, good, 0.5), (6, over, 1.5)):  # logged as met; 1.5 GB is over the 1 GB limit now
+        metrics = {"ppl_val": 9.0, "decode_ms_per_token_mean": 1.0, "predicted_weight_memory_gb": size}
+        log.add(first, "mobo", {**trial, "n": n, "point": point, "metrics": metrics}, {"metrics": metrics, "dir": "d"})
+    picked.clear()
+    run_search(start_run(c.with_overrides({"run.run_id": "b"})))
+    earlier = {t["n"]: t for t in picked if t["earlier_run"] == "a" and t["n"] in (5, 6)}
+    assert earlier[5]["point"] == good and earlier[5]["met"] and earlier[5]["values"] == [9.0, 1.0]  # full precision
+    assert not earlier[6]["met"]  # the requirement checked again, not copied
+    assert len(picked) == len({json.dumps([t["point"], t["windows"]], sort_keys=True) for t in picked})  # no doubles
+    picked.clear()
+    run_search(start_run(c.with_overrides({"run.run_id": "b2", "calibration.seq_len": 64})))
+    assert not [t for t in picked if t["n"] in (5, 6) and t["earlier_run"] == "a"]  # other settings: not the same
+
+
 def test_the_tried_log_reuses_only_good_results_under_the_same_settings(cfg):
     ctx = start_run(cfg.with_overrides({"run.run_id": "a"}))
     log = search.TriedLog(search.tried_path(ctx), "a")

@@ -92,10 +92,12 @@ def test_a_failing_after_step_drops_only_itself(cfg, monkeypatch):  # noqa: F811
     monkeypatch.setattr(search, "evaluate", _fake_evaluate(over=lambda p: False))
     monkeypatch.setattr(search, "extra_tries", lambda *a, **k: 1 / 0)
     monkeypatch.setattr(search, "final_model", lambda *a, **k: {"searcher": "mobo", "n": 1, "fp16": {},
+                                                                   "earlier_run": "b30",
                                                                    "metrics": {"acc_arc_easy": 0.4}})
     c = cfg.with_overrides({"search.budget": 1, "search.searchers": ["mobo"]})
     text = search.run_search(start_run(c))["search_report"].read_text()
     assert "## Accuracy of the final model" in text and "Extra Stage 1" not in text
+    assert "MOBO try #1 of the earlier run b30" in text  # a model an earlier run built says which run
 
 
 def test_tries_run_no_backend_and_the_final_model_runs_them_in_stage4(cfg, monkeypatch):  # noqa: F811
