@@ -238,13 +238,18 @@ class TriedLog:
     earlier result comes back, the requirement checked again, and it counts as that run's try (so 10 more tries =
     the budget raised by 10 with the same seed). A try that failed is logged but built again (a failure may pass, as
     in the cache), and a point not built (over a size limit) is not logged. Within one run the cache builds a point
-    once."""
+    once. Two points that differ only in a setting their techniques never read (`UNREAD`) are the same model: the
+    second is not built either, in this run or a later one."""
 
     METRICS = ("ppl_val", "ppl_heldout", "predicted_weight_memory_gb")
+    # a setting -> the technique that reads it; any other technique ignores it (SmoothQuant's strength, QuaRot KV's key
+    # bits). The group size is not here: the size estimate and the export use it for every technique.
+    UNREAD = {"smoothquant_alpha": ("stage1_method", 1), "quarot_k_bits": ("stage3_method", 3)}
 
     def __init__(self, path: Path, run_id: str):
         self.path, self.run_id = Path(path), run_id
         self.rows: dict[str, dict[str, Any]] = {}
+        self.models: dict[str, dict[str, Any]] = {}  # by same_model(), this run's rows too
         if self.path.exists():
             with self.path.open(newline="", encoding="utf-8") as f:
                 for row in csv.DictReader(f):
@@ -255,6 +260,22 @@ class TriedLog:
                         continue
                     if ok and row["run_id"] != run_id:  # this run's own rows are its cache's business
                         self.rows[row["combination"]] = row
+                    if ok:
+                        self.models.setdefault(self.same_model(row["combination"]), row)
+
+    @classmethod
+    def same_model(cls, combination: str) -> str:
+        """The combination without the settings its techniques never read."""
+        from sdf.stages.methods import methods_for
+
+        key = json.loads(combination)
+        for name, (technique, stage) in cls.UNREAD.items():
+            try:
+                if name in key and name not in methods_for(stage, [key[technique]])[0].params:
+                    del key[name]
+            except (KeyError, ValueError):  # a technique that no longer exists: kept as it is
+                pass
+        return json.dumps(key, sort_keys=True)
 
     @staticmethod
     def combination(ctx: RunContext, point: dict[str, Any], windows: int) -> str:
@@ -265,8 +286,9 @@ class TriedLog:
                           sort_keys=True)
 
     def get(self, ctx: RunContext, point: dict[str, Any], windows: int) -> dict[str, Any] | None:
-        row = self.rows.get(self.combination(ctx, point, windows))
-        if row is None:
+        c = self.combination(ctx, point, windows)
+        row = self.rows.get(c) or self.models.get(self.same_model(c))
+        if row is None or row["combination"] == c and row["run_id"] == self.run_id:  # the very point: the cache's
             return None
         r = json.loads(row["result"])
         check = check_requirement(ctx.cfg, r["metrics"])
@@ -329,6 +351,8 @@ class TriedLog:
             w.writerow(row)
             f.flush()
             os.fsync(f.fileno())
+        if t["ok"]:
+            self.models.setdefault(self.same_model(row["combination"]), row)
 
 
 def tried_path(ctx: RunContext) -> Path:

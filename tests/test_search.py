@@ -289,6 +289,35 @@ def test_the_final_pick_sees_an_earlier_runs_good_tries_this_run_did_not_propose
     assert not [t for t in picked if t.get("earlier_run") == "a" and t["n"] in (5, 6)]  # other settings: not the same
 
 
+def test_a_setting_the_techniques_do_not_read_never_makes_a_new_model(cfg, monkeypatch):
+    # Colab, 2026-10-26: MOBO #22 and #23 differed only in QuaRot's key bits under RTN KV and built the same model
+    # twice; Mohammad: "must not retry combinations we already tried"
+    built = []
+    fake = _fake_evaluate(over=lambda p: False)
+
+    def evaluate(ctx, point, max_windows=None, **kw):
+        r = fake(ctx, point, max_windows)
+        built.extend([] if r["cached"] else [point])
+        return r
+
+    monkeypatch.setattr(search, "evaluate", evaluate)
+    c = cfg.with_overrides({"search.stage3_methods": ["rtn_kv", "quarot_kv"]})
+    ctx = start_run(c.with_overrides({"run.run_id": "a"}))
+    log = search.TriedLog(search.tried_path(ctx), "a")
+    rec = Recorder(ctx, "mobo", 6, tried=log)
+    base = _point(c, stage3_method="rtn_kv", quarot_k_bits=4, smoothquant_alpha=0.5)
+    first = rec(base)
+    same = rec({**base, "quarot_k_bits": 2, "smoothquant_alpha": 0.9})  # RTN KV and RTN activations read neither
+    assert len(built) == 1 and same["values"] == first["values"] and same["earlier_run"] == "a"
+    assert rec(base)["earlier_run"] is None and len(built) == 1  # the very same point: the cache, as before
+    rec({**base, "stage3_method": "quarot_kv"})
+    rec({**base, "stage3_method": "quarot_kv", "quarot_k_bits": 2})  # QuaRot KV reads its key bits: a new model
+    assert len(built) == 3
+    later = Recorder(start_run(c.with_overrides({"run.run_id": "b"})), "mobo", 6,
+                     tried=search.TriedLog(search.tried_path(ctx), "b"))
+    assert later({**base, "quarot_k_bits": 8})["earlier_run"] == "a" and len(built) == 3  # nor in a later run
+
+
 def test_the_tried_log_reuses_only_good_results_under_the_same_settings(cfg):
     ctx = start_run(cfg.with_overrides({"run.run_id": "a"}))
     log = search.TriedLog(search.tried_path(ctx), "a")

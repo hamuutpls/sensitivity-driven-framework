@@ -7,6 +7,9 @@
   Before, an earlier try counted only if this run's searcher proposed it again, so after the limit went to 11.5 the
   earlier run's 0.91 GB model at perplexity 11.23 was not considered. The report says when the final model came from
   an earlier run.
+- Two tries that differ only in a setting their techniques never read (SmoothQuant's strength without SmoothQuant,
+  QuaRot's key bits without QuaRot KV) are the same model: the second is not built, in the same run or a later one.
+  On Colab, MOBO #22 and #23 had built the same model twice.
 
 ## 2026-10-26: Perplexity limit 11.5
 
