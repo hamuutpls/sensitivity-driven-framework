@@ -272,34 +272,40 @@ class TriedLog:
         check = check_requirement(ctx.cfg, r["metrics"])
         return {**r, "met": check.met is True, "shortfall": check.shortfall, "cached": True, "run_id": row["run_id"]}
 
-    def known(self, ctx: RunContext, full_windows: int, objectives: list[str]) -> list[dict[str, Any]]:
+    def known(self, ctx: RunContext, full_windows: int, objectives: list[str],
+              exclude: list[dict[str, Any]] = ()) -> list[dict[str, Any]]:
         """The earlier runs' good tries on all the windows that are still the same combination under ctx's settings,
-        as trials (requirement checked again), so the final pick sees the best model found so far even when this
-        run's searchers never propose it again."""
+        inside the current search space and not among `exclude` (this run's tries), as trials with the requirement
+        checked again, so the final pick sees the best model found so far even when this run's searchers never
+        propose it again."""
+        space, seen = technique_space(ctx.cfg), {self.combination(ctx, t["point"], t["windows"]) for t in exclude}
         out = []
         for c, row in self.rows.items():
-            key = json.loads(c)
-            if key["windows"] != full_windows:
-                continue
-            # the CSV keeps the point at full precision (the combination rounds it); the key gives each value's type
-            point = {k: (type(v)(row[k]) if row.get(k) not in (None, "") and isinstance(v, (int, float)) else v)
-                     for k, v in key.items() if k not in ("settings", "windows")}
-            if self.combination(ctx, point, full_windows) != c:  # a setting or technique changed since
-                continue
-            r = self.get(ctx, point, full_windows)
-            values = [r["metrics"].get(o) for o in objectives]
-            if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in values):
-                continue
-            out.append({"searcher": row["searcher"], "n": int(row["n"]), "point": point, "windows": full_windows,
-                        "cost": 0.0, "built": True, "over_limit": False, "full": True, "ok": True, "met": r["met"],
-                        "values": values, "violation": violation(r), "metrics": r["metrics"], "dir": r.get("dir"),
-                        "cached": True, "error": None, "earlier_run": row["run_id"]})
+            try:  # a row that no longer fits (a renamed technique, a changed space) is skipped, never the report
+                key = json.loads(c)
+                if key["windows"] != full_windows or c in seen or row["searcher"] == "extra":  # extras stay apart
+                    continue
+                r = json.loads(row["result"])
+                point = r.get("point") or {  # rows written before the point was kept: its columns, typed by the key
+                    k: type(v)(row[k]) if row.get(k) not in (None, "") and isinstance(v, (int, float)) else v
+                    for k, v in key.items() if k not in ("settings", "windows")}
+                space.validate(point)  # e.g. a technique since taken out of search.stage1_methods
+                if self.combination(ctx, point, full_windows) != c:  # a setting or technique changed since
+                    continue
+                values = [r["metrics"].get(o) for o in objectives]
+                if all(isinstance(v, (int, float)) and math.isfinite(v) for v in values):
+                    out.append({"searcher": row["searcher"], "n": int(row["n"]), "point": point,
+                                "windows": full_windows, "full": True, "ok": True,
+                                "met": check_requirement(ctx.cfg, r["metrics"]).met is True, "values": values,
+                                "metrics": r["metrics"], "earlier_run": row["run_id"], "from_log": True})
+            except Exception as e:  # noqa: BLE001
+                log.warning("search_tried.csv: skipping a row that no longer fits: %s", e)
         return out
 
     def add(self, ctx: RunContext, searcher: str, t: dict[str, Any], r: dict[str, Any]) -> None:
         if t["over_limit"]:
             return
-        keep = {k: r[k] for k in ("metrics", "error", "errors", "attempted", "dir") if k in r}
+        keep = {"point": t["point"], **{k: r[k] for k in ("metrics", "error", "errors", "attempted", "dir") if k in r}}
         row = {"combination": self.combination(ctx, t["point"], t["windows"]), "run_id": self.run_id,
                "searcher": searcher, "n": t["n"], "windows": t["windows"], **t["point"],
                "status": "ok" if t["ok"] else "failed", "met": t["met"],
@@ -505,11 +511,9 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     extras, final = [], None
     # earlier runs' tries not proposed again in this one still count for the pick (Mohammad, 2026-10-26: "we add 10
     # more tries of DIFFERENT combinations"; the 30 already made are not thrown away)
-    seen = {TriedLog.combination(tries, t["point"], t["windows"]) for t in trials}
-    known = trials + [t for t in tried.known(tries, full, s.objectives)
-                      if TriedLog.combination(tries, t["point"], full) not in seen]
+    known = trials + tried.known(tries, full, s.objectives, exclude=trials)
     try:  # neither step may cost the report of hours of tries, nor the other step
-        extras = extra_tries(tries, known, s.extra_stage1, full, tried=tried, **kw)
+        extras = extra_tries(tries, trials, s.extra_stage1, full, best_from=known, tried=tried, **kw)
     except Exception:  # noqa: BLE001
         log.exception("the extra Stage 1 tries failed; the report is written without them")
     try:
@@ -543,21 +547,23 @@ def final_model(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[str],
     entry = ctx.cache.path("fp16_downstream", {**fp16_key(actx, setup(actx)[0]), "tasks": list(tasks),
                                                "limit": cfg.eval.downstream_limit})
     fp16 = json.loads(entry.read_text(encoding="utf-8"))["value"] if entry.exists() else {}
-    return {"searcher": best["searcher"], "n": best["n"], "earlier_run": best.get("earlier_run"),
-            "point": best["point"], "fp16": fp16,
+    return {"searcher": best["searcher"], "n": best["n"],  # the earlier run, for a try this run did not propose
+            "earlier_run": best.get("earlier_run") if best.get("from_log") else None,
+            "point": best["point"], "try_metrics": best["metrics"], "fp16": fp16,
             **{k: r.get(k) for k in ("metrics", "error", "errors", "dir")}}
 
 
 def extra_tries(ctx: RunContext, trials: list[dict[str, Any]], methods: list[str], full_windows: int,
-                **kw: Any) -> list[dict[str, Any]]:
+                best_from: list[dict[str, Any]] | None = None, **kw: Any) -> list[dict[str, Any]]:
     """One chained try for each of `methods` (Stage 1 techniques) whose weight technique no searcher measured on all
     the windows (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"): the search's best try
-    under the limit (lowest first objective) with only its Stage 1 technique swapped, or the run's own settings if
+    under the limit (lowest first objective; among `best_from` when given, which adds the earlier runs' tries) with
+    only its Stage 1 technique swapped, or the run's own settings if
     no try met the limit. Kept apart from the searchers' trials, so they change no comparison or trade-off line."""
     cfg = ctx.cfg
     space = technique_space(cfg)
     done = {t["point"]["stage1_method"].split("_with_")[0] for t in trials if t["full"] and t["ok"]}
-    best = min((t for t in trials if t["full"] and t["met"]), key=lambda t: t["values"], default=None)
+    best = min((t for t in best_from or trials if t["full"] and t["met"]), key=lambda t: t["values"], default=None)
     base = best["point"] if best else space.make({k: v for k, v in cfg.hyperparams.items()
                                                   if k in {p.name for p in SEARCH_SPACE.params}})
     rec = Recorder(ctx, "extra", full_windows, **kw)

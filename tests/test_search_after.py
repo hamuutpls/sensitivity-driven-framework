@@ -84,6 +84,11 @@ def test_the_final_model_is_the_best_on_the_first_objective(cfg, monkeypatch):  
     smaller_over = {**_trial(_point(c, sensitive_threshold=0.8), 3, met=False, ppl_val=11.5), "values": [0.6, 11.5]}
     out = final_model(start_run(c), [accurate, smaller_over, small], [])
     assert out["n"] == 1 and built == [small["point"]]
+    assert out["earlier_run"] is None  # this run's try
+    reused = {**small, "earlier_run": "b30"}  # proposed again in this run: its number is this run's
+    assert final_model(start_run(c), [reused], [])["earlier_run"] is None
+    logged = {**small, "earlier_run": "b30", "from_log": True}  # an earlier run's try this run did not propose
+    assert final_model(start_run(c), [logged], [])["earlier_run"] == "b30"
 
 
 def test_a_failing_after_step_drops_only_itself(cfg, monkeypatch):  # noqa: F811
@@ -92,12 +97,14 @@ def test_a_failing_after_step_drops_only_itself(cfg, monkeypatch):  # noqa: F811
     monkeypatch.setattr(search, "evaluate", _fake_evaluate(over=lambda p: False))
     monkeypatch.setattr(search, "extra_tries", lambda *a, **k: 1 / 0)
     monkeypatch.setattr(search, "final_model", lambda *a, **k: {"searcher": "mobo", "n": 1, "fp16": {},
-                                                                   "earlier_run": "b30",
+                                                                   "earlier_run": "b30", "point": {"calib_samples": 16},
+                                                                   "try_metrics": {"ppl_val": 11.23},
                                                                    "metrics": {"acc_arc_easy": 0.4}})
     c = cfg.with_overrides({"search.budget": 1, "search.searchers": ["mobo"]})
     text = search.run_search(start_run(c))["search_report"].read_text()
     assert "## Accuracy of the final model" in text and "Extra Stage 1" not in text
     assert "MOBO try #1 of the earlier run b30" in text  # a model an earlier run built says which run
+    assert "perplexity (validation half) 11.23" in text and "16" in text  # and what it is
 
 
 def test_tries_run_no_backend_and_the_final_model_runs_them_in_stage4(cfg, monkeypatch):  # noqa: F811

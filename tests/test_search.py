@@ -269,18 +269,24 @@ def test_the_final_pick_sees_an_earlier_runs_good_tries_this_run_did_not_propose
     log = search.TriedLog(search.tried_path(first), "a")
     good, over = _point(c, sensitive_threshold=1 / 3), _point(c, sensitive_threshold=0.7)
     trial = {"windows": windows, "over_limit": False, "ok": True, "met": True}
-    for n, point, size in ((5, good, 0.5), (6, over, 1.5)):  # logged as met; 1.5 GB is over the 1 GB limit now
+    wide = start_run(c.with_overrides({"run.run_id": "a", "search.stage1_methods": ["rtn_with_rtn_act",
+                                                                                     "gptq_with_rtn_act"]}))
+    gptq = {**good, "stage1_method": "gptq_with_rtn_act"}  # since taken out of search.stage1_methods
+    for n, point, size in ((5, good, 0.5), (6, over, 1.5), (7, gptq, 0.2)):  # 1.5 GB: over the 1 GB limit now
         metrics = {"ppl_val": 9.0, "decode_ms_per_token_mean": 1.0, "predicted_weight_memory_gb": size}
-        log.add(first, "mobo", {**trial, "n": n, "point": point, "metrics": metrics}, {"metrics": metrics, "dir": "d"})
+        log.add(wide, "mobo", {**trial, "n": n, "point": point, "metrics": metrics}, {"metrics": metrics, "dir": "d"})
+    log.add(first, "extra", {**trial, "n": 8, "point": {**good, "sensitive_threshold": 0.15}, "metrics": metrics},
+            {"metrics": metrics, "dir": "d"})  # the extra tries stay apart from the pick, as in their own run
     picked.clear()
     run_search(start_run(c.with_overrides({"run.run_id": "b"})))
-    earlier = {t["n"]: t for t in picked if t["earlier_run"] == "a" and t["n"] in (5, 6)}
+    earlier = {t["n"]: t for t in picked if t.get("from_log") and t["n"] in (5, 6, 7, 8)}
     assert earlier[5]["point"] == good and earlier[5]["met"] and earlier[5]["values"] == [9.0, 1.0]  # full precision
     assert not earlier[6]["met"]  # the requirement checked again, not copied
+    assert 7 not in earlier and 8 not in earlier  # 7 is outside this run's search space (building it would fail); 8 is an extra try
     assert len(picked) == len({json.dumps([t["point"], t["windows"]], sort_keys=True) for t in picked})  # no doubles
     picked.clear()
     run_search(start_run(c.with_overrides({"run.run_id": "b2", "calibration.seq_len": 64})))
-    assert not [t for t in picked if t["n"] in (5, 6) and t["earlier_run"] == "a"]  # other settings: not the same
+    assert not [t for t in picked if t.get("earlier_run") == "a" and t["n"] in (5, 6)]  # other settings: not the same
 
 
 def test_the_tried_log_reuses_only_good_results_under_the_same_settings(cfg):
