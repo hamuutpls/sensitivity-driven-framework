@@ -188,7 +188,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         + "; Stage 2 " + ", ".join(setting_value("stage2_method", m) for m in s.stage2_methods)
         + "; Stage 3 " + ", ".join(setting_value("stage3_method", m) for m in s.stage3_methods) + ".",
         f"- Tries over the limit, so not built: {sum(1 for t in trials if t.get('over_limit'))} of {len(trials)}.",
-        f"- Combinations tried in an earlier run, so not built again (their earlier result is used): "
+        f"- Tries whose model an earlier run already built, so not built again (its earlier result is used): "
         f"{sum(1 for t in trials if t.get('earlier_run') not in (None, ctx.run_id))} of {len(trials)}. Tries that "
         f"were the same model as an earlier try of this run (they differ only in a setting their techniques do not "
         f"read), so not built either: {sum(1 for t in trials if t.get('earlier_run') == ctx.run_id)}. Every "

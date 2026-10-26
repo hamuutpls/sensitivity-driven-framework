@@ -254,7 +254,7 @@ def test_more_tries_never_rebuild_a_combination_an_earlier_run_tried(cfg, monkey
     trials = json.loads(out["search_trials"].read_text())
     assert [t["earlier_run"] for t in trials] == ["b2", "b2", None, None]
     assert len(csv_path.read_text().splitlines()) == 1 + 4
-    assert "tried in an earlier run, so not built again" in out["search_report"].read_text()
+    assert "an earlier run already built, so not built again" in out["search_report"].read_text()
 
 
 def test_the_final_pick_sees_an_earlier_runs_good_tries_this_run_did_not_propose_again(cfg, monkeypatch):
@@ -301,7 +301,8 @@ def test_a_setting_the_techniques_do_not_read_never_makes_a_new_model(cfg, monke
         return r
 
     monkeypatch.setattr(search, "evaluate", evaluate)
-    c = cfg.with_overrides({"search.stage3_methods": ["rtn_kv", "quarot_kv"]})
+    c = cfg.with_overrides({"search.stage3_methods": ["rtn_kv", "quarot_kv"],
+                            "search.stage1_methods": ["rtn_with_rtn_act", "rtn_with_smoothquant"]})
     ctx = start_run(c.with_overrides({"run.run_id": "a"}))
     log = search.TriedLog(search.tried_path(ctx), "a")
     rec = Recorder(ctx, "mobo", 6, tried=log)
@@ -311,11 +312,13 @@ def test_a_setting_the_techniques_do_not_read_never_makes_a_new_model(cfg, monke
     assert len(built) == 1 and same["values"] == first["values"] and same["earlier_run"] == "a"
     assert rec(base)["earlier_run"] is None and len(built) == 1  # the very same point: the cache, as before
     rec({**base, "stage3_method": "quarot_kv"})
-    rec({**base, "stage3_method": "quarot_kv", "quarot_k_bits": 2})  # QuaRot KV reads its key bits: a new model
-    assert len(built) == 3
+    rec({**base, "stage3_method": "quarot_kv", "quarot_k_bits": 2})  # only QuaRot KV's standard row reads them
+    rec({**base, "smoothquant_alpha": 0.9, "stage1_method": "rtn_with_smoothquant"})
+    rec({**base, "smoothquant_alpha": 0.2, "stage1_method": "rtn_with_smoothquant"})  # SmoothQuant reads its strength
+    assert len(built) == 4
     later = Recorder(start_run(c.with_overrides({"run.run_id": "b"})), "mobo", 6,
                      tried=search.TriedLog(search.tried_path(ctx), "b"))
-    assert later({**base, "quarot_k_bits": 8})["earlier_run"] == "a" and len(built) == 3  # nor in a later run
+    assert later({**base, "quarot_k_bits": 8})["earlier_run"] == "a" and len(built) == 4  # nor in a later run
 
 
 def test_the_tried_log_reuses_only_good_results_under_the_same_settings(cfg):

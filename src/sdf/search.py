@@ -174,8 +174,10 @@ class Recorder:
     """Every evaluation a searcher asks for, in order, with its cost: its share of the full evaluation windows for a
     model built for this searcher (even if measuring it then failed), else 0 (a point the plan puts over the limit, a
     crash before building, or a point this searcher already tried on as many windows that came back from the cache).
-    Only built models use up the budget. `evaluator`: what measures a point, with evaluate()'s arguments and result
-    (default evaluate(), the chained model); a per-stage search passes its own stage's."""
+    Only built models use up the budget, and results reused from search_tried.csv (TriedLog: an earlier run's try or
+    the same model as an earlier one), which count as tries but cost no build time. `evaluator`: what measures a
+    point, with evaluate()'s arguments and result (default evaluate(), the chained model); a per-stage search passes
+    its own stage's."""
 
     def __init__(self, ctx: RunContext, searcher: str, full_windows: int, evaluator: Callable | None = None,
                  tried: TriedLog | None = None, **kw: Any):
@@ -242,9 +244,10 @@ class TriedLog:
     second is not built either, in this run or a later one."""
 
     METRICS = ("ppl_val", "ppl_heldout", "predicted_weight_memory_gb")
-    # a setting -> the technique that reads it; any other technique ignores it (SmoothQuant's strength, QuaRot KV's key
-    # bits). The group size is not here: the size estimate and the export use it for every technique.
-    UNREAD = {"smoothquant_alpha": ("stage1_method", 1), "quarot_k_bits": ("stage3_method", 3)}
+    # a setting -> the technique that reads it; any other technique ignores it (SmoothQuant's strength). The group size
+    # is not here: the size estimate and the export use it for every technique.
+    UNREAD = {"smoothquant_alpha": ("stage1_method", 1)}
+    NEVER_READ = ("quarot_k_bits",)  # only QuaRot KV's standard row reads it; a try builds Our method's row only
 
     def __init__(self, path: Path, run_id: str):
         self.path, self.run_id = Path(path), run_id
@@ -268,13 +271,15 @@ class TriedLog:
         """The combination without the settings its techniques never read."""
         from sdf.stages.methods import methods_for
 
-        key = json.loads(combination)
-        for name, (technique, stage) in cls.UNREAD.items():
-            try:
+        try:
+            key = json.loads(combination)
+            for name in cls.NEVER_READ:
+                key.pop(name, None)
+            for name, (technique, stage) in cls.UNREAD.items():
                 if name in key and name not in methods_for(stage, [key[technique]])[0].params:
                     del key[name]
-            except (KeyError, ValueError):  # a technique that no longer exists: kept as it is
-                pass
+        except (KeyError, ValueError, TypeError):  # a bad row or a technique that no longer exists: kept as it is
+            return combination
         return json.dumps(key, sort_keys=True)
 
     @staticmethod
@@ -300,12 +305,13 @@ class TriedLog:
         inside the current search space and not among `exclude` (this run's tries), as trials with the requirement
         checked again, so the final pick sees the best model found so far even when this run's searchers never
         propose it again."""
-        space, seen = technique_space(ctx.cfg), {self.combination(ctx, t["point"], t["windows"]) for t in exclude}
+        space = technique_space(ctx.cfg)
+        seen = {self.same_model(self.combination(ctx, t["point"], t["windows"])) for t in exclude}
         out = []
         for c, row in self.rows.items():
             try:  # a row that no longer fits (a renamed technique, a changed space) is skipped, never the report
                 key = json.loads(c)
-                if key["windows"] != full_windows or c in seen or row["searcher"] == "extra":  # extras stay apart
+                if key["windows"] != full_windows or self.same_model(c) in seen or row["searcher"] == "extra":
                     continue
                 r = json.loads(row["result"])
                 point = r.get("point") or {  # rows written before the point was kept: its columns, typed by the key
