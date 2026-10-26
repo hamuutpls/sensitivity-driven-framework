@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-26: Perplexity limit 11.5
+
+- Mohammad (2026-10-26): "then increase the threshold to 11.5". `TARGET_PPL = 11.5` (was 11): the search makes the
+  final model as small as it can with validation perplexity at most 11.5.
+
 ## 2026-10-26: The search makes the final model as small as it can at perplexity 11 or lower
 
 - Mohammad (2026-10-26): "lets see how much smaller can we get the model, while keeping 11 ppl or lower". No size
