@@ -339,7 +339,11 @@ def test_an_extra_stage1_try_can_be_the_final_model(cfg, monkeypatch):
     best = min((t for t in picked if t["full"] and t["met"]), key=lambda t: t["values"])
     assert best["searcher"] == "extra" and best["point"]["stage1_method"] == "gptq_with_rtn_act"
     picked.clear()  # run again: the extra try comes back from the CSV and is also an earlier run's logged row
+    bases, extra_tries = [], search.extra_tries
+    monkeypatch.setattr(search, "extra_tries", lambda *a, best_from=None, **kw: bases.extend(best_from)
+                        or extra_tries(*a, best_from=best_from, **kw))
     run_search(start_run(c.with_overrides({"run.run_id": "b"})))
+    assert bases and all(t["searcher"] != "extra" for t in bases)  # an extra try is never the extras' base
     best = min((t for t in picked if t["full"] and t["met"]), key=lambda t: t["values"])
     assert best["searcher"] == "extra" and not best.get("from_log")  # this run's try, so this run's label
 

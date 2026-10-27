@@ -542,9 +542,11 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     # earlier runs' tries not proposed again in this one still count for the pick (Mohammad, 2026-10-26: "we add 10
     # more tries of DIFFERENT combinations"; the 30 already made are not thrown away)
     earlier = tried.known(tries, full, s.objectives, exclude=trials)
-    known = trials + earlier
     try:  # neither step may cost the report of hours of tries, nor the other step
-        extras = extra_tries(tries, trials, s.extra_stage1, full, best_from=known, tried=tried, **kw)
+        # the base point: the best searcher try, this run's or an earlier run's, never an extra try (an extra base
+        # would keep the extras on it after the searchers find a better point)
+        extras = extra_tries(tries, trials, s.extra_stage1, full, tried=tried,
+                             best_from=trials + [t for t in earlier if t["searcher"] != "extra"], **kw)
     except Exception:  # noqa: BLE001
         log.exception("the extra Stage 1 tries failed; the report is written without them")
     try:
@@ -590,8 +592,8 @@ def extra_tries(ctx: RunContext, trials: list[dict[str, Any]], methods: list[str
                 best_from: list[dict[str, Any]] | None = None, **kw: Any) -> list[dict[str, Any]]:
     """One chained try for each of `methods` (Stage 1 techniques) whose weight technique no searcher measured on all
     the windows (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"): the search's best try
-    under the limit (lowest first objective; among `best_from` when given, which adds the earlier runs' tries) with
-    only its Stage 1 technique swapped, or the run's own settings if
+    under the limit (lowest first objective; among `best_from` when given, which adds the earlier runs' searcher
+    tries) with only its Stage 1 technique swapped, or the run's own settings if
     no try met the limit. Kept apart from the searchers' trials, so they change no comparison or trade-off line, but
     one may be the final model: the 11.5 run's QuIP# extra try (0.88 GB at 11.02) beat every searcher's try."""
     cfg = ctx.cfg
