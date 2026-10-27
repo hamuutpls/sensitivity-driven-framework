@@ -191,10 +191,10 @@ class Recorder:
     """Every evaluation a searcher asks for, in order, with its cost: its share of the full evaluation windows for a
     model built for this searcher (even if measuring it then failed), else 0 (a point the plan puts over the limit, a
     crash before building, or a point this searcher already tried on as many windows that came back from the cache).
-    Only built models use up the budget, and results reused from search_tried.csv (TriedLog: an earlier run's try or
-    the same model as an earlier one), which count as tries but cost no build time. `evaluator`: what measures a
-    point, with evaluate()'s arguments and result (default evaluate(), the chained model); a per-stage search passes
-    its own stage's."""
+    Only built models use up the budget, and an earlier run's result reused from search_tried.csv (TriedLog), which
+    counts as a try but costs no build time (a relaunch replays it); the same model as an earlier try of this run
+    (TriedLog.same_model) is reused and uses up nothing. `evaluator`: what measures a point, with evaluate()'s
+    arguments and result (default evaluate(), the chained model); a per-stage search passes its own stage's."""
 
     def __init__(self, ctx: RunContext, searcher: str, full_windows: int, evaluator: Callable | None = None,
                  tried: TriedLog | None = None, **kw: Any):
@@ -227,6 +227,9 @@ class Recorder:
         built = "not_built" not in r and ("error" not in r or r.get("attempted", False))
         repeat = r["cached"] and any(t["point"] == point and t["windows"] == windows and t["built"]
                                      for t in self.trials)  # a failed build is not cached, so its repeat rebuilds
+        # the same model as an earlier try of this run (a setting its techniques do not read): nothing new, so it uses
+        # up no budget (Colab, 2026-10-27: MOBO #16 was #14's model; Mohammad: no repeated combinations)
+        repeat = repeat or bool(earlier and earlier["run_id"] == self.tried.run_id)
         ok = "error" not in r and all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
         t = {"searcher": self.searcher, "n": len(self.trials) + 1, "point": point, "windows": windows,
              "cost": windows / self.full if built and not repeat else 0.0, "built": built,
