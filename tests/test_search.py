@@ -101,15 +101,23 @@ def test_bits_can_follow_the_threshold_instead_of_the_joint_plan(cfg, tiny_llama
     monkeypatch.setattr(runner, "stage1_row", lambda name: rows.append(name) or stage1_row(name))
     joint, plain = start_run(cfg), start_run(cfg.with_overrides({"search.joint_plan": False}))
     a = evaluate(joint, _point(cfg), **_kw(tiny_llama, tokenizer))
+    assert "rtn_with_rtn_act_joint" in rows
+    rows.clear()
     b = evaluate(plain, _point(cfg), **_kw(tiny_llama, tokenizer))
-    assert rows[-1] == "rtn_with_rtn_act" and "error" not in b  # the threshold plan's row
+    assert "error" not in b and rows and "rtn_with_rtn_act_joint" not in rows  # the threshold plan's row only
     assert b["metrics"]["predicted_weight_memory_gb"] != a["metrics"]["predicted_weight_memory_gb"]
     assert search.TriedLog.combination(plain, _point(cfg), 6) != search.TriedLog.combination(joint, _point(cfg), 6)
+    log = search.TriedLog(search.tried_path(joint), "old")  # a joint-plan row from an earlier run
+    log.add(joint, "mobo", {"n": 1, "point": _point(cfg), "windows": 6, "over_limit": False, "ok": True, "met": True,
+                            "metrics": a["metrics"]}, a)
+    assert search.TriedLog(search.tried_path(plain), "new").get(plain, _point(cfg), 6) is None  # never reused
+    assert search.TriedLog(search.tried_path(joint), "new").get(joint, _point(cfg), 6) is not None
     space = technique_space(cfg.with_overrides({"search.ranges": {"sensitive_threshold": [0.8, 0.9]}}))
     assert space.make({"sensitive_threshold": 0.85})["sensitive_threshold"] == 0.85
     with pytest.raises(ValueError):
         space.make({"sensitive_threshold": 0.5})  # outside the narrowed range
-    for bad in ({"sensitive_threshold": [0.5, 0.95]}, {"calib_samples": [16, 32]}, {"nope": [0, 1]}):
+    for bad in ({"sensitive_threshold": [0.5, 0.95]}, {"calib_samples": [16, 32]}, {"nope": [0, 1]},
+                {"sensitive_threshold": [0.8]}, {"sensitive_threshold": ["a", "b"]}):
         with pytest.raises(ValueError, match="search.ranges"):
             technique_space(cfg.with_overrides({"search.ranges": bad}))
 

@@ -39,11 +39,12 @@ FAILED = 1e9  # objective and constraint value of a point that could not be buil
 
 
 def technique_space(cfg: FrameworkConfig) -> SearchSpace:
-    """SEARCH_SPACE plus the technique of each stage. Stage 1 always follows the joint weight x activation plan."""
+    """SEARCH_SPACE, narrowed by search.ranges, plus the technique of each stage. Stage 1 follows the joint weight x
+    activation plan, or the threshold plan when search.joint_plan is False."""
     s = cfg.search
     full = {p.name: p for p in SEARCH_SPACE.params}
-    if bad := [n for n, (lo, hi) in s.ranges.items()
-               if n not in full or full[n].choices is not None or not full[n].low <= lo <= hi <= full[n].high]:
+    if bad := [n for n, r in s.ranges.items() if n not in full or full[n].choices is not None or len(r) != 2
+               or not all(isinstance(v, (int, float)) for v in r) or not full[n].low <= r[0] <= r[1] <= full[n].high]:
         raise ValueError(f"search.ranges {bad}: each must be a numeric search setting, inside its full range")
     params = [replace(p, low=lo, high=hi, default=min(max(p.default, lo), hi)) if (lo, hi) != (None, None) else p
               for p in SEARCH_SPACE.params for lo, hi in [s.ranges.get(p.name, (None, None))]]
@@ -608,8 +609,10 @@ def extra_tries(ctx: RunContext, trials: list[dict[str, Any]], methods: list[str
     space = technique_space(cfg)
     done = {t["point"]["stage1_method"].split("_with_")[0] for t in trials if t["full"] and t["ok"]}
     best = min((t for t in best_from or trials if t["full"] and t["met"]), key=lambda t: t["values"], default=None)
-    base = best["point"] if best else space.make({k: v for k, v in cfg.hyperparams.items()
-                                                  if k in {p.name for p in SEARCH_SPACE.params}})
+    within = {p.name: p for p in space.params if p.choices is None}  # the run's own settings, inside search.ranges
+    base = best["point"] if best else space.make({
+        k: min(max(v, within[k].low), within[k].high) if k in within else v for k, v in cfg.hyperparams.items()
+        if k in {p.name for p in SEARCH_SPACE.params}})
     rec = Recorder(ctx, "extra", full_windows, **kw)
     for m in methods:
         if m.split("_with_")[0] not in done:

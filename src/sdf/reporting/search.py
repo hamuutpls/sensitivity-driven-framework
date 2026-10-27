@@ -144,8 +144,9 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         "# Settings search", "",
         "## What this shows", "",
         "The framework tried many settings and built each one as a chained model: the Stage 0 plan (which layers are "
-        "sensitive), then Stage 1 (weights and activations stored with fewer bits, following the joint weight and activation "
-        "plan), then Stage 2 (pruning: removing "
+        "sensitive), then Stage 1 (weights and activations stored with fewer bits, following the "
+        + ("joint weight and activation plan" if s.joint_plan else f"threshold plan: sensitive layers {cfg.stage0.protected_bits} bits, the rest {cfg.stage0.compressed_bits}")
+        + "), then Stage 2 (pruning: removing "
         "numbers), then Stage 3 (compressing the KV cache, the model's memory of earlier words). A setting is the "
         "technique of each stage plus the numbers that tune them (protection threshold, pruning share, calibration "
         f"text and so on). Only settings that meet the limit count ({_req(cfg)}). Among those the search looks for "

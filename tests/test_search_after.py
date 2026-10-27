@@ -41,6 +41,11 @@ def test_extra_tries_swap_only_the_stage1_technique_of_the_best_try(cfg, monkeyp
     seen.clear()
     extra_tries(start_run(c), [{**worse, "met": False}], ["awq_with_rtn_act"], 6)
     assert seen[0][0] == technique_space(c).make({"stage1_method": "awq_with_rtn_act"})
+    seen.clear()  # the run's own settings outside search.ranges are moved inside it, not an error
+    narrow = c.with_overrides({"hyperparams": {"sensitive_threshold": 0.5},
+                               "search.ranges": {"sensitive_threshold": [0.8, 0.9]}})
+    extra_tries(start_run(narrow), [{**worse, "met": False}], ["awq_with_rtn_act"], 6)
+    assert seen[0][0]["sensitive_threshold"] == 0.8
     report = write_search_report(start_run(c), [best, worse], technique_space(c), extras=out)["search_report"]
     assert "## Extra Stage 1 techniques" in report.read_text() and "| W4.5A8 |" in report.read_text()
 
