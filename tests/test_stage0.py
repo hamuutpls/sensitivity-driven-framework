@@ -70,6 +70,16 @@ def test_plan_and_uniform():
         plan_compression(TOY_SCORES, 0.5, 1.5, 8, 4)
 
 
+def test_the_least_sensitive_unguarded_layers_can_drop_to_low_bits():
+    # Mohammad, 2026-10-27, chose "Both": only the least sensitive layers may drop to 3 bits
+    plan = plan_compression(TOY_SCORES, 0.5, 0.25, 8, 4, frozenset({0}), low_threshold=0.4, low_bits=3)
+    assert [(lp.bit_width, lp.pruning_ratio) for lp in plan.layers] == [(4, 0.0), (3, 0.25), (8, 0.0), (8, 0.0)]
+    off = plan_compression(TOY_SCORES, 0.5, 0.25, 8, 4, frozenset({0}))
+    assert [lp.bit_width for lp in off.layers] == [4, 4, 8, 8]  # 0 (the default): no layer drops
+    assert [lp.bit_width for lp in plan_compression(TOY_SCORES, 0.5, 0.0, 8, 4, low_threshold=0.9).layers] == \
+        [3, 3, 8, 8]  # protection wins where the two overlap
+
+
 def test_guard_blocks_pruning_of_critical_layers():
     # TinyLlama layer removal: 0, 2, 7, 21, 1 hurt most. Here: layer 0 is critical but ranks least sensitive,
     # as it does under gradient x weight.

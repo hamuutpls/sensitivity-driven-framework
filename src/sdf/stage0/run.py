@@ -381,7 +381,7 @@ def run_stage0(
                                 f"prune {candidate['prune_ratio_aggressive']:.3g} on robust layers)") as row:
         t0 = time.perf_counter()
         plan = plan_compression(scores, candidate["sensitive_threshold"], candidate["prune_ratio_aggressive"],
-                                s0.protected_bits, s0.compressed_bits, guarded)
+                                s0.protected_bits, s0.compressed_bits, guarded, s0.low_threshold, s0.low_bits)
         planning_s = time.perf_counter() - t0
         row.metrics.update(_cost_metrics(predict(plan)))
         row.metrics["protected_layers"] = len(plan.protected_layers)
@@ -400,7 +400,7 @@ def run_stage0(
                         act_prof)
     # What each later stage loads: Stage 1 bits only, Stage 2 pruning only (see handoff.md)
     quant = plan_compression(scores, candidate["sensitive_threshold"], 0.0, s0.protected_bits, s0.compressed_bits,
-                             guarded)
+                             guarded, s0.low_threshold, s0.low_bits)
     prune = pruning_only(plan, s0.baseline_bits)
     prune_uniform = uniform_plan(scores, s0.baseline_bits, candidate["prune_ratio_aggressive"])
     prune_same = same_size_pruning_plan(scores, s0.baseline_bits, candidate["prune_ratio_aggressive"],
@@ -416,7 +416,7 @@ def run_stage0(
     for level in s0.pruning_levels:  # Stage 2 runs once per level (Mohammad, 2026-10-13)
         tag = level_tag(level)
         ours = plan_compression(scores, candidate["sensitive_threshold"], level, s0.protected_bits,
-                                s0.compressed_bits, guarded)
+                                s0.compressed_bits, guarded, s0.low_threshold, s0.low_bits)
         pruning_only(ours, s0.baseline_bits).save(rep.dir / f"prune_plan_{tag}.json")
         same_size_pruning_plan(scores, s0.baseline_bits, level, profile.layer_numel,
                                guarded).save(rep.dir / f"prune_plan_same_size_{tag}.json")

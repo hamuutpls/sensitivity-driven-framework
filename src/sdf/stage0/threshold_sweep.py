@@ -70,7 +70,8 @@ def run_threshold_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, 
         guarded, _ = load_guard(ctx, candidate, handle, text_loader, profile, k)
         for t in thresholds:
             row(f"t{round(t * 100):03d}_k{k}", "framework",
-                plan_compression(scores, t, pr, s0.protected_bits, s0.compressed_bits, guarded),
+                plan_compression(scores, t, pr, s0.protected_bits, s0.compressed_bits, guarded,
+                                 s0.low_threshold, s0.low_bits),
                 label=f"Threshold {t:g}, guard {k}", threshold=t, guard=k,
                 description=f"Stage 0 plan, threshold {t:g}, {pr:.0%} removed from unprotected layers, "
                             f"{k} layers never pruned")

@@ -62,7 +62,8 @@ SEARCHER_NAMES = {"mobo": "MOBO (multi-objective Bayesian optimisation)",
 SETTING_NAMES = {"sensitive_threshold": "Protection threshold", "prune_ratio_aggressive": "Pruning share",
                  "calib_dataset": "Calibration text", "calib_samples": "Calibration passages",
                  "gptq_groupsize": "Group size", "smoothquant_alpha": "SmoothQuant strength",
-                 "quarot_k_bits": "QuaRot key bits", "stage1_method": "Stage 1 quantization",
+                 "quarot_k_bits": "QuaRot key bits", "low_threshold": "3-bit threshold (layers below it get 3 bits)",
+                 "stage1_method": "Stage 1 quantization",
                  "stage2_method": "Stage 2 pruning",
                  "stage3_method": "Stage 3 KV-cache (memory of earlier words) technique"}
 
@@ -144,8 +145,12 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         "# Settings search", "",
         "## What this shows", "",
         "The framework tried many settings and built each one as a chained model: the Stage 0 plan (which layers are "
-        "sensitive), then Stage 1 (weights and activations stored with fewer bits, following the joint weight and activation "
-        "plan), then Stage 2 (pruning: removing "
+        "sensitive), then Stage 1 (weights and activations stored with fewer bits, following the "
+        + ("joint weight and activation plan" if s.joint_plan else
+           f"threshold plan: weights {cfg.stage0.protected_bits} bits in sensitive layers and {cfg.stage0.compressed_bits} "
+           f"in the rest, activations from the activation plan, {cfg.stage0.act_bits_options} bits averaging "
+           f"{cfg.stage0.act_avg_bits}; models from runs on the joint plan are not counted")
+        + "), then Stage 2 (pruning: removing "
         "numbers), then Stage 3 (compressing the KV cache, the model's memory of earlier words). A setting is the "
         "technique of each stage plus the numbers that tune them (protection threshold, pruning share, calibration "
         f"text and so on). Only settings that meet the limit count ({_req(cfg)}). Among those the search looks for "
@@ -201,7 +206,8 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         acc = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("acc_", "downstream_acc"))}
         backends = {m: v for m, v in (accuracy["metrics"] or {}).items() if m.startswith(("vllm_", "llamacpp_", "trtllm_"))}
         pick = f"the final model under the limit with the best {label(s.objectives[0]).lower()}"
-        which = f"{accuracy['searcher'].upper()} try #{accuracy['n']}" + (
+        which = (f"the extra {setting_value('stage1_method', accuracy['point']['stage1_method'])} try"
+                 if accuracy["searcher"] == "extra" else f"{accuracy['searcher'].upper()} try #{accuracy['n']}") + (
             f" of the earlier run {accuracy['earlier_run']}, a combination this run did not try again"
             if accuracy.get("earlier_run") else "")
         lines += [
@@ -238,7 +244,8 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             "**What this shows:** SpQR, QuIP and QuIP# (the techniques asked for) when no search method built them: "
             "one chained try each, the best setting under the limit with only its Stage 1 technique changed. "
             "**What it means:** how each would have done in the best model; they are not part of the comparison or "
-            "the trade-off line.", "",
+            "the trade-off line, but one is the final model (Stage 4 above) when it is the smallest under the "
+            "limit.", "",
             _md([["Stage 1 technique", "Our method WxAy (average bits)", "Under the limit"]
                  + [label(m) + " (lower is better)" for m in shown] + ["Why it failed"]]
                 + [[setting_value("stage1_method", t["point"]["stage1_method"]), _wxay(t["metrics"]),

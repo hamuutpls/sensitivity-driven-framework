@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-10-27: A 3-bit option for the least sensitive layers
+
+- Part 2 of Mohammad's "Both" (2026-10-27): unprotected, unguarded layers with sensitivity below
+  `stage0.low_threshold` get `stage0.low_bits` (3) instead of 4. Off by default (0).
+- `search.low_threshold_max` (main.py `SEARCH_LOW_THRESHOLD_MAX`, 0 = off): above 0 the search also picks the low
+  threshold in [0, this]. Off, the points and cache keys of earlier runs stay the same.
+- The vLLM WxAy export has no 3-bit packing, so vLLM fails on a model with 3-bit layers; the HF numbers still stand.
+
+## 2026-10-27: The search's bits follow the threshold, in the high-threshold corner
+
+- Mohammad (2026-10-27) chose "Both" on how our plan gets smaller than standard 4-bit quantization: the focused 4/8
+  search first, and a 3-bit option alongside. In the search every try's bits came from the joint weight x activation
+  plan, which kept every unpruned try above standard 4-bit size (0.78 GB); the threshold only chose the layers that
+  may be pruned.
+- `search.joint_plan` (main.py `SEARCH_JOINT_PLAN = False`): each layer's bits follow the threshold (sensitive layers
+  8 bits, the rest 4), as in the 10-04 threshold sweep, where threshold 0.8 gave 0.768 GB at 11.11 and 0.9 gave
+  0.71 GB at 11.50 (RTN, weights only).
+- `search.ranges` (main.py `SEARCH_RANGES`): the threshold searched in 0.8-0.9 and the pruning share in 0-0.3.
+
+## 2026-10-26: An extra Stage 1 try can be the final model
+
+- The final model is the smallest under the limit among the searchers' tries, the earlier runs' tries and the extra
+  SpQR/QuIP/QuIP# tries. In the 11.5 run the QuIP# extra try (0.88 GB at 11.02) beat every searcher's try (0.91 GB at
+  11.23) but could not be picked. The extra tries still stay out of the comparison and the trade-off line.
+
 ## 2026-10-26: The final pick counts the earlier runs' models
 
 - The final model (Stage 4) and the extra Stage 1 tries now choose among this run's tries and the earlier runs' good

@@ -39,9 +39,22 @@ FAILED = 1e9  # objective and constraint value of a point that could not be buil
 
 
 def technique_space(cfg: FrameworkConfig) -> SearchSpace:
-    """SEARCH_SPACE plus the technique of each stage. Stage 1 always follows the joint weight x activation plan."""
+    """SEARCH_SPACE, narrowed by search.ranges, plus the technique of each stage. Stage 1 follows the joint weight x
+    activation plan, or the threshold plan when search.joint_plan is False."""
     s = cfg.search
-    return SearchSpace(list(SEARCH_SPACE.params) + [
+    full = {p.name: p for p in SEARCH_SPACE.params}
+    if bad := [n for n, r in s.ranges.items() if n not in full or full[n].choices is not None or len(r) != 2
+               or not all(isinstance(v, (int, float)) for v in r) or not full[n].low <= r[0] <= r[1] <= full[n].high]:
+        raise ValueError(f"search.ranges {bad}: each must be a numeric search setting, inside its full range")
+    params = [replace(p, low=lo, high=hi, default=min(max(p.default, lo), hi)) if (lo, hi) != (None, None) else p
+              for p in SEARCH_SPACE.params for lo, hi in [s.ranges.get(p.name, (None, None))]]
+    if s.low_threshold_max > 0:  # 3-bit layers: only when asked, so earlier runs' points stay the same
+        if s.joint_plan:  # the joint plan picks its own bits from stage0.joint_w_options; 3-bit layers never reach it
+            raise ValueError("search.low_threshold_max needs search.joint_plan False")
+        if bnb := [m for m in s.stage1_methods if m.startswith("bitsandbytes")]:
+            raise ValueError(f"search.low_threshold_max: {bnb} cannot store 3-bit layers; leave them out")
+        params.append(Param("low_threshold", 0, 0.0, low=0.0, high=s.low_threshold_max))
+    return SearchSpace(params + [
         Param("stage1_method", 1, s.stage1_methods[0], choices=tuple(s.stage1_methods)),
         Param("stage2_method", 2, s.stage2_methods[0], choices=tuple(s.stage2_methods)),
         Param("stage3_method", 3, s.stage3_methods[0], choices=tuple(s.stage3_methods)),
@@ -55,7 +68,8 @@ def evaluate(ctx: RunContext, point: dict[str, Any], max_windows: int | None = N
     Cached by point and settings, so a point two searchers try is built once. Returns {"metrics", "met",
     "shortfall", "dir"}, or {"error", "dir"} when the setting cannot be built or measured."""
     point = technique_space(ctx.cfg).validate(point)
-    cfg = ctx.cfg.with_overrides({"stage0.pruning_levels": [], "stage0.joint_plan": True,
+    cfg = ctx.cfg.with_overrides({"stage0.pruning_levels": [], "stage0.joint_plan": ctx.cfg.search.joint_plan,
+                                  "stage0.low_threshold": point.get("low_threshold", ctx.cfg.stage0.low_threshold),
                                   **({"eval.max_windows": max_windows} if max_windows else {})})
     key = point_key(ctx, cfg, point, [point["stage1_method"], point["stage2_method"], point["stage3_method"]])
     tdir = ctx.run_dir / "search" / "points" / config_hash(key, length=10)
@@ -69,8 +83,11 @@ def point_key(ctx: RunContext, cfg: FrameworkConfig, point: dict[str, Any], name
     from sdf.stage0.run import fp16_key, setup
     from sdf.stages.methods import METHODS
 
+    stage0 = asdict(cfg.stage0)
+    if not stage0["low_threshold"]:  # no 3-bit layers: the key of every point measured before they existed
+        del stage0["low_threshold"], stage0["low_bits"]
     return {"point": point, "model": asdict(cfg.model), "eval": asdict(cfg.eval), "calibration": asdict(cfg.calibration),
-            "stage0": asdict(cfg.stage0), "seed": cfg.run.seed, "data": asdict(cfg.data),
+            "stage0": stage0, "seed": cfg.run.seed, "data": asdict(cfg.data),
             "hardware": fp16_key(ctx, setup(ctx)[0])["hardware"], "vllm": vllm_backend.VERSION, "search": VERSION,
             "versions": [_version(n, METHODS) for n in names]}
 
@@ -139,7 +156,7 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
     kw = dict(tokenizer=tokenizer, text_loader=text_loader)
     stage0_dir = run_stage0(ctx, candidate, model=model_factory() if given else None, **kw).outputs["report"].parent
     plans = Stage0Plans.load(stage0_dir)
-    first, plan_key = stage1_row(point["stage1_method"] + "_joint")
+    first, plan_key = stage1_row(point["stage1_method"] + ("_joint" if cfg.search.joint_plan else ""))
     prune = METHODS[point["stage2_method"]]
     m = series(first, prune, plan_key)
     def caps(r: float) -> tuple[float, ...]:  # structured pruning only; the model is freed before vLLM starts
@@ -286,6 +303,8 @@ class TriedLog:
     def combination(ctx: RunContext, point: dict[str, Any], windows: int) -> str:
         settings = point_key(ctx, ctx.cfg, point, [point[k] for k in sorted(point) if k.endswith("_method")])
         settings.pop("point")
+        if not ctx.cfg.search.joint_plan:  # bits from the threshold plan: other models than the joint plan's
+            settings["joint_plan"] = False
         return json.dumps({"settings": config_hash(settings, length=10), "windows": windows,
                            **{k: round(v, 6) if isinstance(v, float) else v for k, v in sorted(point.items())}},
                           sort_keys=True)
@@ -311,7 +330,7 @@ class TriedLog:
         for c, row in self.rows.items():
             try:  # a row that no longer fits (a renamed technique, a changed space) is skipped, never the report
                 key = json.loads(c)
-                if key["windows"] != full_windows or self.same_model(c) in seen or row["searcher"] == "extra":
+                if key["windows"] != full_windows or self.same_model(c) in seen:
                     continue
                 r = json.loads(row["result"])
                 point = r.get("point") or {  # rows written before the point was kept: its columns, typed by the key
@@ -541,13 +560,18 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     extras, final = [], None
     # earlier runs' tries not proposed again in this one still count for the pick (Mohammad, 2026-10-26: "we add 10
     # more tries of DIFFERENT combinations"; the 30 already made are not thrown away)
-    known = trials + tried.known(tries, full, s.objectives, exclude=trials)
+    earlier = tried.known(tries, full, s.objectives, exclude=trials)
     try:  # neither step may cost the report of hours of tries, nor the other step
-        extras = extra_tries(tries, trials, s.extra_stage1, full, best_from=known, tried=tried, **kw)
+        # the base point: the best searcher try, this run's or an earlier run's, never an extra try (an extra base
+        # would keep the extras on it after the searchers find a better point)
+        extras = extra_tries(tries, trials, s.extra_stage1, full, tried=tried,
+                             best_from=trials + [t for t in earlier if t["searcher"] != "extra"], **kw)
     except Exception:  # noqa: BLE001
         log.exception("the extra Stage 1 tries failed; the report is written without them")
     try:
-        final = final_model(ctx, known, s.accuracy_tasks, **kw)
+        # an extra try may be the smallest; this run's tries first, so a tie with the same model logged by an
+        # earlier run keeps this run's label
+        final = final_model(ctx, trials + extras + earlier, s.accuracy_tasks, **kw)
     except Exception:  # noqa: BLE001
         log.exception("the final model's Stage 4 test failed; the report is written without it")
     from sdf.reporting.search import write_search_report
@@ -587,15 +611,18 @@ def extra_tries(ctx: RunContext, trials: list[dict[str, Any]], methods: list[str
                 best_from: list[dict[str, Any]] | None = None, **kw: Any) -> list[dict[str, Any]]:
     """One chained try for each of `methods` (Stage 1 techniques) whose weight technique no searcher measured on all
     the windows (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"): the search's best try
-    under the limit (lowest first objective; among `best_from` when given, which adds the earlier runs' tries) with
-    only its Stage 1 technique swapped, or the run's own settings if
-    no try met the limit. Kept apart from the searchers' trials, so they change no comparison or trade-off line."""
+    under the limit (lowest first objective; among `best_from` when given, which adds the earlier runs' searcher
+    tries) with only its Stage 1 technique swapped, or the run's own settings if
+    no try met the limit. Kept apart from the searchers' trials, so they change no comparison or trade-off line, but
+    one may be the final model: the 11.5 run's QuIP# extra try (0.88 GB at 11.02) beat every searcher's try."""
     cfg = ctx.cfg
     space = technique_space(cfg)
     done = {t["point"]["stage1_method"].split("_with_")[0] for t in trials if t["full"] and t["ok"]}
     best = min((t for t in best_from or trials if t["full"] and t["met"]), key=lambda t: t["values"], default=None)
-    base = best["point"] if best else space.make({k: v for k, v in cfg.hyperparams.items()
-                                                  if k in {p.name for p in SEARCH_SPACE.params}})
+    within = {p.name: p for p in space.params if p.choices is None}  # the run's own settings, inside search.ranges
+    base = best["point"] if best else space.make({
+        k: min(max(v, within[k].low), within[k].high) if k in within else v for k, v in cfg.hyperparams.items()
+        if k in {p.name for p in SEARCH_SPACE.params}})
     rec = Recorder(ctx, "extra", full_windows, **kw)
     for m in methods:
         if m.split("_with_")[0] not in done:

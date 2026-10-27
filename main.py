@@ -137,8 +137,10 @@ QUAROT_K_BITS = 4  # 2 | 3 | 4 | 8: key bits for QuaRot KV (standard method)
 
 # =====================================================================================================
 # 8. Settings search (MODE = "search"; Mohammad, 2026-10-19). Each try builds one chained model 0 -> 1 -> 2 -> 3
-#    (Our method) from section 2's parameters and one technique per stage, and measures it. Stage 1 always follows
-#    the joint weight x activation plan (Mohammad, 2026-10-20: "the goal is joint planning").
+#    (Our method) from section 2's parameters and one technique per stage, and measures it. Stage 1 follows the
+#    joint weight x activation plan (Mohammad, 2026-10-20: "the goal is joint planning") when SEARCH_JOINT_PLAN is
+#    True; with False, weights follow the threshold plan (8/4 bits) and activations the separate activation plan
+#    (4 or 8 bits per layer, average stage0.act_avg_bits). Models from joint-plan runs then do not count.
 # =====================================================================================================
 TARGET_MEMORY_GB = None  # no size limit: the search makes the final model as small as it can while its perplexity
 # stays at most TARGET_PPL (Mohammad, 2026-10-26: "lets see how much smaller can we get the model, while keeping 11 ppl
@@ -170,8 +172,17 @@ SEARCH_FINALISTS = 3  # MODE "stage_search": chained models built and measured u
 SEARCH_ACCURACY_TASKS = ["arc_easy", "piqa", "hellaswag", "winogrande"]  # full sets; picked as quick and standard
 # MODE "search": one chained try each after the search (the best setting with only its Stage 1 technique changed), for
 # those no search method measured (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"); shown in
-# the report, not compared
+# the report, not compared, but one may be the final model when it is the smallest under the limit
 SEARCH_EXTRA_STAGE1 = ["spqr_with_rtn_act", "quip_with_rtn_act", "quipsharp_with_rtn_act"]
+# MODE "search": each layer's bits follow the threshold (sensitive layers PROTECTED_BITS, the rest COMPRESSED_BITS),
+# not the joint weight x activation plan, and the search keeps to high thresholds with light pruning, where fewer
+# layers get 8 bits (Mohammad, 2026-10-27, chose "Both": the focused 4/8 search, and a 3-bit option alongside; the joint
+# plan kept every try above standard 4-bit size)
+SEARCH_JOINT_PLAN = False
+SEARCH_RANGES = {"sensitive_threshold": [0.8, 0.9], "prune_ratio_aggressive": [0.0, 0.3]}
+# Part 2 of "Both": > 0 lets the search also pick a low threshold in [0, this]; unprotected layers below it get
+# 3 bits. 0 = off (the 4/8 search runs first). The vLLM WxAy export has no 3-bit packing, so vLLM fails on such a model.
+SEARCH_LOW_THRESHOLD_MAX = 0.0
 
 
 # =====================================================================================================
@@ -205,6 +216,9 @@ def build_config():
         "search.finalists": SEARCH_FINALISTS,
         "search.extra_stage1": SEARCH_EXTRA_STAGE1,
         "search.accuracy_tasks": SEARCH_ACCURACY_TASKS,
+        "search.joint_plan": SEARCH_JOINT_PLAN,
+        "search.ranges": SEARCH_RANGES,
+        "search.low_threshold_max": SEARCH_LOW_THRESHOLD_MAX,
         "stage0.score": SENSITIVITY_SCORE,
         "stage0.normalization": NORMALIZATION,
         "stage0.protected_bits": PROTECTED_BITS,

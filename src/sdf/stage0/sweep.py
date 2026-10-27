@@ -59,7 +59,8 @@ def plan_rows(profile: SensitivityProfile, calib: dict[str, Any], grid: dict[str
         cost = weight_cost(profile, gs, s0)
         uni = cost(uniform_plan(scores, s0.uniform_bits, s0.uniform_prune_ratio))
         for t, pr in itertools.product(grid["sensitive_threshold"], grid["prune_ratio_aggressive"]):
-            fw_plan = plan_compression(scores, t, pr, s0.protected_bits, s0.compressed_bits, guard)
+            fw_plan = plan_compression(scores, t, pr, s0.protected_bits, s0.compressed_bits, guard,
+                                      s0.low_threshold, s0.low_bits)
             fw = cost(fw_plan)
             rows.append({
                 **calib, "sensitive_threshold": t, "prune_ratio_aggressive": pr, "gptq_groupsize": gs,

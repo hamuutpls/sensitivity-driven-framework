@@ -169,7 +169,8 @@ def run_prune_sweep(ctx: RunContext, candidate: dict[str, Any], model=None, toke
         plans = {"original": (uniform_plan(scores, s0.uniform_bits, r),
                               f"Standard method, {pct}% removed",
                               f"every layer at {ub} bits, {pct}% pruned"),
-                 "framework": (plan_compression(scores, threshold, r, s0.protected_bits, s0.compressed_bits, guarded),
+                 "framework": (plan_compression(scores, threshold, r, s0.protected_bits, s0.compressed_bits, guarded,
+                                                s0.low_threshold, s0.low_bits),
                                f"Sensitivity-guided framework, {pct}% removed",
                                f"Stage 0 plan (threshold {threshold:g}), {pct}% pruned on unprotected layers")}
         if s0.prune_sweep_same_size:

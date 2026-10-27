@@ -94,6 +94,53 @@ def test_evaluate_builds_the_chained_model_and_caches_it(cfg, tiny_llama, tokeni
     assert rough["dir"] != r["dir"] and rough["metrics"]["ppl_val"] != m["ppl_val"]
 
 
+def test_bits_can_follow_the_threshold_instead_of_the_joint_plan(cfg, tiny_llama, tokenizer, monkeypatch):
+    # Mohammad, 2026-10-27, chose "Both": the 4/8 search with each layer's bits from the threshold (the joint plan
+    # kept every try above standard 4-bit size), in the high-threshold, light-pruning corner
+    rows = []
+    monkeypatch.setattr(runner, "stage1_row", lambda name: rows.append(name) or stage1_row(name))
+    joint, plain = start_run(cfg), start_run(cfg.with_overrides({"search.joint_plan": False}))
+    a = evaluate(joint, _point(cfg), **_kw(tiny_llama, tokenizer))
+    assert "rtn_with_rtn_act_joint" in rows
+    rows.clear()
+    b = evaluate(plain, _point(cfg), **_kw(tiny_llama, tokenizer))
+    assert "error" not in b and rows and "rtn_with_rtn_act_joint" not in rows  # the threshold plan's row only
+    assert b["metrics"]["predicted_weight_memory_gb"] != a["metrics"]["predicted_weight_memory_gb"]
+    assert search.TriedLog.combination(plain, _point(cfg), 6) != search.TriedLog.combination(joint, _point(cfg), 6)
+    log = search.TriedLog(search.tried_path(joint), "old")  # a joint-plan row from an earlier run
+    log.add(joint, "mobo", {"n": 1, "point": _point(cfg), "windows": 6, "over_limit": False, "ok": True, "met": True,
+                            "metrics": a["metrics"]}, a)
+    assert search.TriedLog(search.tried_path(plain), "new").get(plain, _point(cfg), 6) is None  # never reused
+    assert search.TriedLog(search.tried_path(joint), "new").get(joint, _point(cfg), 6) is not None
+    space = technique_space(cfg.with_overrides({"search.ranges": {"sensitive_threshold": [0.8, 0.9]}}))
+    assert space.make({"sensitive_threshold": 0.85})["sensitive_threshold"] == 0.85
+    with pytest.raises(ValueError):
+        space.make({"sensitive_threshold": 0.5})  # outside the narrowed range
+    for bad in ({"sensitive_threshold": [0.5, 0.95]}, {"calib_samples": [16, 32]}, {"nope": [0, 1]},
+                {"sensitive_threshold": [0.8]}, {"sensitive_threshold": ["a", "b"]}):
+        with pytest.raises(ValueError, match="search.ranges"):
+            technique_space(cfg.with_overrides({"search.ranges": bad}))
+
+
+def test_the_search_can_pick_a_low_threshold_for_3_bit_layers(cfg, tiny_llama, tokenizer):
+    # Mohammad, 2026-10-27, chose "Both": a 3-bit option for the least sensitive layers, next to the 4/8 search
+    base = cfg.with_overrides({"search.joint_plan": False, "stage0.guard_top_k": 0})
+    off, on = start_run(base), start_run(base.with_overrides({"search.low_threshold_max": 0.4}))
+    assert "low_threshold" not in technique_space(base).make()  # off: the points of earlier runs stay the same
+    assert "low_threshold" not in search.point_key(off, base, _point(base), [])["stage0"]  # and so do their keys
+    p = _point(on.cfg, sensitive_threshold=0.5, low_threshold=0.4)
+    a = evaluate(off, _point(base, sensitive_threshold=0.5), **_kw(tiny_llama, tokenizer))
+    b = evaluate(on, p, **_kw(tiny_llama, tokenizer))
+    assert "error" not in b and b["metrics"]["predicted_weight_memory_gb"] < a["metrics"]["predicted_weight_memory_gb"]
+    bits = {lp["bit_width"] for lp in json.loads(next(Path(b["dir"]).rglob("quant_plan.json")).read_text())["layers"]}
+    assert 3 in bits
+    with pytest.raises(ValueError):
+        technique_space(on.cfg).make({"low_threshold": 0.5})  # above search.low_threshold_max
+    for bad in ({"search.joint_plan": True}, {"search.stage1_methods": ["bitsandbytes_with_rtn_act"]}):
+        with pytest.raises(ValueError, match="low_threshold_max"):  # the joint plan never gives 3 bits; bnb cannot
+            technique_space(on.cfg.with_overrides(bad))
+
+
 def test_a_tight_memory_limit_is_not_met_and_says_by_how_much(cfg, tiny_llama, tokenizer, monkeypatch):
     rows = []
     monkeypatch.setattr(runner, "stage1_row", lambda name: rows.append(name) or stage1_row(name))
@@ -276,13 +323,13 @@ def test_the_final_pick_sees_an_earlier_runs_good_tries_this_run_did_not_propose
         metrics = {"ppl_val": 9.0, "decode_ms_per_token_mean": 1.0, "predicted_weight_memory_gb": size}
         log.add(wide, "mobo", {**trial, "n": n, "point": point, "metrics": metrics}, {"metrics": metrics, "dir": "d"})
     log.add(first, "extra", {**trial, "n": 8, "point": {**good, "sensitive_threshold": 0.15}, "metrics": metrics},
-            {"metrics": metrics, "dir": "d"})  # the extra tries stay apart from the pick, as in their own run
+            {"metrics": metrics, "dir": "d"})  # an extra try may be the final model too
     picked.clear()
     run_search(start_run(c.with_overrides({"run.run_id": "b"})))
     earlier = {t["n"]: t for t in picked if t.get("from_log") and t["n"] in (5, 6, 7, 8)}
     assert earlier[5]["point"] == good and earlier[5]["met"] and earlier[5]["values"] == [9.0, 1.0]  # full precision
     assert not earlier[6]["met"]  # the requirement checked again, not copied
-    assert 7 not in earlier and 8 not in earlier  # 7 is outside this run's search space (building it would fail); 8 is an extra try
+    assert 7 not in earlier and earlier[8]["searcher"] == "extra"  # 7 is outside this run's search space
     assert len(picked) == len({json.dumps([t["point"], t["windows"]], sort_keys=True) for t in picked})  # no doubles
     picked.clear()
     run_search(start_run(c.with_overrides({"run.run_id": "b2", "calibration.seq_len": 64})))
@@ -319,6 +366,33 @@ def test_a_setting_the_techniques_do_not_read_never_makes_a_new_model(cfg, monke
     later = Recorder(start_run(c.with_overrides({"run.run_id": "b"})), "mobo", 6,
                      tried=search.TriedLog(search.tried_path(ctx), "b"))
     assert later({**base, "quarot_k_bits": 8})["earlier_run"] == "a" and len(built) == 4  # nor in a later run
+
+
+def test_an_extra_stage1_try_can_be_the_final_model(cfg, monkeypatch):
+    # the 11.5 run: the QuIP# extra try (0.88 GB at 11.02) was smaller and better than every searcher's try, and the
+    # goal is the smallest model under the limit (Mohammad, 2026-10-26)
+    fake = _fake_evaluate(over=lambda p: False)
+    monkeypatch.setattr(search, "evaluate", lambda ctx, point, max_windows=None, **kw: (
+        lambda r: {**r, "metrics": {**r["metrics"], "ppl_val": 9.0}} if point["stage1_method"].startswith("gptq")
+        else r)(fake(ctx, point, max_windows)))
+    monkeypatch.setitem(search.SEARCHERS, "mobo", lambda rec, space, budget, seed, **kw: rec(
+        space.make({"stage1_method": "rtn_with_rtn_act"})))
+    picked = []
+    monkeypatch.setattr(search, "final_model", lambda ctx, trials, tasks, **kw: picked.extend(trials))
+    c = cfg.with_overrides({"search.searchers": ["mobo"], "search.budget": 1,
+                            "search.stage1_methods": ["rtn_with_rtn_act", "gptq_with_rtn_act"],
+                            "search.extra_stage1": ["gptq_with_rtn_act"]})
+    run_search(start_run(c.with_overrides({"run.run_id": "a"})))
+    best = min((t for t in picked if t["full"] and t["met"]), key=lambda t: t["values"])
+    assert best["searcher"] == "extra" and best["point"]["stage1_method"] == "gptq_with_rtn_act"
+    picked.clear()  # run again: the extra try comes back from the CSV and is also an earlier run's logged row
+    bases, extra_tries = [], search.extra_tries
+    monkeypatch.setattr(search, "extra_tries", lambda *a, best_from=None, **kw: bases.extend(best_from)
+                        or extra_tries(*a, best_from=best_from, **kw))
+    run_search(start_run(c.with_overrides({"run.run_id": "b"})))
+    assert bases and all(t["searcher"] != "extra" for t in bases)  # an extra try is never the extras' base
+    best = min((t for t in picked if t["full"] and t["met"]), key=lambda t: t["values"])
+    assert best["searcher"] == "extra" and not best.get("from_log")  # this run's try, so this run's label
 
 
 def test_the_tried_log_reuses_only_good_results_under_the_same_settings(cfg):

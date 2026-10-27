@@ -106,6 +106,10 @@ class Stage0Config:
     hessian_probes: int = 8  # hessian: random probes per calibration batch (each costs one extra backward)
     protected_bits: int = 8
     compressed_bits: int = 4
+    # Unprotected, unguarded layers with sensitivity below low_threshold get low_bits instead of compressed_bits
+    # (Mohammad, 2026-10-27, chose "Both": only the least sensitive layers may drop to 3 bits). 0 turns it off.
+    low_threshold: float = 0.0
+    low_bits: int = 3
     # "Original method" for Stage 0 = the uniform allocation a standard method uses without guidance.
     uniform_bits: int = 4
     uniform_prune_ratio: float = 0.0
@@ -228,6 +232,10 @@ class SearchConfig:
     # model under the limit is tested on after the search (none: no accuracy test)
     extra_stage1: list[str] = field(default_factory=list)  # MODE "search": one chained try each after the search,
     # for the Stage 1 techniques whose weight technique no searcher measured (in the report, not compared)
+    joint_plan: bool = True  # Stage 1 bits from the joint weight x activation plan; False: from the threshold plan
+    # (sensitive layers protected_bits, the rest compressed_bits)
+    ranges: dict[str, list[float]] = field(default_factory=dict)  # narrower [low, high] for numeric search settings
+    low_threshold_max: float = 0.0  # > 0: the search also picks stage0.low_threshold in [0, this] (0: no 3-bit layers)
 
 
 @dataclass

@@ -185,6 +185,8 @@ _INTRO = {
 def run_stage_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer=None,
                      text_loader: Callable | None = None) -> dict[str, Path]:
     """Stage 1 and Stage 2 searches, the Stage 3 pick, the pairing step, then the report."""
+    if ctx.cfg.search.low_threshold_max > 0:
+        raise ValueError("search.low_threshold_max (3-bit layers) works in MODE \"search\" only")
     from sdf.data import eval_windows
     from sdf.reporting.search import write_search_report
     from sdf.stage0.run import setup
