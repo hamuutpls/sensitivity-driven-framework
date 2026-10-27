@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-27: A 3-bit option for the least sensitive layers
+
+- Part 2 of Mohammad's "Both" (2026-10-27): unprotected, unguarded layers with sensitivity below
+  `stage0.low_threshold` get `stage0.low_bits` (3) instead of 4. Off by default (0).
+- `search.low_threshold_max` (main.py `SEARCH_LOW_THRESHOLD_MAX`, 0 = off): above 0 the search also picks the low
+  threshold in [0, this]. Off, the points and cache keys of earlier runs stay the same.
+- The vLLM WxAy export has no 3-bit packing, so vLLM fails on a model with 3-bit layers; the HF numbers still stand.
+
 ## 2026-10-27: The search's bits follow the threshold, in the high-threshold corner
 
 - Mohammad (2026-10-27) chose "Both" on how our plan gets smaller than standard 4-bit quantization: the focused 4/8

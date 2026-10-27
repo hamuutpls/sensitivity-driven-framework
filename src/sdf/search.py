@@ -48,6 +48,8 @@ def technique_space(cfg: FrameworkConfig) -> SearchSpace:
         raise ValueError(f"search.ranges {bad}: each must be a numeric search setting, inside its full range")
     params = [replace(p, low=lo, high=hi, default=min(max(p.default, lo), hi)) if (lo, hi) != (None, None) else p
               for p in SEARCH_SPACE.params for lo, hi in [s.ranges.get(p.name, (None, None))]]
+    if s.low_threshold_max > 0:  # 3-bit layers: only when asked, so earlier runs' points stay the same
+        params.append(Param("low_threshold", 0, 0.0, low=0.0, high=s.low_threshold_max))
     return SearchSpace(params + [
         Param("stage1_method", 1, s.stage1_methods[0], choices=tuple(s.stage1_methods)),
         Param("stage2_method", 2, s.stage2_methods[0], choices=tuple(s.stage2_methods)),
@@ -63,6 +65,7 @@ def evaluate(ctx: RunContext, point: dict[str, Any], max_windows: int | None = N
     "shortfall", "dir"}, or {"error", "dir"} when the setting cannot be built or measured."""
     point = technique_space(ctx.cfg).validate(point)
     cfg = ctx.cfg.with_overrides({"stage0.pruning_levels": [], "stage0.joint_plan": ctx.cfg.search.joint_plan,
+                                  "stage0.low_threshold": point.get("low_threshold", ctx.cfg.stage0.low_threshold),
                                   **({"eval.max_windows": max_windows} if max_windows else {})})
     key = point_key(ctx, cfg, point, [point["stage1_method"], point["stage2_method"], point["stage3_method"]])
     tdir = ctx.run_dir / "search" / "points" / config_hash(key, length=10)
@@ -76,8 +79,11 @@ def point_key(ctx: RunContext, cfg: FrameworkConfig, point: dict[str, Any], name
     from sdf.stage0.run import fp16_key, setup
     from sdf.stages.methods import METHODS
 
+    stage0 = asdict(cfg.stage0)
+    if not stage0["low_threshold"]:  # no 3-bit layers: the key of every point measured before they existed
+        del stage0["low_threshold"], stage0["low_bits"]
     return {"point": point, "model": asdict(cfg.model), "eval": asdict(cfg.eval), "calibration": asdict(cfg.calibration),
-            "stage0": asdict(cfg.stage0), "seed": cfg.run.seed, "data": asdict(cfg.data),
+            "stage0": stage0, "seed": cfg.run.seed, "data": asdict(cfg.data),
             "hardware": fp16_key(ctx, setup(ctx)[0])["hardware"], "vllm": vllm_backend.VERSION, "search": VERSION,
             "versions": [_version(n, METHODS) for n in names]}
 

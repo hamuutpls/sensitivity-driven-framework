@@ -99,8 +99,9 @@ def guarded_layers(removal_scores: list[float], top_k: int) -> frozenset[int]:
 
 
 def _layer(i: int, s: float, protected: bool, protected_bits: int, compressed_bits: int, prune_ratio: float,
-           guarded: frozenset[int]) -> LayerPlan:
-    return LayerPlan(layer=i, bit_width=protected_bits if protected else compressed_bits,
+           guarded: frozenset[int], low_threshold: float = 0.0, low_bits: int = 3) -> LayerPlan:
+    low = not protected and i not in guarded and s < low_threshold
+    return LayerPlan(layer=i, bit_width=protected_bits if protected else low_bits if low else compressed_bits,
                      pruning_ratio=0.0 if protected or i in guarded else prune_ratio,
                      protected=protected, sensitivity=s, guarded=i in guarded)
 
@@ -112,10 +113,15 @@ def plan_compression(
     protected_bits: int,
     compressed_bits: int,
     guarded: frozenset[int] = frozenset(),
+    low_threshold: float = 0.0,
+    low_bits: int = 3,
 ) -> CompressionPlan:
+    """Layers at or above `sensitive_threshold` keep `protected_bits` and are not pruned; the rest get
+    `compressed_bits` and `prune_ratio_aggressive` (guarded layers unpruned), except the unguarded ones below
+    `low_threshold`, which get `low_bits` (0: none; protection wins when the two overlap)."""
     _check_ratio(prune_ratio_aggressive)
     layers = tuple(_layer(i, s, s >= sensitive_threshold, protected_bits, compressed_bits, prune_ratio_aggressive,
-                          guarded) for i, s in enumerate(scores))
+                          guarded, low_threshold, low_bits) for i, s in enumerate(scores))
     return CompressionPlan(layers, "sensitivity", sensitive_threshold, prune_ratio_aggressive)
 
 

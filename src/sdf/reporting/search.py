@@ -62,7 +62,8 @@ SEARCHER_NAMES = {"mobo": "MOBO (multi-objective Bayesian optimisation)",
 SETTING_NAMES = {"sensitive_threshold": "Protection threshold", "prune_ratio_aggressive": "Pruning share",
                  "calib_dataset": "Calibration text", "calib_samples": "Calibration passages",
                  "gptq_groupsize": "Group size", "smoothquant_alpha": "SmoothQuant strength",
-                 "quarot_k_bits": "QuaRot key bits", "stage1_method": "Stage 1 quantization",
+                 "quarot_k_bits": "QuaRot key bits", "low_threshold": "3-bit threshold (layers below it get 3 bits)",
+                 "stage1_method": "Stage 1 quantization",
                  "stage2_method": "Stage 2 pruning",
                  "stage3_method": "Stage 3 KV-cache (memory of earlier words) technique"}
 

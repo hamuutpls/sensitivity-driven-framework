@@ -122,6 +122,22 @@ def test_bits_can_follow_the_threshold_instead_of_the_joint_plan(cfg, tiny_llama
             technique_space(cfg.with_overrides({"search.ranges": bad}))
 
 
+def test_the_search_can_pick_a_low_threshold_for_3_bit_layers(cfg, tiny_llama, tokenizer):
+    # Mohammad, 2026-10-27, chose "Both": a 3-bit option for the least sensitive layers, next to the 4/8 search
+    base = cfg.with_overrides({"search.joint_plan": False, "stage0.guard_top_k": 0})
+    off, on = start_run(base), start_run(base.with_overrides({"search.low_threshold_max": 0.4}))
+    assert "low_threshold" not in technique_space(base).make()  # off: the points of earlier runs stay the same
+    assert "low_threshold" not in search.point_key(off, base, _point(base), [])["stage0"]  # and so do their keys
+    p = _point(on.cfg, sensitive_threshold=0.5, low_threshold=0.4)
+    a = evaluate(off, _point(base, sensitive_threshold=0.5), **_kw(tiny_llama, tokenizer))
+    b = evaluate(on, p, **_kw(tiny_llama, tokenizer))
+    assert "error" not in b and b["metrics"]["predicted_weight_memory_gb"] < a["metrics"]["predicted_weight_memory_gb"]
+    bits = {lp["bit_width"] for lp in json.loads(next(Path(b["dir"]).rglob("quant_plan.json")).read_text())["layers"]}
+    assert 3 in bits
+    with pytest.raises(ValueError):
+        technique_space(on.cfg).make({"low_threshold": 0.5})  # above search.low_threshold_max
+
+
 def test_a_tight_memory_limit_is_not_met_and_says_by_how_much(cfg, tiny_llama, tokenizer, monkeypatch):
     rows = []
     monkeypatch.setattr(runner, "stage1_row", lambda name: rows.append(name) or stage1_row(name))
