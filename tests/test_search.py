@@ -368,6 +368,8 @@ def test_a_setting_the_techniques_do_not_read_never_makes_a_new_model(cfg, monke
                      tried=search.TriedLog(search.tried_path(ctx), "b"))
     replay = later({**base, "quarot_k_bits": 8})
     assert replay["earlier_run"] == "a" and len(built) == 4 and replay["cost"] == 1  # nor in a later run, replayed
+    again = later({**base, "quarot_k_bits": 3, "smoothquant_alpha": 0.1})  # the same model again in that run
+    assert again["earlier_run"] == "a" and again["cost"] == 0 and len(built) == 4
 
 
 def test_an_extra_stage1_try_can_be_the_final_model(cfg, monkeypatch):
