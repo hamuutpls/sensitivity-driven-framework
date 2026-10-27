@@ -357,6 +357,7 @@ def test_a_setting_the_techniques_do_not_read_never_makes_a_new_model(cfg, monke
     first = rec(base)
     same = rec({**base, "quarot_k_bits": 2, "smoothquant_alpha": 0.9})  # RTN KV and RTN activations read neither
     assert len(built) == 1 and same["values"] == first["values"] and same["earlier_run"] == "a"
+    assert first["cost"] == 1 and same["cost"] == 0  # nothing new: no budget used
     assert rec(base)["earlier_run"] is None and len(built) == 1  # the very same point: the cache, as before
     rec({**base, "stage3_method": "quarot_kv"})
     rec({**base, "stage3_method": "quarot_kv", "quarot_k_bits": 2})  # only QuaRot KV's standard row reads them
@@ -365,7 +366,10 @@ def test_a_setting_the_techniques_do_not_read_never_makes_a_new_model(cfg, monke
     assert len(built) == 4
     later = Recorder(start_run(c.with_overrides({"run.run_id": "b"})), "mobo", 6,
                      tried=search.TriedLog(search.tried_path(ctx), "b"))
-    assert later({**base, "quarot_k_bits": 8})["earlier_run"] == "a" and len(built) == 4  # nor in a later run
+    replay = later({**base, "quarot_k_bits": 8})
+    assert replay["earlier_run"] == "a" and len(built) == 4 and replay["cost"] == 1  # nor in a later run, replayed
+    again = later({**base, "quarot_k_bits": 3, "smoothquant_alpha": 0.1})  # the same model again in that run
+    assert again["earlier_run"] == "a" and again["cost"] == 0 and len(built) == 4
 
 
 def test_an_extra_stage1_try_can_be_the_final_model(cfg, monkeypatch):

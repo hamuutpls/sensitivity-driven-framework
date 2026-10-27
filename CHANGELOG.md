@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-27: The same model twice in one run uses up no budget
+
+- In the threshold run, MOBO #16 was #14's model (they differ only in a setting their techniques do not read). It was
+  reused, not rebuilt, but it used up a try of the budget. Now such a repeat costs nothing, so every try the budget
+  pays for is a new model (Mohammad: no repeated combinations). An earlier run's result still costs a try when
+  replayed.
+
 ## 2026-10-27: A 3-bit option for the least sensitive layers
 
 - Part 2 of Mohammad's "Both" (2026-10-27): unprotected, unguarded layers with sensitivity below
