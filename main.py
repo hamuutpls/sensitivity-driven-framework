@@ -137,8 +137,10 @@ QUAROT_K_BITS = 4  # 2 | 3 | 4 | 8: key bits for QuaRot KV (standard method)
 
 # =====================================================================================================
 # 8. Settings search (MODE = "search"; Mohammad, 2026-10-19). Each try builds one chained model 0 -> 1 -> 2 -> 3
-#    (Our method) from section 2's parameters and one technique per stage, and measures it. Stage 1 always follows
-#    the joint weight x activation plan (Mohammad, 2026-10-20: "the goal is joint planning").
+#    (Our method) from section 2's parameters and one technique per stage, and measures it. Stage 1 follows the
+#    joint weight x activation plan (Mohammad, 2026-10-20: "the goal is joint planning") when SEARCH_JOINT_PLAN is
+#    True; with False, weights follow the threshold plan (8/4 bits) and activations the separate activation plan
+#    (4 or 8 bits per layer, average stage0.act_avg_bits). Models from joint-plan runs then do not count.
 # =====================================================================================================
 TARGET_MEMORY_GB = None  # no size limit: the search makes the final model as small as it can while its perplexity
 # stays at most TARGET_PPL (Mohammad, 2026-10-26: "lets see how much smaller can we get the model, while keeping 11 ppl

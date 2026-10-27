@@ -49,6 +49,10 @@ def technique_space(cfg: FrameworkConfig) -> SearchSpace:
     params = [replace(p, low=lo, high=hi, default=min(max(p.default, lo), hi)) if (lo, hi) != (None, None) else p
               for p in SEARCH_SPACE.params for lo, hi in [s.ranges.get(p.name, (None, None))]]
     if s.low_threshold_max > 0:  # 3-bit layers: only when asked, so earlier runs' points stay the same
+        if s.joint_plan:  # the joint plan picks its own bits from stage0.joint_w_options; 3-bit layers never reach it
+            raise ValueError("search.low_threshold_max needs search.joint_plan False")
+        if bnb := [m for m in s.stage1_methods if m.startswith("bitsandbytes")]:
+            raise ValueError(f"search.low_threshold_max: {bnb} cannot store 3-bit layers; leave them out")
         params.append(Param("low_threshold", 0, 0.0, low=0.0, high=s.low_threshold_max))
     return SearchSpace(params + [
         Param("stage1_method", 1, s.stage1_methods[0], choices=tuple(s.stage1_methods)),

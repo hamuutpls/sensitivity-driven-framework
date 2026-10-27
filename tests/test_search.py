@@ -136,6 +136,9 @@ def test_the_search_can_pick_a_low_threshold_for_3_bit_layers(cfg, tiny_llama, t
     assert 3 in bits
     with pytest.raises(ValueError):
         technique_space(on.cfg).make({"low_threshold": 0.5})  # above search.low_threshold_max
+    for bad in ({"search.joint_plan": True}, {"search.stage1_methods": ["bitsandbytes_with_rtn_act"]}):
+        with pytest.raises(ValueError, match="low_threshold_max"):  # the joint plan never gives 3 bits; bnb cannot
+            technique_space(on.cfg.with_overrides(bad))
 
 
 def test_a_tight_memory_limit_is_not_met_and_says_by_how_much(cfg, tiny_llama, tokenizer, monkeypatch):
