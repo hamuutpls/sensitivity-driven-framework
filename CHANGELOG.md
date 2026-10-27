@@ -5,6 +5,8 @@
 - Mohammad (2026-10-27) chose "Restart now with 3-bit layers": the 8/4 search's smallest model under 11.5 was
   0.909 GB, above standard 4-bit (0.78 GB). main.py `SEARCH_LOW_THRESHOLD_MAX = 0.8`: the search also picks the low
   threshold in [0, 0.8]; bitsandbytes (4 or 8 bits only) leaves the Stage 1 list while it is on.
+- An earlier run's tries without 3-bit layers count as low threshold 0 in the final pick, so the 8/4 run's 0.909 GB
+  model stays a candidate.
 
 ## 2026-10-27: The same model twice in one run uses up no budget
 
