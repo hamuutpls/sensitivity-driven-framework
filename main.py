@@ -172,6 +172,12 @@ SEARCH_ACCURACY_TASKS = ["arc_easy", "piqa", "hellaswag", "winogrande"]  # full 
 # those no search method measured (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"); shown in
 # the report, not compared, but one may be the final model when it is the smallest under the limit
 SEARCH_EXTRA_STAGE1 = ["spqr_with_rtn_act", "quip_with_rtn_act", "quipsharp_with_rtn_act"]
+# MODE "search": each layer's bits follow the threshold (sensitive layers PROTECTED_BITS, the rest COMPRESSED_BITS),
+# not the joint weight x activation plan, and the search keeps to high thresholds with light pruning, where fewer
+# layers get 8 bits (Mohammad, 2026-10-27, chose "Both": the focused 4/8 search, and a 3-bit option alongside; the joint
+# plan kept every try above standard 4-bit size)
+SEARCH_JOINT_PLAN = False
+SEARCH_RANGES = {"sensitive_threshold": [0.8, 0.9], "prune_ratio_aggressive": [0.0, 0.3]}
 
 
 # =====================================================================================================
@@ -205,6 +211,8 @@ def build_config():
         "search.finalists": SEARCH_FINALISTS,
         "search.extra_stage1": SEARCH_EXTRA_STAGE1,
         "search.accuracy_tasks": SEARCH_ACCURACY_TASKS,
+        "search.joint_plan": SEARCH_JOINT_PLAN,
+        "search.ranges": SEARCH_RANGES,
         "stage0.score": SENSITIVITY_SCORE,
         "stage0.normalization": NORMALIZATION,
         "stage0.protected_bits": PROTECTED_BITS,

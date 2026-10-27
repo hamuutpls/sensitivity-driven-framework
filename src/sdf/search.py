@@ -41,7 +41,13 @@ FAILED = 1e9  # objective and constraint value of a point that could not be buil
 def technique_space(cfg: FrameworkConfig) -> SearchSpace:
     """SEARCH_SPACE plus the technique of each stage. Stage 1 always follows the joint weight x activation plan."""
     s = cfg.search
-    return SearchSpace(list(SEARCH_SPACE.params) + [
+    full = {p.name: p for p in SEARCH_SPACE.params}
+    if bad := [n for n, (lo, hi) in s.ranges.items()
+               if n not in full or full[n].choices is not None or not full[n].low <= lo <= hi <= full[n].high]:
+        raise ValueError(f"search.ranges {bad}: each must be a numeric search setting, inside its full range")
+    params = [replace(p, low=lo, high=hi, default=min(max(p.default, lo), hi)) if (lo, hi) != (None, None) else p
+              for p in SEARCH_SPACE.params for lo, hi in [s.ranges.get(p.name, (None, None))]]
+    return SearchSpace(params + [
         Param("stage1_method", 1, s.stage1_methods[0], choices=tuple(s.stage1_methods)),
         Param("stage2_method", 2, s.stage2_methods[0], choices=tuple(s.stage2_methods)),
         Param("stage3_method", 3, s.stage3_methods[0], choices=tuple(s.stage3_methods)),
@@ -55,7 +61,7 @@ def evaluate(ctx: RunContext, point: dict[str, Any], max_windows: int | None = N
     Cached by point and settings, so a point two searchers try is built once. Returns {"metrics", "met",
     "shortfall", "dir"}, or {"error", "dir"} when the setting cannot be built or measured."""
     point = technique_space(ctx.cfg).validate(point)
-    cfg = ctx.cfg.with_overrides({"stage0.pruning_levels": [], "stage0.joint_plan": True,
+    cfg = ctx.cfg.with_overrides({"stage0.pruning_levels": [], "stage0.joint_plan": ctx.cfg.search.joint_plan,
                                   **({"eval.max_windows": max_windows} if max_windows else {})})
     key = point_key(ctx, cfg, point, [point["stage1_method"], point["stage2_method"], point["stage3_method"]])
     tdir = ctx.run_dir / "search" / "points" / config_hash(key, length=10)
@@ -139,7 +145,7 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
     kw = dict(tokenizer=tokenizer, text_loader=text_loader)
     stage0_dir = run_stage0(ctx, candidate, model=model_factory() if given else None, **kw).outputs["report"].parent
     plans = Stage0Plans.load(stage0_dir)
-    first, plan_key = stage1_row(point["stage1_method"] + "_joint")
+    first, plan_key = stage1_row(point["stage1_method"] + ("_joint" if cfg.search.joint_plan else ""))
     prune = METHODS[point["stage2_method"]]
     m = series(first, prune, plan_key)
     def caps(r: float) -> tuple[float, ...]:  # structured pruning only; the model is freed before vLLM starts
@@ -286,6 +292,8 @@ class TriedLog:
     def combination(ctx: RunContext, point: dict[str, Any], windows: int) -> str:
         settings = point_key(ctx, ctx.cfg, point, [point[k] for k in sorted(point) if k.endswith("_method")])
         settings.pop("point")
+        if not ctx.cfg.search.joint_plan:  # bits from the threshold plan: other models than the joint plan's
+            settings["joint_plan"] = False
         return json.dumps({"settings": config_hash(settings, length=10), "windows": windows,
                            **{k: round(v, 6) if isinstance(v, float) else v for k, v in sorted(point.items())}},
                           sort_keys=True)

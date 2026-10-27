@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-27: The search's bits follow the threshold, in the high-threshold corner
+
+- Mohammad (2026-10-27) chose "Both" on how our plan gets smaller than standard 4-bit quantization: the focused 4/8
+  search first, and a 3-bit option alongside. In the search every try's bits came from the joint weight x activation
+  plan, which kept every unpruned try above standard 4-bit size (0.78 GB); the threshold only chose the layers that
+  may be pruned.
+- `search.joint_plan` (main.py `SEARCH_JOINT_PLAN = False`): each layer's bits follow the threshold (sensitive layers
+  8 bits, the rest 4), as in the 10-04 threshold sweep, where threshold 0.8 gave 0.768 GB at 11.11 and 0.9 gave
+  0.71 GB at 11.50 (RTN, weights only).
+- `search.ranges` (main.py `SEARCH_RANGES`): the threshold searched in 0.8-0.9 and the pruning share in 0-0.3.
+
 ## 2026-10-26: An extra Stage 1 try can be the final model
 
 - The final model is the smallest under the limit among the searchers' tries, the earlier runs' tries and the extra

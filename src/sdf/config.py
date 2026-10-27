@@ -228,6 +228,9 @@ class SearchConfig:
     # model under the limit is tested on after the search (none: no accuracy test)
     extra_stage1: list[str] = field(default_factory=list)  # MODE "search": one chained try each after the search,
     # for the Stage 1 techniques whose weight technique no searcher measured (in the report, not compared)
+    joint_plan: bool = True  # Stage 1 bits from the joint weight x activation plan; False: from the threshold plan
+    # (sensitive layers protected_bits, the rest compressed_bits)
+    ranges: dict[str, list[float]] = field(default_factory=dict)  # narrower [low, high] for numeric search settings
 
 
 @dataclass

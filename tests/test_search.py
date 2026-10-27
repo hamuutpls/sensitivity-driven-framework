@@ -94,6 +94,26 @@ def test_evaluate_builds_the_chained_model_and_caches_it(cfg, tiny_llama, tokeni
     assert rough["dir"] != r["dir"] and rough["metrics"]["ppl_val"] != m["ppl_val"]
 
 
+def test_bits_can_follow_the_threshold_instead_of_the_joint_plan(cfg, tiny_llama, tokenizer, monkeypatch):
+    # Mohammad, 2026-10-27, chose "Both": the 4/8 search with each layer's bits from the threshold (the joint plan
+    # kept every try above standard 4-bit size), in the high-threshold, light-pruning corner
+    rows = []
+    monkeypatch.setattr(runner, "stage1_row", lambda name: rows.append(name) or stage1_row(name))
+    joint, plain = start_run(cfg), start_run(cfg.with_overrides({"search.joint_plan": False}))
+    a = evaluate(joint, _point(cfg), **_kw(tiny_llama, tokenizer))
+    b = evaluate(plain, _point(cfg), **_kw(tiny_llama, tokenizer))
+    assert rows[-1] == "rtn_with_rtn_act" and "error" not in b  # the threshold plan's row
+    assert b["metrics"]["predicted_weight_memory_gb"] != a["metrics"]["predicted_weight_memory_gb"]
+    assert search.TriedLog.combination(plain, _point(cfg), 6) != search.TriedLog.combination(joint, _point(cfg), 6)
+    space = technique_space(cfg.with_overrides({"search.ranges": {"sensitive_threshold": [0.8, 0.9]}}))
+    assert space.make({"sensitive_threshold": 0.85})["sensitive_threshold"] == 0.85
+    with pytest.raises(ValueError):
+        space.make({"sensitive_threshold": 0.5})  # outside the narrowed range
+    for bad in ({"sensitive_threshold": [0.5, 0.95]}, {"calib_samples": [16, 32]}, {"nope": [0, 1]}):
+        with pytest.raises(ValueError, match="search.ranges"):
+            technique_space(cfg.with_overrides({"search.ranges": bad}))
+
+
 def test_a_tight_memory_limit_is_not_met_and_says_by_how_much(cfg, tiny_llama, tokenizer, monkeypatch):
     rows = []
     monkeypatch.setattr(runner, "stage1_row", lambda name: rows.append(name) or stage1_row(name))
