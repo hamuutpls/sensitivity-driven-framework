@@ -181,8 +181,11 @@ SEARCH_EXTRA_STAGE1 = ["spqr_with_rtn_act", "quip_with_rtn_act", "quipsharp_with
 SEARCH_JOINT_PLAN = False
 SEARCH_RANGES = {"sensitive_threshold": [0.8, 0.9], "prune_ratio_aggressive": [0.0, 0.3]}
 # Part 2 of "Both": > 0 lets the search also pick a low threshold in [0, this]; unprotected layers below it get
-# 3 bits. 0 = off (the 4/8 search runs first). The vLLM WxAy export has no 3-bit packing, so vLLM fails on such a model.
-SEARCH_LOW_THRESHOLD_MAX = 0.0
+# 3 bits. The vLLM WxAy export has no 3-bit packing, so vLLM fails on such a model. Mohammad, 2026-10-27: on (the
+# 8/4 search cannot go below standard 4-bit size); up to the lowest protection threshold, 0.8.
+SEARCH_LOW_THRESHOLD_MAX = 0.8
+if SEARCH_LOW_THRESHOLD_MAX:  # bitsandbytes stores only 4 or 8 bits
+    SEARCH_STAGE1 = [m for m in SEARCH_STAGE1 if not m.startswith("bitsandbytes")]
 
 
 # =====================================================================================================

@@ -341,9 +341,11 @@ class TriedLog:
                 point = r.get("point") or {  # rows written before the point was kept: its columns, typed by the key
                     k: type(v)(row[k]) if row.get(k) not in (None, "") and isinstance(v, (int, float)) else v
                     for k, v in key.items() if k not in ("settings", "windows")}
-                space.validate(point)  # e.g. a technique since taken out of search.stage1_methods
                 if self.combination(ctx, point, full_windows) != c:  # a setting or technique changed since
                     continue
+                if "low_threshold" not in point and any(p.name == "low_threshold" for p in space.params):
+                    point = {**point, "low_threshold": 0.0}  # tried before 3-bit layers existed: none of them 3-bit
+                space.validate(point)  # e.g. a technique since taken out of search.stage1_methods
                 values = [r["metrics"].get(o) for o in objectives]
                 if all(isinstance(v, (int, float)) and math.isfinite(v) for v in values):
                     out.append({"searcher": row["searcher"], "n": int(row["n"]), "point": point,

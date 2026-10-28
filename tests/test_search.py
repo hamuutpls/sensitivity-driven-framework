@@ -141,6 +141,20 @@ def test_the_search_can_pick_a_low_threshold_for_3_bit_layers(cfg, tiny_llama, t
             technique_space(on.cfg.with_overrides(bad))
 
 
+def test_an_earlier_runs_tries_without_3_bit_layers_still_count_in_the_final_pick(cfg):
+    # Mohammad, 2026-10-27, "Restart now with 3-bit layers": the 8/4 run's 0.909 GB model is the same model as
+    # low threshold 0, so it stays a candidate for the smallest model
+    base = cfg.with_overrides({"search.joint_plan": False})
+    old = start_run(base.with_overrides({"run.run_id": "a"}))
+    log = search.TriedLog(search.tried_path(old), "a")
+    metrics = {"ppl_val": 9.0, "predicted_weight_memory_gb": 0.5}
+    log.add(old, "mobo", {"n": 1, "point": _point(base), "windows": 6, "over_limit": False, "ok": True, "met": True,
+                          "metrics": metrics}, {"metrics": metrics, "dir": "d"})
+    new = start_run(base.with_overrides({"run.run_id": "b", "search.low_threshold_max": 0.8}))
+    [t] = search.TriedLog(search.tried_path(new), "b").known(new, 6, ["predicted_weight_memory_gb", "ppl_val"])
+    assert t["point"] == {**_point(base), "low_threshold": 0.0} and t["earlier_run"] == "a"
+
+
 def test_a_tight_memory_limit_is_not_met_and_says_by_how_much(cfg, tiny_llama, tokenizer, monkeypatch):
     rows = []
     monkeypatch.setattr(runner, "stage1_row", lambda name: rows.append(name) or stage1_row(name))
