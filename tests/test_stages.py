@@ -150,7 +150,8 @@ def test_run_stages_uses_config_methods(stage0_dir, tiny_llama, tokenizer, small
     ctx = start_run(cfg)
     out = run_stages(ctx, SEARCH_SPACE.make({"calib_samples": 16}), stage0_dir,
                      model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
-    assert set(out) == {f"stage_{n}_{k}" for n in (1, 2) for k in ("report", "xlsx", "json")}
+    files = {f"stage_{n}_{k}" for n in (1, 2) for k in ("report", "xlsx", "json")}
+    assert {k for k in out if "_chart_" not in k} == files  # plus the charts, when matplotlib is installed
     rows = json.loads((ctx.run_dir / "stage_2" / "results.json").read_text())["rows"]
     assert {r["method"] for r in rows} == {"baseline", "unstructured_prune", "unstructured_prune_same_size",
                                            "unstructured_prune_after_gptq", "unstructured_prune_after_gptq_same_size"}

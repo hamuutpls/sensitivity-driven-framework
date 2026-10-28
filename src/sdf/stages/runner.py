@@ -63,9 +63,11 @@ _PLAN_ROWS = {
         "our method with each layer's weight bits and activation bits chosen together, from a measurement of "
         "both rounded at once, at the same average bits as the separate plans."),
     "prune_same_size": (
-        "_same_size", "Our method, same amount removed as the standard method",
-        "our method removing exactly as many numbers as the standard method, but taking them from the least "
-        "sensitive layers instead of evenly, so the two can be compared fairly, size for size."),
+        "_same_size", "Our method, aiming at the standard method's amount removed",
+        "our method aiming to remove as many numbers as the standard method, but taking them from the least "
+        "sensitive layers instead of evenly, so the two can be compared at a similar size. The share it really "
+        "removes is in its name: lower than the standard method's when the layers it may prune cannot hold that "
+        "much."),
 }
 
 TITLES = {1: "Quantization (weights and activations)", 2: "Pruning", 3: "KV-cache compression"}
@@ -78,6 +80,13 @@ MAIN_METRICS = {
     3: ["ppl_val", "ppl_heldout", "predicted_kv_memory_gb", "avg_kv_bits", "kv_kept_share", "peak_memory_gb",
         "prefill_ms_mean", "decode_ms_per_token_mean", "build_time_s"],
 }
+
+def stage_main_metrics(stage: int, chained: bool, backends: list[Any]) -> list[str]:
+    """The metrics a stage report judges and tabulates: the stage's own, a chained Stage 3 row's Stage 2 weight
+    columns, then each backend module's MAIN_METRICS (llama.cpp, vLLM, TensorRT-LLM, in that order)."""
+    return (MAIN_METRICS[stage] + (["predicted_weight_memory_gb", "decoder_weights_removed"] if chained else [])
+            + [k for mod in backends for k in mod.MAIN_METRICS])
+
 
 INTROS = {
     1: "A model is a huge store of numbers (its \"weights\"), and while it runs every layer passes numbers to the "
@@ -370,9 +379,8 @@ def run_stage(
                     "evaluation data": eval_data_label(cfg.eval),
                     "device": str(device), "backend": "HF Transformers", "Stage 0 plans": str(plans.dir),
                     "starting point": start},
-        main_metrics=MAIN_METRICS[stage] + (["predicted_weight_memory_gb", "decoder_weights_removed"] if before else [])
-        + (llamacpp.MAIN_METRICS if use_llamacpp else [])
-        + [k for mod, _, _ in serving.values() for k in mod.MAIN_METRICS],
+        main_metrics=stage_main_metrics(stage, bool(before),
+                                        [llamacpp] * use_llamacpp + [mod for mod, _, _ in serving.values()]),
     )
     rep.plain_intro = INTROS[stage]
 

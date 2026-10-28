@@ -42,9 +42,10 @@ def _rows(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def write_master(run_dir: str | Path) -> dict[str, Path]:
+def write_master(run_dir: str | Path, stages: list[dict[str, Any]] | None = None) -> dict[str, Path]:
+    """Write the master files into `run_dir`, from `stages` (results.json dicts; default: load_stages(run_dir))."""
     run_dir = Path(run_dir)
-    stages = load_stages(run_dir)
+    stages = load_stages(run_dir) if stages is None else sorted(stages, key=lambda r: r["stage"])
     if not stages:
         raise FileNotFoundError(f"no stage_<N>/results.json under {run_dir}")
     rows = _rows(stages)

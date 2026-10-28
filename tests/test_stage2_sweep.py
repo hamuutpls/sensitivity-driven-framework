@@ -150,7 +150,8 @@ def test_stage2_runs_every_level_on_every_backend(stage0_dir, tiny_llama, tokeni
     same = rows["unstructured_prune_090_same_size/framework"]
     assert same["info"]["plan_file"] == "prune_plan_same_size_090.json"
     assert "level 90%, 75.0% of the layer weights removed" in same["info"]["label"]  # 3 of 4 equal layers emptied
-    assert same["info"]["label"].startswith("Unstructured pruning (Wanda): Our method, same amount removed")
+    assert same["info"]["label"].startswith("Unstructured pruning (Wanda): Our method, aiming at the standard")
+    assert "Standard method, level 90%" in std["info"]["label"]  # pruning is not quantization
     labels = [r["info"]["label"] for k, r in rows.items() if k != "baseline/fp16"]
     assert len(set(labels)) == len(labels)  # every row can be told apart in the plain report
     assert rows["low_rank_030/framework"]["info"]["compare_to"] == "low_rank_030"

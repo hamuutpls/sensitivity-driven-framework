@@ -17,11 +17,11 @@ import math
 import time
 import traceback
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Iterator
 
-from sdf.reporting.metrics import NOT_IN_VERDICT, ONE_OFF_COSTS, is_better, is_number, label
+from sdf.reporting.metrics import NOT_IN_VERDICT, ONE_OFF_COSTS, SIZE_METRICS, is_better, is_number, label
 from sdf.requirements import DeploymentRequirement
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.logging import get_logger
@@ -36,11 +36,22 @@ VARIANTS = ("fp16", "original", "framework")
 VARIANT_PLAIN = {
     "fp16": ("Original model (uncompressed)", "the model exactly as published, with nothing removed or simplified. It is "
              "the reference point: the best accuracy we can hope for, and the most memory."),
-    "original": ("Standard quantization", "the compression technique applied the usual way, treating every part of "
+    "original": ("Standard method", "the compression technique applied the usual way, treating every part of "
                  "the model the same."),
     "framework": ("Our method", "our approach: first measure which parts of the model are "
                   "fragile, then compress the robust parts hard and leave the fragile parts mostly intact."),
 }
+
+W8A8 = "_w8a8"  # sdf.stages.methods.W8A8: a Stage 1 standard row with every layer at W8A8
+
+
+def standard_name(stage: int, prose: bool = False) -> str:
+    """The standard row's name: "Standard quantization" in Stage 1 and for Stage 0's unlabelled (weight plan) row,
+    "Standard method" elsewhere (pruning and KV cache are not quantization). `prose`: the lower-case words the
+    report text uses, where Stage 0 says "standard method" (its text also covers activation and KV rows)."""
+    quant = stage == 1 or (stage == 0 and not prose)
+    name = "Standard quantization" if quant else "Standard method"
+    return name.lower() if prose else name
 
 # Terms every report uses. Stages add their own with `glossary`.
 BASE_GLOSSARY = {
@@ -136,6 +147,7 @@ class StageReporter:
         if variant not in VARIANTS:
             raise ValueError(f"variant must be one of {VARIANTS}, got {variant!r}")
         row = ComparisonRow(method=method, variant=variant, info=dict(info))
+        self._name_standard(row)
         self.rows.append(row)
         log.info("[stage %d] %s: start", self.stage, row.key)
         try:
@@ -152,6 +164,27 @@ class StageReporter:
             log.info("[stage %d] %s: done", self.stage, row.key)
         row.requirement = self.requirement.check(row.metrics).to_dict()
         self.flush()
+
+    def _name_standard(self, row: ComparisonRow) -> None:
+        if row.variant == "original" and self.stage in (0, 1):
+            row.info.setdefault("label", standard_name(self.stage)
+                                + (", every layer W8A8" if row.method.endswith(W8A8) else ""))
+
+    def technique(self, row: ComparisonRow) -> str:
+        """The technique a row belongs to, in words: a pruning level row's label before ":", else its (or its
+        standard row's) description before ", standard settings" / ", Stage 0 ", else the method name."""
+        if row.variant == "fp16":
+            return VARIANT_PLAIN["fp16"][0]
+        for r in (row, self.find_original(row)):
+            if r is None:
+                continue
+            if r.info.get("kind_label") and ": " in r.info.get("label", ""):
+                return r.info["label"].split(": ")[0]
+            desc = r.info.get("description", "")
+            for cut in (", standard settings", ", Stage 0 "):
+                if cut in desc:
+                    return desc.split(cut)[0].removesuffix(", every layer W8A8")
+        return row.compare_to
 
     def add_raw(self, method: str, variant: str, records: list[dict[str, Any]]) -> None:
         self.raw.extend({"method": method, "variant": variant, **r} for r in records)
@@ -198,7 +231,7 @@ class StageReporter:
         original row; None when there is no original row. The one judgement behind both the technical findings
         and the plain summary. Perplexity counts once (see below); a backend's perplexity is not counted
         (NOT_IN_VERDICT). A difference within the larger of the two rows' std (a repeated timing's `<name>_std`) is
-        a tie; HF timings of two rows with different `latency_mode` are not compared."""
+        a tie; HF timings of two rows with different `latency_mode` are not compared. See judge() for stored size."""
         orig = self.find_original(fw)
         if orig is None:
             return None
@@ -236,6 +269,8 @@ class StageReporter:
             return None  # inside the measurement noise
         if m in ONE_OFF_COSTS:
             return None if better else "one_off"
+        if m in SIZE_METRICS and not better:
+            return None  # a larger stored size is never a loss (owner's rule); a smaller one is still a win
         return "win" if better else "loss"
 
     def comparison_summary(self) -> list[str]:
@@ -278,6 +313,7 @@ class StageReporter:
         return {
             "stage": self.stage,
             "title": self.title,
+            "main_metrics": self.main_metrics,
             "started": self.started,
             "config": self.config,
             "conditions": self.conditions,
@@ -316,17 +352,60 @@ class StageReporter:
         self.compute_deltas()
         atomic_write_text(self.json_path, json.dumps(self.to_dict(), indent=2, default=_json_default))
 
+    def analyse(self) -> None:
+        """Deltas and findings from the rows as they are."""
+        self.compute_deltas()
+        self._auto_findings = self.comparison_summary()
+
     def finalize(self) -> dict[str, Path]:
+        self.analyse()
+        self.flush()
+        return {**self.write_outputs(), "json": self.json_path}
+
+    def write_outputs(self) -> dict[str, Path]:
+        """report.md, the workbook and the charts from the rows as they are; results.json is left alone."""
+        from sdf.reporting.charts import write_charts
         from sdf.reporting.excel import write_workbook
         from sdf.reporting.markdown import write_report
 
-        self.compute_deltas()
-        self._auto_findings = self.comparison_summary()
-        self.flush()
         write_workbook(self, self.xlsx_path)
-        write_report(self, self.report_path)
+        write_report(self, self.report_path)  # first without charts, so a chart error never costs the report
+        try:
+            charts = write_charts(self)
+        except Exception:  # noqa: BLE001 - charts are optional; never abort a stage (or a search point) for them
+            log.warning("[stage %d] charts failed, the report has none", self.stage, exc_info=True)
+            charts = []
+        if charts:
+            write_report(self, self.report_path, charts)
         log.info("[stage %d] wrote %s", self.stage, self.dir)
-        return {"report": self.report_path, "xlsx": self.xlsx_path, "json": self.json_path}
+        return {"report": self.report_path, "xlsx": self.xlsx_path, **{c.path.stem: c.path for c in charts}}
+
+    @classmethod
+    def load(cls, json_path: str | Path, out_dir: str | Path | None = None) -> "StageReporter":
+        """A reporter holding a saved results.json, writing to `out_dir` (default: the file's folder). main_metrics
+        is empty when the file predates saving them (sdf.reporting.rebuild fills it in)."""
+        d = json.loads(Path(json_path).read_text(encoding="utf-8"))
+        folder = Path(out_dir or Path(json_path).parent)
+        rep = cls(d["stage"], folder.parent, d.get("title", ""), d.get("config", {}), d.get("environment", {}),
+                  d.get("conditions", {}), DeploymentRequirement(**_known(DeploymentRequirement, d.get("requirement"))),
+                  d.get("main_metrics", []), d.get("original_model"), subdir=folder.name)
+        rep.started = d.get("started", "")
+        rep.rows = [ComparisonRow(**_known(ComparisonRow, r)) for r in d["rows"]]
+        for r in rep.rows:
+            rep._name_standard(r)
+        rep.per_layer, rep.raw = d.get("per_layer", []), d.get("raw", [])
+        rep.anomalies, rep.next_steps = d.get("anomalies", []), d.get("next_steps", [])
+        rep.sections = [(s["heading"], s["body"]) for s in d.get("sections", [])]
+        p = d.get("plain", {})
+        rep.plain_summary, rep.plain_intro = p.get("summary", ""), p.get("intro", "")
+        rep.plain_why, rep.glossary = p.get("findings", []), p.get("glossary", dict(BASE_GLOSSARY))
+        return rep
+
+
+def _known(cls: type, d: dict[str, Any] | None) -> dict[str, Any]:
+    """The keys of `d` that are fields of dataclass `cls` (a file from an older or newer version may have others)."""
+    names = {f.name for f in fields(cls)}
+    return {k: v for k, v in (d or {}).items() if k in names}
 
 
 def _delta(value: float, ref: Any, prefix: str) -> dict[str, float | None]:
