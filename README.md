@@ -28,23 +28,27 @@ Every stage compares, under identical conditions, three variants of each method:
   git clone https://github.com/hamuutpls/sensitivity-driven-framework
   cd sensitivity-driven-framework
   python -m venv .venv
-  pip install -e ".[dev,search,downstream,figures]" pytest-xdist
+  source .venv/bin/activate        # Windows: .venv\Scripts\activate
+  pip install -e ".[dev,search,downstream,figures]" bitsandbytes pytest-xdist
   ```
 
-  (activate `.venv` first). `dev`: pytest; `search`: Optuna (MOBO) and pymoo (NSGA-III, hypervolume), needed by
+  `dev`: pytest; `search`: Optuna (MOBO) and pymoo (NSGA-III, hypervolume), needed by
   MODE "search" and its tests; `downstream`: lm-eval, for `DOWNSTREAM_TASKS` and `SEARCH_ACCURACY_TASKS`;
-  `figures`: matplotlib; `pytest-xdist`: `-n 4` below. Install the CUDA build of PyTorch for your GPU first if
-  pip's default does not match it.
-- vLLM (Linux only: a Colab A100 or a Linux PC), in its own virtual environment so its pinned PyTorch never touches
-  the framework's. The code is tested with vLLM 0.31:
+  `figures`: matplotlib; `bitsandbytes`: the bitsandbytes Stage 1 rows; `pytest-xdist`: `-n 4` below. Install the
+  CUDA build of PyTorch for your GPU first if pip's default does not match it.
+- vLLM (Linux only: a Colab A100 or a Linux PC), in its own virtual environment (Python 3.12) so its pinned PyTorch
+  never touches the framework's; the earlier Colab runs used vLLM 0.31.0, made with uv as step 2b of the Colab
+  notebook does:
 
   ```bash
-  python -m venv /content/vllm-venv
-  /content/vllm-venv/bin/pip install "vllm==0.31.*"
+  pip install -q uv
+  uv venv /content/vllm-venv --python 3.12
+  uv pip install --python /content/vllm-venv/bin/python vllm==0.31.0
+  /content/vllm-venv/bin/python -c "import vllm, torch; print('vLLM', vllm.__version__, 'torch', torch.__version__)"
   ```
 
-  Then set `VLLM_PYTHON = "/content/vllm-venv/bin/python"` in `main.py`. The search run below needs it: every try
-  runs vLLM.
+  Then set `VLLM_PYTHON = "/content/vllm-venv/bin/python"` in `main.py` (the notebook sets it in step 4). The
+  search run below needs it: every try runs vLLM.
 - Optional: llama.cpp (`eval.llamacpp_dir`: the folder with `llama-quantize`, `llama-bench`, `llama-perplexity`;
   `eval.llamacpp_convert`: its `convert_hf_to_gguf.py`) and TensorRT-LLM (`eval.trtllm_python`, Linux only, its own
   venv). Left at None, they are not measured.
@@ -106,10 +110,13 @@ The modes:
 
 The command-line tools below do the same as `"single"` and `"sweep"` with `--set` overrides.
 
+To run it on a model other than TinyLlama, see [docs/other-models.md](docs/other-models.md).
+
 ## Reproduce the 2026-10-29 search run
 
-MODE "search" with MOBO only, on a Colab A100 (vLLM needs Linux). `main.py` holds these settings except `MODE`,
-`SEARCH_BUDGET`, `VLLM_PYTHON`, `RUN_ID` and the folders, which step 4 of the Colab notebook sets:
+MODE "search" with MOBO only, on a Colab A100 (vLLM needs Linux): open `notebooks/colab_run.ipynb` (the badge below)
+and run its cells top to bottom. `main.py` holds these settings except `MODE`, `SEARCH_BUDGET`, `VLLM_PYTHON`,
+`RUN_ID` and the folders, which step 4 of the notebook sets:
 
 | Setting | Value |
 |---|---|
@@ -133,31 +140,37 @@ export re-rounds faithfully. With a vLLM objective, or the latency limit on a vL
 (`sdf.search.tries_need_vllm`); otherwise tries run no backend, and vLLM, llama.cpp and TensorRT-LLM measure only the
 final model. A try whose vLLM measurement fails does not meet the latency limit.
 
-Colab notebook (`notebooks/colab_run.ipynb`), step 4:
-
-```python
-main.MODE = "search"
-main.SEARCH_BUDGET = 30
-main.VLLM_PYTHON = "/content/vllm-venv/bin/python"
-main.RUN_ID = "20261029-colab-a100-ppl11.5-lat2.5"
-main.OUTPUT_ROOT = f"{ROOT}/results"
-main.CACHE_DIR = f"{ROOT}/cache"  # empty in a new Colab session
-```
-
-Outputs go to `<OUTPUT_ROOT>/<RUN_ID>/search/`: `points/<hash>/` (each try's Stage 0 and Stage 3 reports),
-`trials.json`, `search_report.md`, `search_results.xlsx` (Trials, Pareto, Searcher comparison, Best configs) and
-the plots; every try is also logged in `<CACHE_DIR>/search_tried.csv`.
-
-To run it on a model other than TinyLlama, see [docs/other-models.md](docs/other-models.md).
-
 ### On Google Colab
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hamuutpls/sensitivity-driven-framework/blob/main/notebooks/colab_run.ipynb)
 
-`notebooks/colab_run.ipynb` pulls `main`, installs the package, runs the tests and then `main.py` on the Colab
-GPU, with results and caches in `/content/thesis_compression/` (no Google Drive, so nothing to sign in to). Its last
-cell packs the results into `/content/thesis_results.tgz`, which the host PC session copies to `D:\Thesis`; on a local
-runtime on the PC the results are written to `D:\Thesis\thesis_compression\` directly.
+`notebooks/colab_run.ipynb`, cell by cell:
+
+1. Shows the GPU and memory.
+2. Pulls `main` and installs the package: `pip install -q -e "{REPO}[dev,search,downstream]" bitsandbytes`.
+   2b. Makes the vLLM 0.31.0 venv at `/content/vllm-venv` with uv (the commands under Requirements) unless it is
+   already there, and prints the vLLM and PyTorch versions (skipped off Linux: `VLLM_PYTHON = None`).
+3. Runs the full test suite: `python -m pytest -q -rs tests` (record the passed and skipped counts).
+4. Sets the run:
+
+   ```python
+   main.MODE = "search"
+   main.SENSITIVITY_SCORE = "layer_removal"
+   main.SEARCH_BUDGET = 30
+   main.VLLM_PYTHON = VLLM_PYTHON  # step 2b: "/content/vllm-venv/bin/python"
+   main.OUTPUT_ROOT = f"{ROOT}/results"
+   main.CACHE_DIR = f"{ROOT}/cache"  # empty in a new Colab session: no earlier run's tries are reused
+   main.RUN_ID = "20261029-colab-a100-ppl11.5-lat2.5"
+   ```
+
+5. Runs `main.main()`, then packs the results into `/content/thesis_results.tgz` (also when the run fails).
+
+Results and caches go to `/content/thesis_compression/` (no Google Drive, so nothing to sign in to); the host PC
+session copies the archive to `D:\Thesis`, and on a local runtime on the PC the results are written to
+`D:\Thesis\thesis_compression\` directly. Outputs of the search are in `<OUTPUT_ROOT>/<RUN_ID>/search/`:
+`points/<hash>/` (each try's Stage 0 and Stage 3 reports), `trials.json`, `search_report.md`, `search_results.xlsx`
+(Trials, Pareto, Searcher comparison, Best configs) and the plots; every try is also logged in
+`<CACHE_DIR>/search_tried.csv`.
 
 ## Layout
 

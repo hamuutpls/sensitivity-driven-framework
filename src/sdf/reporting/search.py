@@ -260,7 +260,7 @@ def _req(cfg) -> str:
     r = cfg.requirement
     parts = [f"{label(m)} at most {v}" for m, v in ((cfg.search.memory_metric, r.target_memory_gb),
                                                      ("ppl_val", r.target_ppl),
-                                                     ("decode_ms_per_token_mean", r.target_latency_ms),
+                                                     (cfg.search.latency_metric, r.target_latency_ms),
                                                      ("predicted_kv_memory_gb", r.kv_budget_gb)) if v is not None]
     return "; ".join(parts) or "no limits set"
 

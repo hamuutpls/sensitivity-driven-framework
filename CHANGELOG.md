@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-10-29: Pre-merge fixes to the vLLM latency limit
+
+- main.py sets `SEARCH_LATENCY_METRIC = "vllm_decode_ms_per_token"`, so `TARGET_LATENCY_MS = 2.5` (now set for
+  every mode) is checked on vLLM. Every Stage report row now checks it the same way: `StageReporter(latency_metric=)`,
+  from `search.latency_metric`, through one helper (`sdf.requirements.with_latency`) shared with the search. A row
+  without the vLLM value has the latency unmeasured. Before this, every row in every mode, the search tries' own
+  point reports included, checked 2.5 ms against the HF decode (about 30 ms) and showed "not met".
+- search_report.md labels the latency limit with `search.latency_metric` (vLLM), not the HF decode.
+- A try whose vLLM latency could not be measured (vLLM failed) now counts as violating the limit for MOBO's
+  constraint: 1 for each unmeasured limit, added to the shortfalls. Before, it was 0, the same as met.
+- A try whose row has backend errors (e.g. vLLM out of memory) is no longer reused from search_tried.csv in a later
+  run, nor taken as a candidate for the final model: it is retried, like a crash.
+- Colab notebook: installs `[dev,search,downstream]` and bitsandbytes; new step 2b makes the vLLM 0.31.0 venv at
+  `/content/vllm-venv` with uv (Python 3.12), as the earlier Colab runs did; step 3 runs the full suite; step 4 sets
+  the 2026-10-29 search run (MODE "search", budget 30, `VLLM_PYTHON`, `RUN_ID`). The README describes the notebook
+  step by step, and a test checks that the two match.
+- Tests: the stage reporter's latency check, MOBO's violation for an unmeasured latency, failed-backend tries never
+  reused, main.py's config passing run_search's checks, and the notebook against the README.
+
 ## 2026-10-29: The search limits and minimises vLLM latency, with weight-only Stage 1 techniques; MOBO only
 
 - Mohammad (2026-10-29): the next run keeps validation perplexity at most 11.5 and vLLM decode below 2.5 ms per

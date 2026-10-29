@@ -123,6 +123,11 @@ def test_a_weight_only_try_gets_its_vllm_latency_and_the_limit_is_checked_on_it(
     assert t["ok"] and t["values"][2] == 2.0 and t["met"], t["error"]
     (plan, acts), = [x for x in seen if x[0] is not None]
     assert acts is None  # weights only: the GPTQ export, no activation rounding
+    import json
+    from pathlib import Path
+    rows = json.loads((Path(t["dir"]) / "stage_3" / "results.json").read_text())["rows"]
+    fw = next(x for x in rows if x["variant"] == "framework")
+    assert fw["requirement"]["met"] is True  # the point's own report checks the vLLM latency too, not HF's
     monkeypatch.setattr(vllm_backend, "measure", lambda *a, **k: {**measure(*a, **k), VLLM: 2.6})
     t = rec(technique_space(c).make({"calib_samples": 16, "prune_ratio_aggressive": 0.1, "stage1_method": "gptq"}))
     assert t["ok"] and not t["met"] and t["violation"] == pytest.approx(0.1)
@@ -141,3 +146,90 @@ def test_a_mobo_search_on_three_objectives_with_the_vllm_limit_writes_the_report
     text = out["search_report"].read_text(encoding="utf-8")
     assert out and all(p.exists() for p in out.values()), out
     assert "mobo" in text.lower() and out["search_xlsx"].exists() and "search_hypervolume" in out
+    assert "vLLM decode time per token at most 2.5" in text  # the limit is labelled with the vLLM metric
+
+
+# ---------------------------------------------------------------- pre-merge review fixes (2026-10-29)
+
+def test_stage_reports_check_the_latency_limit_on_the_search_latency_metric(tmp_path):
+    from sdf.reporting.reporter import StageReporter
+    from sdf.requirements import DeploymentRequirement
+
+    def rep(**kw):
+        return StageReporter(stage=1, run_dir=tmp_path, title="t", config={}, environment={}, conditions={},
+                             requirement=DeploymentRequirement(target_latency_ms=2.5), main_metrics=["ppl_val"],
+                             **kw)
+
+    vllm = rep(latency_metric=VLLM)
+    with vllm.method("gptq", "framework") as r:  # HF decode ~30 ms, vLLM 2.0: the vLLM value decides
+        r.metrics.update(ppl_val=10.0, decode_ms_per_token_mean=30.0, **{VLLM: 2.0})
+    with vllm.method("awq", "framework") as r:  # no vLLM run: unmeasured, never the HF value
+        r.metrics.update(ppl_val=10.0, decode_ms_per_token_mean=30.0)
+    assert vllm.rows[0].requirement["met"] is True
+    assert vllm.rows[0].requirement["checked"]["target_latency_ms"] == "decode_ms_per_token_mean"
+    assert vllm.rows[1].requirement["met"] is None and vllm.rows[1].requirement["unmeasured"] == ["target_latency_ms"]
+    hf = rep()  # the default: the HF latency, as before
+    with hf.method("gptq", "framework") as r:
+        r.metrics.update(ppl_val=10.0, decode_ms_per_token_mean=30.0, **{VLLM: 2.0})
+    assert hf.rows[0].requirement["met"] is False
+
+
+def test_a_try_whose_vllm_latency_failed_violates_the_limit_for_mobo(cfg, monkeypatch):
+    # the latency limit is on vLLM but vLLM is no objective: the try is "ok", yet the limit was not measured
+    monkeypatch.setattr(search, "_build_and_measure", lambda *a: {
+        "metrics": {"ppl_val": 10.0, "predicted_weight_memory_gb": 0.5}, "errors": {"vllm_error": "out of memory"}})
+    ctx = start_run(cfg)
+    t = search.Recorder(ctx, "mobo", 6)(technique_space(cfg).make({}))
+    assert t["ok"] and not t["met"] and t["violation"] == 1.0  # never 0: MOBO would take it as met
+    assert search.violation({"met": False, "shortfall": {"target_ppl": 0.5}, "unmeasured": ["target_latency_ms"]}) == 1.5
+    assert search.violation({"met": True, "shortfall": {}, "unmeasured": []}) == 0.0
+    assert search.violation({"met": False, "shortfall": {}, "unmeasured": []}) == 0.0  # no limits set: as before
+
+
+def test_a_try_whose_backend_failed_is_never_reused_from_the_tried_log(cfg):
+    ctx = start_run(cfg)
+    point = technique_space(cfg).make({})
+    m = {"ppl_val": 10.0, "ppl_heldout": 10.2, "predicted_weight_memory_gb": 0.5, VLLM: 2.0}
+
+    def logged(r):
+        path = ctx.run_dir / "tried.csv"
+        if path.exists():
+            path.unlink()
+        log = search.TriedLog(path, "old")
+        log.add(ctx, "mobo", {"n": 1, "point": point, "windows": 6, "over_limit": False, "ok": True, "met": False,
+                              "metrics": r["metrics"]}, r)
+        return search.TriedLog(path, "new")
+
+    assert logged({"metrics": m, "errors": {}}).get(ctx, point, 6) is not None  # a good try is reused
+    failed = logged({"metrics": {k: v for k, v in m.items() if k != VLLM}, "errors": {"vllm_error": "out of memory"}})
+    assert failed.get(ctx, point, 6) is None  # retried, like a crash
+    assert failed.known(ctx, 6, ["predicted_weight_memory_gb", "ppl_val"]) == []  # never a final-model candidate
+
+
+def test_main_py_builds_a_valid_search_config(monkeypatch, tmp_path):
+    import main
+    from sdf.stage0 import run as stage0_run
+
+    c = main.build_config()
+    assert c.search.searchers == ["mobo"] and c.requirement.target_latency_ms == 2.5 and c.requirement.target_ppl == 11.5
+    assert c.search.objectives == ["predicted_weight_memory_gb", "ppl_val", VLLM] and c.search.latency_metric == VLLM
+    assert c.search.low_threshold_max == 0 and c.requirement.target_memory_gb is None and not c.search.joint_plan
+    space = technique_space(c)
+    weight_only = ["rtn", "gptq", "awq", "omniquant", "efficientqat"]
+    for m in weight_only + c.search.stage1_methods:
+        space.validate({**space.make({}), "stage1_method": m})
+    assert set(weight_only) <= set(c.search.stage1_methods) and "gptq_with_rtn_act" in c.search.stage1_methods
+    with pytest.raises(ValueError, match="vllm_python"):  # main.py's VLLM_PYTHON is None until it is set
+        run_search(start_run(c := c.with_overrides({"run.output_root": str(tmp_path / "results"),
+                                                     "run.cache_dir": str(tmp_path / "cache")})))
+
+    class Passed(Exception):
+        pass
+
+    def setup(*a, **k):  # the first step after the checks: they all passed
+        raise Passed
+
+    monkeypatch.setattr(stage0_run, "setup", setup)
+    monkeypatch.setitem(__import__("sys").modules, "lm_eval", object())  # SEARCH_ACCURACY_TASKS needs lm-eval
+    with pytest.raises(Passed):
+        run_search(start_run(c.with_overrides({"eval.vllm_python": "/content/vllm-venv/bin/python"})))
