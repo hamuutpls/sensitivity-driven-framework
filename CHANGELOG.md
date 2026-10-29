@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-10-29: The search limits and minimises vLLM latency, with weight-only Stage 1 techniques; MOBO only
+
+- Mohammad (2026-10-29): the next run keeps validation perplexity at most 11.5 and vLLM decode below 2.5 ms per
+  token ("we need to beat the uncompressed version"; FP16 is 2.53 ms/token on vLLM) and makes size, perplexity and
+  vLLM latency small together ("whats the lowest ppl and latency we can get with the smallest size"), with MOBO only
+  ("yes from now on mobo only").
+- `search.latency_metric` (main.py `SEARCH_LATENCY_METRIC`, default `decode_ms_per_token_mean`, the HF latency): the
+  metric `requirement.target_latency_ms` (main.py `TARGET_LATENCY_MS = 2.5`) is checked against in the search. A try
+  whose vLLM measurement fails has no latency and does not meet the limit; before the build the latency is unknown,
+  which alone never skips building.
+- vLLM may run in the tries: objectives and the latency metric starting with `vllm_` are allowed when
+  `eval.vllm_python` is set (else a ValueError before any try). Tries keep vLLM only when the search optimises or
+  limits vLLM speed (`sdf.search.tries_need_vllm`); llama.cpp and TensorRT-LLM still measure only the final model.
+- main.py: `SEARCH_OBJECTIVES = ["predicted_weight_memory_gb", "ppl_val", "vllm_decode_ms_per_token"]`;
+  `SEARCH_STAGE1` keeps every WxAy row (Mohammad: "Keep them to prove that they make the model slower"; vLLM runs
+  them on Humming kernels in eager mode, 35-42 ms/token) and adds the weight-only techniques `rtn`, `gptq`, `awq`,
+  `omniquant`, `efficientqat` (the GPTQ export with CUDA graphs, about 2 ms/token on 2026-10-07; uniform per-group
+  grid, which the export re-rounds faithfully). `SEARCH_LOW_THRESHOLD_MAX = 0` (was 0.8): vLLM 0.31 has no 3-bit
+  GPTQ kernel, so the bitsandbytes WxAy rows are back in the list.
+- Tests: tests/test_search_vllm_latency.py (the latency check, the run() validation, which tries keep vLLM, weight-only
+  Stage 1 tries built and measured with vLLM mocked). Two tests in tests/test_search.py took a point's folder name by
+  splitting on "/", which failed on Windows; they use `Path(...).name` now.
+- README: requirements from a fresh machine (Python, extras, vLLM venv, optional backends), how to run the tests and
+  each mode, which settings to change, and how to reproduce this run.
+
 ## 2026-10-27: The search turns the 3-bit layers on
 
 - Mohammad (2026-10-27) chose "Restart now with 3-bit layers": the 8/4 search's smallest model under 11.5 was

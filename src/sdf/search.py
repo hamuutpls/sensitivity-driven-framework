@@ -3,11 +3,12 @@ dynamic and find the best settings that satisfy perplexity, memory, and latency"
 lowest perplexity and latency).
 
 A point is one set of settings: the SEARCH_SPACE hyperparameters plus a technique for each stage (technique_space).
-evaluate() builds the chained model 0 -> 1 -> 2 -> 3 for it (the Stage 0 plan, the Stage 1 WxAy method, the Stage 2
-pruning method at the plan's prune_ratio_aggressive, the Stage 3 KV method; Our method rows only) and measures it
-(Stage 4). The searchers (MOBO: Optuna's Gaussian-process sampler; MFBO: successive halving over the number of
-evaluation windows; NSGA-III: pymoo) minimise cfg.search.objectives under the requirement, each with the same
-budget, and are compared. Held-out perplexity is measured, never optimised.
+evaluate() builds the chained model 0 -> 1 -> 2 -> 3 for it (the Stage 0 plan, the Stage 1 weight or WxAy method, the
+Stage 2 pruning method at the plan's prune_ratio_aggressive, the Stage 3 KV method; Our method rows only) and measures
+it (Stage 4; vLLM too only when the search optimises or limits vLLM speed, Mohammad 2026-10-29). The searchers
+(MOBO: Optuna's Gaussian-process sampler; MFBO: successive halving over the number of evaluation windows;
+NSGA-III: pymoo) minimise cfg.search.objectives under the requirement, each with the same budget, and are compared.
+Held-out perplexity is measured, never optimised.
 
 Outputs in <run_dir>/search/: points/<hash>/ (each evaluated point's Stage 0 and Stage 3 reports), trials.json,
 search_report.md, search_results.xlsx (Trials, Pareto, Searcher comparison, Best configs) and the plots.
@@ -123,8 +124,12 @@ def cached_point(ctx: RunContext, kind: str, key: dict[str, Any], tdir: Path, bu
 
 def check_requirement(cfg: FrameworkConfig, metrics: dict[str, Any]) -> RequirementCheck:
     """The requirement checked with the memory limit on cfg.search.memory_metric, before and after the build alike
-    (the requirement on its own prefers model_size_gb, which a simulated method fills with the 16-bit size)."""
-    return cfg.requirement.check({**metrics, "model_size_gb": metrics.get(cfg.search.memory_metric)})
+    (the requirement on its own prefers model_size_gb, which a simulated method fills with the 16-bit size), and the
+    latency limit on cfg.search.latency_metric. A latency not measured (vLLM failed, or before the build) leaves met
+    None: not met after the build (cached_point), but no reason to skip building."""
+    s = cfg.search
+    return cfg.requirement.check({**metrics, "model_size_gb": metrics.get(s.memory_metric),
+                                  "decode_ms_per_token_mean": metrics.get(s.latency_metric)})
 
 
 def _version(name: str, methods: dict) -> int:
@@ -526,7 +531,9 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
                text_loader: Callable | None = None) -> dict[str, Path]:
     """Every searcher in cfg.search.searchers with the same budget and seed, then the report. Tries run no backend
     (Mohammad, 2026-10-25: "we do not test backends in stages 1 and 2. we test them in stage 4"): the backends set in
-    cfg.eval measure only the final model (final_model)."""
+    cfg.eval measure only the final model (final_model). The one exception: vLLM runs in each try when the search
+    optimises or limits vLLM speed (tries_need_vllm; Mohammad, 2026-10-29: "whats the lowest ppl and latency we can
+    get with the smallest size", under 2.5 ms per token on vLLM); llama.cpp and TensorRT-LLM stay final-model only."""
     from sdf.data import eval_windows
     from sdf.stage0.run import setup
 
@@ -539,9 +546,11 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
                          "the predicted size is known before a model is built")
     if "ppl_heldout" in s.objectives:
         raise ValueError("ppl_heldout is measured to check the choice, never optimised: use ppl_val")
-    if backend := [o for o in s.objectives if o.startswith(BACKEND_PREFIXES)]:
-        raise ValueError(f"the objectives {backend} come from a backend; tries run none (backends test only the "
-                         "final model, in Stage 4): use HF metrics such as ppl_val and predicted_weight_memory_gb")
+    needs_vllm = tries_need_vllm(cfg)
+    if backend := [o for o in [*s.objectives, s.latency_metric] if o.startswith(BACKEND_PREFIXES)
+                   and not (o.startswith("vllm_") and cfg.eval.vllm_python)]:
+        raise ValueError(f"the metrics {backend} come from a backend; tries run only vLLM, and only with "
+                         "eval.vllm_python set (llama.cpp and TensorRT-LLM test only the final model, in Stage 4)")
     if missing := [m for m in s.extra_stage1 if m not in s.stage1_methods]:
         raise ValueError(f"search.extra_stage1 {missing} must be in search.stage1_methods")
     if s.accuracy_tasks:
@@ -554,7 +563,8 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     val, held = eval_windows(loader(cfg.eval.dataset, "test"), handle.tokenizer, cfg.eval.seq_len, cfg.eval.max_windows)
     full = len(val) + len(held)
     kw = dict(model_factory=model_factory, tokenizer=tokenizer, text_loader=text_loader)
-    tries = RunContext(cfg.with_overrides({**NO_BACKENDS, "eval.downstream_tasks": []}), ctx.run_id, ctx.run_dir,
+    off = {k: v for k, v in NO_BACKENDS.items() if not (needs_vllm and k == "eval.vllm_python")}
+    tries = RunContext(cfg.with_overrides({**off, "eval.downstream_tasks": []}), ctx.run_id, ctx.run_dir,
                        ctx.cache)  # accuracy tasks also only on the final model
     trials: list[dict[str, Any]] = []
     tried = TriedLog(tried_path(ctx), ctx.run_id)
@@ -588,6 +598,13 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
 
 BACKEND_PREFIXES = ("vllm_", "llamacpp_", "trtllm_")
 NO_BACKENDS = {"eval.vllm_python": None, "eval.trtllm_python": None, "eval.llamacpp_dir": None}
+
+
+def tries_need_vllm(cfg: FrameworkConfig) -> bool:
+    """True when a try must run vLLM: an objective is a vLLM metric, or the latency limit is checked on one."""
+    s = cfg.search
+    return (any(o.startswith("vllm_") for o in s.objectives)
+            or cfg.requirement.target_latency_ms is not None and s.latency_metric.startswith("vllm_"))
 
 
 def final_model(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[str], **kw: Any) -> dict[str, Any] | None:
