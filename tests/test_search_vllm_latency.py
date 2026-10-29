@@ -212,7 +212,8 @@ def test_main_py_builds_a_valid_search_config(monkeypatch, tmp_path):
 
     c = main.build_config()
     assert c.search.searchers == ["mobo"] and c.requirement.target_latency_ms == 2.5 and c.requirement.target_ppl == 11.5
-    assert c.search.objectives == ["predicted_weight_memory_gb", "ppl_val", VLLM] and c.search.latency_metric == VLLM
+    # the final model: lowest perplexity under both limits, then vLLM latency, then size (Mohammad, 2026-10-29: "b")
+    assert c.search.objectives == ["ppl_val", VLLM, "predicted_weight_memory_gb"] and c.search.latency_metric == VLLM
     assert c.search.low_threshold_max == 0 and c.requirement.target_memory_gb is None and not c.search.joint_plan
     space = technique_space(c)
     weight_only = ["rtn", "gptq", "awq", "omniquant", "efficientqat"]

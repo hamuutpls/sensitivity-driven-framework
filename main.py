@@ -158,9 +158,10 @@ SEARCHERS = ["mobo"]  # each gets the same budget and seed (Mohammad, 2026-10-29
 SEARCH_BUDGET = 100  # full tries per searcher (MFBO's rough tries count by their share of the windows, so it builds
 # more models); a try over the limit is not built and not counted. Combinations tried in an earlier run are not built
 # again (search_tried.csv in the cache) but count, so 10 more new tries = this raised by 10 with the same SEED
-SEARCH_OBJECTIVES = ["predicted_weight_memory_gb", "ppl_val", "vllm_decode_ms_per_token"]  # made as small as possible,
-# size first (the final model tested in Stage 4 is the smallest under the limits); Mohammad, 2026-10-29: "whats the
-# lowest ppl and latency we can get with the smallest size". A vLLM objective or SEARCH_LATENCY_METRIC runs vLLM in
+SEARCH_OBJECTIVES = ["ppl_val", "vllm_decode_ms_per_token", "predicted_weight_memory_gb"]  # made as small as possible
+# together (Mohammad, 2026-10-29: "whats the lowest ppl and latency we can get with the smallest size"). The final
+# model tested in Stage 4 is the best under the limits on the first, ties by the next: Mohammad, 2026-10-29, chose
+# "b": the lowest perplexity under both limits, then the lowest vLLM latency, then the smallest. A vLLM objective or SEARCH_LATENCY_METRIC runs vLLM in
 # every try; llama.cpp and TensorRT-LLM measure only the final model (Mohammad, 2026-10-25: "we test them in stage 4")
 VLLM_PYTHON = None  # the Python of the vLLM install (Linux/Colab only), e.g. "/content/vllm-venv/bin/python"; needed
 # for the vLLM objective and latency limit above
@@ -178,12 +179,12 @@ SEARCH_STAGE1 += ["rtn", "gptq", "awq", "omniquant", "efficientqat"]
 SEARCH_STAGE2 = ["unstructured_prune", "structured_prune"]  # pruning techniques (low-rank cannot follow Stage 1)
 SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]  # KV-cache techniques
 SEARCH_FINALISTS = 3  # MODE "stage_search": chained models built and measured under the limit, best pairs first
-# MODE "search": lm-eval tasks the smallest final model with perplexity at most TARGET_PPL is tested on (Mohammad,
-# 2026-10-26: "how much smaller can we get the model, while keeping 11 ppl or lower"); [] = no accuracy test
+# MODE "search": lm-eval tasks the final model (the best under the limits on SEARCH_OBJECTIVES' first, then the
+# next) is tested on (Mohammad, 2026-10-25: "then that accuracy will be compared with tinyllama accuracy"); [] = none
 SEARCH_ACCURACY_TASKS = ["arc_easy", "piqa", "hellaswag", "winogrande"]  # full sets; picked as quick and standard
 # MODE "search": one chained try each after the search (the best setting with only its Stage 1 technique changed), for
 # those no search method measured (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"); shown in
-# the report, not compared, but one may be the final model when it is the smallest under the limit
+# the report, not compared, but one may be the final model when it is the best under the limits
 SEARCH_EXTRA_STAGE1 = ["spqr_with_rtn_act", "quip_with_rtn_act", "quipsharp_with_rtn_act"]
 # MODE "search": each layer's bits follow the threshold (sensitive layers PROTECTED_BITS, the rest COMPRESSED_BITS),
 # not the joint weight x activation plan, and the search keeps to high thresholds with light pruning, where fewer

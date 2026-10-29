@@ -592,7 +592,7 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     except Exception:  # noqa: BLE001
         log.exception("the extra Stage 1 tries failed; the report is written without them")
     try:
-        # an extra try may be the smallest; this run's tries first, so a tie with the same model logged by an
+        # an extra try may be the best; this run's tries first, so a tie with the same model logged by an
         # earlier run keeps this run's label
         final = final_model(ctx, trials + extras + earlier, s.accuracy_tasks, **kw)
     except Exception:  # noqa: BLE001
@@ -614,8 +614,9 @@ def tries_need_vllm(cfg: FrameworkConfig) -> bool:
 
 
 def final_model(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[str], **kw: Any) -> dict[str, Any] | None:
-    """Stage 4 for the final model under the limit that is best on the first objective (Mohammad, 2026-10-26: "lets
-    see how much smaller can we get the model, while keeping 11 ppl or lower", so main.py puts the size first): built
+    """Stage 4 for the final model under the limits that is best on the first objective, ties by the next (Mohammad,
+    2026-10-29, chose "b": the lowest perplexity under both limits, then the lowest vLLM latency, then the smallest, so
+    main.py puts ppl_val first; 2026-10-26 it was the size first): built
     again with the backends in ctx.cfg.eval and tested for accuracy on `tasks` (eval.downstream_tasks, lm-eval;
     Mohammad, 2026-10-25: "then that accuracy will be compared with tinyllama accuracy"): "fp16" holds the uncompressed model's accuracy, measured in the same run
     under the same conditions. None when there is nothing to test (no task, no backend) or no try met the limit."""

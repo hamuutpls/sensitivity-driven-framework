@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-29: Stage 4 tests the lowest-perplexity model under both limits
+
+- Mohammad (2026-10-29) chose "b" on which model Stage 4 tests: the lowest perplexity among the tries that meet both
+  limits (perplexity at most 11.5, vLLM decode at most 2.5 ms per token). main.py
+  `SEARCH_OBJECTIVES = ["ppl_val", "vllm_decode_ms_per_token", "predicted_weight_memory_gb"]`. The final model and
+  the extra tries' base point are picked on the first objective, ties by the next: lowest perplexity, then lowest vLLM
+  latency, then smallest. Before this, size came first and the final model was the smallest under the limits.
+- Comments in main.py, the final_model docstring, the search report's extra-tries text and the README now say so.
+
 ## 2026-10-29: Pre-merge fixes to the vLLM latency limit
 
 - main.py sets `SEARCH_LATENCY_METRIC = "vllm_decode_ms_per_token"`, so `TARGET_LATENCY_MS = 2.5` (now set for

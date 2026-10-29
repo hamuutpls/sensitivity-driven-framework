@@ -10,7 +10,7 @@ compression, applied to TinyLlama-1.1B-Chat.
 | 2 | Pruning only, nothing rounded (Wanda, structured, low-rank) | done (simulated) |
 | 3 | KV-cache compression (RTN KV, QuaRot KV, KVQuant, H2O, SnapKV, InfiniGen) | done (simulated on HF) |
 | 4 | Evaluation across backends (HF Transformers, llama.cpp, vLLM, TensorRT-LLM), plus lm-eval task accuracy | done (vLLM and TensorRT-LLM on Linux/Colab) |
-| Search | MODE "search": each try builds one chained model 0 > 1 > 2 > 3 and measures it; the current run (2026-10-29) keeps validation perplexity at most 11.5 and vLLM decode below 2.5 ms per token (FP16: 2.53) and makes size, perplexity and vLLM latency as small as possible, with MOBO (Optuna) only; MFBO (successive halving) and NSGA-III (pymoo) also work. The smallest final model under the limits is then tested on the backends (Stage 4) and for accuracy next to TinyLlama. See `docs/diagrams/search.md` and [Reproduce the 2026-10-29 search run](#reproduce-the-2026-10-29-search-run). | done |
+| Search | MODE "search": each try builds one chained model 0 > 1 > 2 > 3 and measures it; the current run (2026-10-29) keeps validation perplexity at most 11.5 and vLLM decode below 2.5 ms per token (FP16: 2.53) and makes size, perplexity and vLLM latency as small as possible, with MOBO (Optuna) only; MFBO (successive halving) and NSGA-III (pymoo) also work. The final model, the lowest perplexity under both limits (then the lowest vLLM latency, then the smallest), is then tested on the backends (Stage 4) and for accuracy next to TinyLlama. See `docs/diagrams/search.md` and [Reproduce the 2026-10-29 search run](#reproduce-the-2026-10-29-search-run). | done |
 
 Paths: 0 > 1 > 4, 0 > 2 > 4 (prunes the FP16 model), 0 > 3 > 4, and 0 > 1 > 2 > 4 (a Stage 2 method on a model
 Stage 1 has quantized; `stage2_after` in `main.py`).
@@ -123,7 +123,7 @@ and run its cells top to bottom. `main.py` holds these settings except `MODE`, `
 | `MODE` | `"search"` |
 | `SEARCHERS` | `["mobo"]` |
 | Limits | `TARGET_PPL = 11.5` (validation half), `TARGET_LATENCY_MS = 2.5` on `SEARCH_LATENCY_METRIC = "vllm_decode_ms_per_token"`, `TARGET_MEMORY_GB = None` |
-| `SEARCH_OBJECTIVES` | `["predicted_weight_memory_gb", "ppl_val", "vllm_decode_ms_per_token"]` (size first: the final model is the smallest under the limits) |
+| `SEARCH_OBJECTIVES` | `["ppl_val", "vllm_decode_ms_per_token", "predicted_weight_memory_gb"]`: all three made small together; the final model tested in Stage 4 is the lowest perplexity under both limits, ties by the lowest vLLM latency, then the smallest (Mohammad's choice "b", 2026-10-29) |
 | `SEARCH_STAGE1` | every WxAy row (`<weights>_with_rtn_act` and `<weights>_with_smoothquant` for rtn, gptq, awq, omniquant, squeezellm, spqr, efficientqat, quip, quipsharp, pbllm, bitsandbytes; kept to show they make the model slower on vLLM) plus the weight-only techniques `rtn`, `gptq`, `awq`, `omniquant`, `efficientqat` |
 | `SEARCH_STAGE2`, `SEARCH_STAGE3` | `unstructured_prune`, `structured_prune`; every KV technique |
 | `SEARCH_EXTRA_STAGE1` | `spqr_with_rtn_act`, `quip_with_rtn_act`, `quipsharp_with_rtn_act` |
