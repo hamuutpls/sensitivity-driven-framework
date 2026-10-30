@@ -1,5 +1,58 @@
 # Changelog
 
+## 2026-10-29: Stage 4 tests the lowest-perplexity model under both limits
+
+- Mohammad (2026-10-29) chose "b" on which model Stage 4 tests: the lowest perplexity among the tries that meet both
+  limits (perplexity at most 11.5, vLLM decode at most 2.5 ms per token). main.py
+  `SEARCH_OBJECTIVES = ["ppl_val", "vllm_decode_ms_per_token", "predicted_weight_memory_gb"]`. The final model and
+  the extra tries' base point are picked on the first objective, ties by the next: lowest perplexity, then lowest vLLM
+  latency, then smallest. Before this, size came first and the final model was the smallest under the limits.
+- Comments in main.py, the final_model docstring, the search report's extra-tries text and the README now say so.
+
+## 2026-10-29: Pre-merge fixes to the vLLM latency limit
+
+- main.py sets `SEARCH_LATENCY_METRIC = "vllm_decode_ms_per_token"`, so `TARGET_LATENCY_MS = 2.5` (now set for
+  every mode) is checked on vLLM. Every Stage report row now checks it the same way: `StageReporter(latency_metric=)`,
+  from `search.latency_metric`, through one helper (`sdf.requirements.with_latency`) shared with the search. A row
+  without the vLLM value has the latency unmeasured. Before this, every row in every mode, the search tries' own
+  point reports included, checked 2.5 ms against the HF decode (about 30 ms) and showed "not met".
+- search_report.md labels the latency limit with `search.latency_metric` (vLLM), not the HF decode.
+- A try whose vLLM latency could not be measured (vLLM failed) now counts as violating the limit for MOBO's
+  constraint: 1 for each unmeasured limit, added to the shortfalls. Before, it was 0, the same as met.
+- A try whose row has backend errors (e.g. vLLM out of memory) is no longer reused from search_tried.csv in a later
+  run, nor taken as a candidate for the final model: it is retried, like a crash.
+- Colab notebook: installs `[dev,search,downstream]` and bitsandbytes; new step 2b makes the vLLM 0.31.0 venv at
+  `/content/vllm-venv` with uv (Python 3.12), as the earlier Colab runs did; step 3 runs the full suite; step 4 sets
+  the 2026-10-29 search run (MODE "search", budget 30, `VLLM_PYTHON`, `RUN_ID`). The README describes the notebook
+  step by step, and a test checks that the two match.
+- Tests: the stage reporter's latency check, MOBO's violation for an unmeasured latency, failed-backend tries never
+  reused, main.py's config passing run_search's checks, and the notebook against the README.
+
+## 2026-10-29: The search limits and minimises vLLM latency, with weight-only Stage 1 techniques; MOBO only
+
+- Mohammad (2026-10-29): the next run keeps validation perplexity at most 11.5 and vLLM decode below 2.5 ms per
+  token ("we need to beat the uncompressed version"; FP16 is 2.53 ms/token on vLLM) and makes size, perplexity and
+  vLLM latency small together ("whats the lowest ppl and latency we can get with the smallest size"), with MOBO only
+  ("yes from now on mobo only").
+- `search.latency_metric` (main.py `SEARCH_LATENCY_METRIC`, default `decode_ms_per_token_mean`, the HF latency): the
+  metric `requirement.target_latency_ms` (main.py `TARGET_LATENCY_MS = 2.5`) is checked against in the search. A try
+  whose vLLM measurement fails has no latency and does not meet the limit; before the build the latency is unknown,
+  which alone never skips building.
+- vLLM may run in the tries: objectives and the latency metric starting with `vllm_` are allowed when
+  `eval.vllm_python` is set (else a ValueError before any try). Tries keep vLLM only when the search optimises or
+  limits vLLM speed (`sdf.search.tries_need_vllm`); llama.cpp and TensorRT-LLM still measure only the final model.
+- main.py: `SEARCH_OBJECTIVES = ["predicted_weight_memory_gb", "ppl_val", "vllm_decode_ms_per_token"]`;
+  `SEARCH_STAGE1` keeps every WxAy row (Mohammad: "Keep them to prove that they make the model slower"; vLLM runs
+  them on Humming kernels in eager mode, 35-42 ms/token) and adds the weight-only techniques `rtn`, `gptq`, `awq`,
+  `omniquant`, `efficientqat` (the GPTQ export with CUDA graphs, about 2 ms/token on 2026-10-07; uniform per-group
+  grid, which the export re-rounds faithfully). `SEARCH_LOW_THRESHOLD_MAX = 0` (was 0.8): vLLM 0.31 has no 3-bit
+  GPTQ kernel, so the bitsandbytes WxAy rows are back in the list.
+- Tests: tests/test_search_vllm_latency.py (the latency check, the run() validation, which tries keep vLLM, weight-only
+  Stage 1 tries built and measured with vLLM mocked). Two tests in tests/test_search.py took a point's folder name by
+  splitting on "/", which failed on Windows; they use `Path(...).name` now.
+- README: requirements from a fresh machine (Python, extras, vLLM venv, optional backends), how to run the tests and
+  each mode, which settings to change, and how to reproduce this run.
+
 ## 2026-10-27: The search turns the 3-bit layers on
 
 - Mohammad (2026-10-27) chose "Restart now with 3-bit layers": the 8/4 search's smallest model under 11.5 was

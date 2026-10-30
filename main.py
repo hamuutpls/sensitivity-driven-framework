@@ -149,30 +149,42 @@ TARGET_PPL = 11.5  # the final model's validation perplexity must be at most thi
 # the threshold to 11.5"; was 11; None: no limit)
 SEARCH_REFINE_ROUNDS = 0  # MODE "search": Stage 0 joint refinement rounds in each try (Mohammad, 2026-10-25: "no
 # refinement for any stage")
-SEARCHERS = ["mobo", "mfbo"]  # each gets the same budget and seed (Mohammad, 2026-10-25: MOBO and MFBO; "nsga3" also works)
+TARGET_LATENCY_MS = 2.5  # the final model's vLLM decode time per token must be at most this (Mohammad, 2026-10-29: "we
+# need to beat the uncompressed version"; FP16 is 2.53 ms/token on vLLM); None: no limit
+SEARCH_LATENCY_METRIC = "vllm_decode_ms_per_token"  # what TARGET_LATENCY_MS is checked against: a vLLM metric runs vLLM
+# in every try (needs VLLM_PYTHON); "decode_ms_per_token_mean" = Hugging Face, no backend in the tries
+SEARCHERS = ["mobo"]  # each gets the same budget and seed (Mohammad, 2026-10-29: "yes from now on mobo only"; was MOBO
+# and MFBO; "mfbo" and "nsga3" also work)
 SEARCH_BUDGET = 100  # full tries per searcher (MFBO's rough tries count by their share of the windows, so it builds
 # more models); a try over the limit is not built and not counted. Combinations tried in an earlier run are not built
 # again (search_tried.csv in the cache) but count, so 10 more new tries = this raised by 10 with the same SEED
-SEARCH_OBJECTIVES = ["predicted_weight_memory_gb", "ppl_val"]  # made as small as possible, size first (the final model
-# tested in Stage 4 is the smallest with perplexity at most TARGET_PPL), on Hugging Face: tries run no
-# backend (Mohammad, 2026-10-25: "we do not test backends in stages 1 and 2. we test them in stage 4"); the backends
-# below measure only the final model
-VLLM_PYTHON = None  # the Python of the vLLM install (Linux/Colab only), e.g. "/content/vllm-venv/bin/python"; final model only
+SEARCH_OBJECTIVES = ["ppl_val", "vllm_decode_ms_per_token", "predicted_weight_memory_gb"]  # made as small as possible
+# together (Mohammad, 2026-10-29: "whats the lowest ppl and latency we can get with the smallest size"). The final
+# model tested in Stage 4 is the best under the limits on the first, ties by the next: Mohammad, 2026-10-29, chose
+# "b": the lowest perplexity under both limits, then the lowest vLLM latency, then the smallest. A vLLM objective or SEARCH_LATENCY_METRIC runs vLLM in
+# every try; llama.cpp and TensorRT-LLM measure only the final model (Mohammad, 2026-10-25: "we test them in stage 4")
+VLLM_PYTHON = None  # the Python of the vLLM install (Linux/Colab only), e.g. "/content/vllm-venv/bin/python"; needed
+# for the vLLM objective and latency limit above
 # WxAy techniques Stage 1 may pick: every working weight technique with round-to-nearest or SmoothQuant activations
 # (Mohammad, 2026-10-19: "all the ones that work"; QuaRot/SpinQuant left out: vLLM cannot measure rotated models;
 # RPTQ: its Our method rows are skipped; AQLM, BiLLM, QTIP, ABQ-LLM do not work here)
 SEARCH_STAGE1 = [f"{w}_with_{a}" for w in ("rtn", "gptq", "awq", "omniquant", "squeezellm", "spqr", "efficientqat",
                                            "quip", "quipsharp", "pbllm", "bitsandbytes")
                  for a in ("rtn_act", "smoothquant")]
+# plus the weight-only techniques (16-bit activations; vLLM runs them through the GPTQ export with CUDA graphs, about
+# 2 ms per token, where WxAy rows run in eager mode at 35-42 ms): the WxAy rows stay (Mohammad, 2026-10-29: "Keep them
+# to prove that they make the model slower"). Only techniques on a uniform per-group grid, which the export re-rounds
+# faithfully; squeezellm, spqr, quip, quipsharp, pbllm and bitsandbytes store values the export would change
+SEARCH_STAGE1 += ["rtn", "gptq", "awq", "omniquant", "efficientqat"]
 SEARCH_STAGE2 = ["unstructured_prune", "structured_prune"]  # pruning techniques (low-rank cannot follow Stage 1)
 SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]  # KV-cache techniques
 SEARCH_FINALISTS = 3  # MODE "stage_search": chained models built and measured under the limit, best pairs first
-# MODE "search": lm-eval tasks the smallest final model with perplexity at most TARGET_PPL is tested on (Mohammad,
-# 2026-10-26: "how much smaller can we get the model, while keeping 11 ppl or lower"); [] = no accuracy test
+# MODE "search": lm-eval tasks the final model (the best under the limits on SEARCH_OBJECTIVES' first, then the
+# next) is tested on (Mohammad, 2026-10-25: "then that accuracy will be compared with tinyllama accuracy"); [] = none
 SEARCH_ACCURACY_TASKS = ["arc_easy", "piqa", "hellaswag", "winogrande"]  # full sets; picked as quick and standard
 # MODE "search": one chained try each after the search (the best setting with only its Stage 1 technique changed), for
 # those no search method measured (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"); shown in
-# the report, not compared, but one may be the final model when it is the smallest under the limit
+# the report, not compared, but one may be the final model when it is the best under the limits
 SEARCH_EXTRA_STAGE1 = ["spqr_with_rtn_act", "quip_with_rtn_act", "quipsharp_with_rtn_act"]
 # MODE "search": each layer's bits follow the threshold (sensitive layers PROTECTED_BITS, the rest COMPRESSED_BITS),
 # not the joint weight x activation plan, and the search keeps to high thresholds with light pruning, where fewer
@@ -181,9 +193,9 @@ SEARCH_EXTRA_STAGE1 = ["spqr_with_rtn_act", "quip_with_rtn_act", "quipsharp_with
 SEARCH_JOINT_PLAN = False
 SEARCH_RANGES = {"sensitive_threshold": [0.8, 0.9], "prune_ratio_aggressive": [0.0, 0.3]}
 # Part 2 of "Both": > 0 lets the search also pick a low threshold in [0, this]; unprotected layers below it get
-# 3 bits. The vLLM WxAy export has no 3-bit packing, so vLLM fails on such a model. Mohammad, 2026-10-27: on (the
-# 8/4 search cannot go below standard 4-bit size); up to the lowest protection threshold, 0.8.
-SEARCH_LOW_THRESHOLD_MAX = 0.8
+# 3 bits. Off (0): vLLM 0.31 has no 3-bit GPTQ kernel and the WxAy export no 3-bit packing, so every try now runs
+# vLLM and a 3-bit model would fail the latency limit (2026-10-29; was 0.8, Mohammad 2026-10-27)
+SEARCH_LOW_THRESHOLD_MAX = 0
 if SEARCH_LOW_THRESHOLD_MAX:  # bitsandbytes stores only 4 or 8 bits
     SEARCH_STAGE1 = [m for m in SEARCH_STAGE1 if not m.startswith("bitsandbytes")]
 
@@ -209,6 +221,8 @@ def build_config():
         "stages.stage3_methods": STAGE3_METHODS,
         "requirement.target_memory_gb": TARGET_MEMORY_GB,
         "requirement.target_ppl": TARGET_PPL,
+        "requirement.target_latency_ms": TARGET_LATENCY_MS,
+        "search.latency_metric": SEARCH_LATENCY_METRIC,
         "eval.vllm_python": VLLM_PYTHON,
         "search.searchers": SEARCHERS,
         "search.budget": SEARCH_BUDGET,

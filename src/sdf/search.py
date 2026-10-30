@@ -3,11 +3,12 @@ dynamic and find the best settings that satisfy perplexity, memory, and latency"
 lowest perplexity and latency).
 
 A point is one set of settings: the SEARCH_SPACE hyperparameters plus a technique for each stage (technique_space).
-evaluate() builds the chained model 0 -> 1 -> 2 -> 3 for it (the Stage 0 plan, the Stage 1 WxAy method, the Stage 2
-pruning method at the plan's prune_ratio_aggressive, the Stage 3 KV method; Our method rows only) and measures it
-(Stage 4). The searchers (MOBO: Optuna's Gaussian-process sampler; MFBO: successive halving over the number of
-evaluation windows; NSGA-III: pymoo) minimise cfg.search.objectives under the requirement, each with the same
-budget, and are compared. Held-out perplexity is measured, never optimised.
+evaluate() builds the chained model 0 -> 1 -> 2 -> 3 for it (the Stage 0 plan, the Stage 1 weight or WxAy method, the
+Stage 2 pruning method at the plan's prune_ratio_aggressive, the Stage 3 KV method; Our method rows only) and measures
+it (Stage 4; vLLM too only when the search optimises or limits vLLM speed, Mohammad 2026-10-29). The searchers
+(MOBO: Optuna's Gaussian-process sampler; MFBO: successive halving over the number of evaluation windows;
+NSGA-III: pymoo) minimise cfg.search.objectives under the requirement, each with the same budget, and are compared.
+Held-out perplexity is measured, never optimised.
 
 Outputs in <run_dir>/search/: points/<hash>/ (each evaluated point's Stage 0 and Stage 3 reports), trials.json,
 search_report.md, search_results.xlsx (Trials, Pareto, Searcher comparison, Best configs) and the plots.
@@ -26,7 +27,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from sdf.config import FrameworkConfig, config_hash
-from sdf.requirements import RequirementCheck
+from sdf.requirements import RequirementCheck, with_latency
 from sdf.run import RunContext
 from sdf.search_space import SEARCH_SPACE, Param, SearchSpace
 from sdf.utils.cache import atomic_write_text
@@ -117,14 +118,19 @@ def cached_point(ctx: RunContext, kind: str, key: dict[str, Any], tdir: Path, bu
             atomic_write_text(path, json.dumps({"key": key, "value": result}, default=str))  # memory): retried
     if "error" not in result:
         check = check_requirement(ctx.cfg, result["metrics"]) if limit else None
-        result = {**result, "met": check.met is True if check else True, "shortfall": check.shortfall if check else {}}
+        result = {**result, "met": check.met is True if check else True, "shortfall": check.shortfall if check else {},
+                  "unmeasured": check.unmeasured if check else []}
     return {**result, "dir": str(tdir), "cached": cached}
 
 
 def check_requirement(cfg: FrameworkConfig, metrics: dict[str, Any]) -> RequirementCheck:
     """The requirement checked with the memory limit on cfg.search.memory_metric, before and after the build alike
-    (the requirement on its own prefers model_size_gb, which a simulated method fills with the 16-bit size)."""
-    return cfg.requirement.check({**metrics, "model_size_gb": metrics.get(cfg.search.memory_metric)})
+    (the requirement on its own prefers model_size_gb, which a simulated method fills with the 16-bit size), and the
+    latency limit on cfg.search.latency_metric. A latency not measured (vLLM failed, or before the build) leaves met
+    None: not met after the build (cached_point), but no reason to skip building."""
+    s = cfg.search
+    return cfg.requirement.check(with_latency({**metrics, "model_size_gb": metrics.get(s.memory_metric)},
+                                              s.latency_metric))
 
 
 def _version(name: str, methods: dict) -> int:
@@ -279,7 +285,8 @@ class TriedLog:
             with self.path.open(newline="", encoding="utf-8") as f:
                 for row in csv.DictReader(f):
                     try:  # a row cut short by a crash while writing is skipped
-                        ok = row["status"] == "ok" and "error" not in json.loads(row["result"])
+                        r = json.loads(row["result"])  # a row whose backend failed (vLLM out of memory) is retried
+                        ok = row["status"] == "ok" and "error" not in r and not r.get("errors")
                     except (TypeError, KeyError, ValueError):
                         log.warning("search_tried.csv: skipping an unreadable row")
                         continue
@@ -321,7 +328,8 @@ class TriedLog:
             return None
         r = json.loads(row["result"])
         check = check_requirement(ctx.cfg, r["metrics"])
-        return {**r, "met": check.met is True, "shortfall": check.shortfall, "cached": True, "run_id": row["run_id"]}
+        return {**r, "met": check.met is True, "shortfall": check.shortfall, "unmeasured": check.unmeasured,
+                "cached": True, "run_id": row["run_id"]}
 
     def known(self, ctx: RunContext, full_windows: int, objectives: list[str],
               exclude: list[dict[str, Any]] = ()) -> list[dict[str, Any]]:
@@ -383,7 +391,7 @@ class TriedLog:
             w.writerow(row)
             f.flush()
             os.fsync(f.fileno())
-        if t["ok"]:
+        if t["ok"] and not r.get("errors"):
             self.models.setdefault(self.same_model(row["combination"]), row)
 
 
@@ -392,8 +400,11 @@ def tried_path(ctx: RunContext) -> Path:
 
 
 def violation(result: dict[str, Any]) -> float:
-    """How far the point misses the requirement (0 when it meets it): the sum of the shortfalls."""
-    return float(sum(result.get("shortfall", {}).values())) if not result.get("met") else 0.0
+    """How far the point misses the requirement (0 when it meets it): the sum of the shortfalls, plus 1 for each
+    limit that could not be measured (vLLM failed, so no vLLM latency): never 0, or MOBO would take it as met."""
+    if result.get("met"):
+        return 0.0
+    return float(sum(result.get("shortfall", {}).values())) + float(len(result.get("unmeasured", [])))
 
 
 def _sample(space: SearchSpace, rng: random.Random) -> dict[str, Any]:
@@ -526,7 +537,9 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
                text_loader: Callable | None = None) -> dict[str, Path]:
     """Every searcher in cfg.search.searchers with the same budget and seed, then the report. Tries run no backend
     (Mohammad, 2026-10-25: "we do not test backends in stages 1 and 2. we test them in stage 4"): the backends set in
-    cfg.eval measure only the final model (final_model)."""
+    cfg.eval measure only the final model (final_model). The one exception: vLLM runs in each try when the search
+    optimises or limits vLLM speed (tries_need_vllm; Mohammad, 2026-10-29: "whats the lowest ppl and latency we can
+    get with the smallest size", under 2.5 ms per token on vLLM); llama.cpp and TensorRT-LLM stay final-model only."""
     from sdf.data import eval_windows
     from sdf.stage0.run import setup
 
@@ -539,9 +552,11 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
                          "the predicted size is known before a model is built")
     if "ppl_heldout" in s.objectives:
         raise ValueError("ppl_heldout is measured to check the choice, never optimised: use ppl_val")
-    if backend := [o for o in s.objectives if o.startswith(BACKEND_PREFIXES)]:
-        raise ValueError(f"the objectives {backend} come from a backend; tries run none (backends test only the "
-                         "final model, in Stage 4): use HF metrics such as ppl_val and predicted_weight_memory_gb")
+    needs_vllm = tries_need_vllm(cfg)
+    if backend := [o for o in [*s.objectives, s.latency_metric] if o.startswith(BACKEND_PREFIXES)
+                   and not (o.startswith("vllm_") and cfg.eval.vllm_python)]:
+        raise ValueError(f"the metrics {backend} come from a backend; tries run only vLLM, and only with "
+                         "eval.vllm_python set (llama.cpp and TensorRT-LLM test only the final model, in Stage 4)")
     if missing := [m for m in s.extra_stage1 if m not in s.stage1_methods]:
         raise ValueError(f"search.extra_stage1 {missing} must be in search.stage1_methods")
     if s.accuracy_tasks:
@@ -554,7 +569,8 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     val, held = eval_windows(loader(cfg.eval.dataset, "test"), handle.tokenizer, cfg.eval.seq_len, cfg.eval.max_windows)
     full = len(val) + len(held)
     kw = dict(model_factory=model_factory, tokenizer=tokenizer, text_loader=text_loader)
-    tries = RunContext(cfg.with_overrides({**NO_BACKENDS, "eval.downstream_tasks": []}), ctx.run_id, ctx.run_dir,
+    off = {k: v for k, v in NO_BACKENDS.items() if not (needs_vllm and k == "eval.vllm_python")}
+    tries = RunContext(cfg.with_overrides({**off, "eval.downstream_tasks": []}), ctx.run_id, ctx.run_dir,
                        ctx.cache)  # accuracy tasks also only on the final model
     trials: list[dict[str, Any]] = []
     tried = TriedLog(tried_path(ctx), ctx.run_id)
@@ -576,7 +592,7 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     except Exception:  # noqa: BLE001
         log.exception("the extra Stage 1 tries failed; the report is written without them")
     try:
-        # an extra try may be the smallest; this run's tries first, so a tie with the same model logged by an
+        # an extra try may be the best; this run's tries first, so a tie with the same model logged by an
         # earlier run keeps this run's label
         final = final_model(ctx, trials + extras + earlier, s.accuracy_tasks, **kw)
     except Exception:  # noqa: BLE001
@@ -590,9 +606,17 @@ BACKEND_PREFIXES = ("vllm_", "llamacpp_", "trtllm_")
 NO_BACKENDS = {"eval.vllm_python": None, "eval.trtllm_python": None, "eval.llamacpp_dir": None}
 
 
+def tries_need_vllm(cfg: FrameworkConfig) -> bool:
+    """True when a try must run vLLM: an objective is a vLLM metric, or the latency limit is checked on one."""
+    s = cfg.search
+    return (any(o.startswith("vllm_") for o in s.objectives)
+            or cfg.requirement.target_latency_ms is not None and s.latency_metric.startswith("vllm_"))
+
+
 def final_model(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[str], **kw: Any) -> dict[str, Any] | None:
-    """Stage 4 for the final model under the limit that is best on the first objective (Mohammad, 2026-10-26: "lets
-    see how much smaller can we get the model, while keeping 11 ppl or lower", so main.py puts the size first): built
+    """Stage 4 for the final model under the limits that is best on the first objective, ties by the next (Mohammad,
+    2026-10-29, chose "b": the lowest perplexity under both limits, then the lowest vLLM latency, then the smallest, so
+    main.py puts ppl_val first; 2026-10-26 it was the size first): built
     again with the backends in ctx.cfg.eval and tested for accuracy on `tasks` (eval.downstream_tasks, lm-eval;
     Mohammad, 2026-10-25: "then that accuracy will be compared with tinyllama accuracy"): "fp16" holds the uncompressed model's accuracy, measured in the same run
     under the same conditions. None when there is nothing to test (no task, no backend) or no try met the limit."""

@@ -18,6 +18,16 @@ _CHECKS: dict[str, tuple[str, ...]] = {
 }
 
 
+LATENCY = _CHECKS["target_latency_ms"][0]  # the Hugging Face decode latency the limit is checked on by default
+
+
+def with_latency(metrics: Mapping[str, Any], latency_metric: str = LATENCY) -> dict[str, Any]:
+    """`metrics` with the latency the limit is checked on taken from `latency_metric` (search.latency_metric, e.g.
+    "vllm_decode_ms_per_token"): a row without it leaves the latency unmeasured, never the HF value instead
+    (2026-10-29: the vLLM limit of 2.5 ms per token against an HF decode of about 30 ms)."""
+    return dict(metrics) if latency_metric == LATENCY else {**metrics, LATENCY: metrics.get(latency_metric)}
+
+
 @dataclass
 class RequirementCheck:
     met: bool | None  # None = no target set, or nothing failed but a target could not be measured yet

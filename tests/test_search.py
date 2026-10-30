@@ -80,7 +80,7 @@ def test_evaluate_builds_the_chained_model_and_caches_it(cfg, tiny_llama, tokeni
     m = r["metrics"]
     assert m["ppl_val"] > 1 and m["avg_activation_bits"] < 16 and m["decoder_weights_removed"] > 0
     assert m["predicted_weight_memory_gb"] < 1.0 and r["met"]  # the toy model is far below 1 GB
-    rows = json.loads((ctx.run_dir / "search" / "points" / r["dir"].rsplit("/", 1)[1] / "stage_3" /
+    rows = json.loads((ctx.run_dir / "search" / "points" / Path(r["dir"]).name / "stage_3" /
                        "results.json").read_text())["rows"]
     assert {x["variant"] for x in rows} == {"fp16", "framework"}  # Our method only
     assert next(x for x in rows if x["variant"] == "framework")["info"]["built_on"] == "structured_prune"
@@ -194,7 +194,7 @@ def test_vllm_latency_is_measured_on_the_stage2_model(cfg, tiny_llama, tokenizer
     chained = [x for x in seen if x[0] is not None]  # the other call is the uncompressed row's (cached)
     assert t["ok"] and t["values"][1] == 3.0 and len(chained) == 1, t["error"]
     plan, acts, zero_share = chained[0]
-    row = next(x for x in json.loads((ctx.run_dir / "search" / "points" / t["dir"].rsplit("/", 1)[1] / "stage_3" /
+    row = next(x for x in json.loads((ctx.run_dir / "search" / "points" / Path(t["dir"]).name / "stage_3" /
                                       "results.json").read_text())["rows"] if x["variant"] == "framework")
     # the model is pruned (at least the planned share is zero), the export gets the bits only, activations rounded
     assert zero_share >= row["metrics"]["decoder_weights_removed"] > 0.1
@@ -212,9 +212,13 @@ def test_vllm_latency_is_measured_on_the_stage2_model(cfg, tiny_llama, tokenizer
 
 
 def test_a_backend_objective_stops_before_any_try(cfg):
-    # backends test only the final model (Stage 4), so no try has a backend metric to optimise
-    c = cfg.with_overrides({"eval.vllm_python": "py", "search.objectives": ["ppl_val", "vllm_decode_ms_per_token"]})
+    # llama.cpp and TensorRT-LLM test only the final model (Stage 4), so no try has their metrics to optimise; vLLM
+    # may run in tries since 2026-10-29 (test_search_vllm_latency.py), but only with eval.vllm_python
+    c = cfg.with_overrides({"eval.llamacpp_dir": "ll", "search.objectives": ["ppl_val", "llamacpp_decode_ms_per_token"]})
     with pytest.raises(ValueError, match="Stage 4"):
+        run_search(start_run(c))
+    c = cfg.with_overrides({"search.objectives": ["ppl_val", "vllm_decode_ms_per_token"]})
+    with pytest.raises(ValueError, match="vllm_python"):
         run_search(start_run(c))
 
 
