@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-31: SnapKV's observation window takes at most half the cache
+
+- `snapkv_keep` used the whole cache as its observation window when the cache was 32 words or fewer (short lm-eval items
+  of about 30-100 words, at a keep share of 0.1-0.3). No word was then picked by vote, so every layer was a plain sliding
+  window without the attention sink: run 1's final model scored accuracy 0.37 against FP16's 0.63.
+- The window is now half the cache, at least 1 and at most 32, so a cache of 2 words or more always picks words by vote.
+  Caches of 64 words or more are unchanged; so are the numbers for perplexity windows at keep shares that give them
+  (512 words at 0.125 or more). Caches below 64 words change.
+- The SnapKV technique's version is now 4, so cached tries and search_tried.csv rows using it are built again.
+
 ## 2026-10-31: A vLLM perplexity limit, and a "no KV method" choice for Stage 3
 
 - `search.ppl_metric` (main.py `SEARCH_PPL_METRIC`, default `"ppl_val"`, so nothing changes unless it is set):

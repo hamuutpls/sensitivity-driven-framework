@@ -16,7 +16,7 @@ from sdf.stage0.kv_cache import KVLayerPlan, KVPlan, kv_projections, uniform_kv_
 from sdf.stage0.sensitivity import find_decoder_layers, round_to_nearest
 from sdf.stages.kv_methods import (LayerKV, SDF_KV, budgets, cache_budgets, calibrate_kvquant, group_mean, h2o_keep,
                                    infinigen_keep, kmeans_1d, kv_attention, kv_attention_forward, kvquant_hooks,
-                                   kvquant_round, quarot_round, repeat_kv, snap_to_levels, snapkv_keep)
+                                   kvquant_round, quarot_round, repeat_kv, snap_to_levels, snapkv_keep, SNAPKV_WINDOW)
 from sdf.stages.methods import METHODS, MethodCall
 from sdf.stages.runner import Stage0Plans, original_plan, run_stage
 from conftest import fake_texts
@@ -51,7 +51,7 @@ def test_kv_methods_changed_since_their_first_cached_rows_have_a_new_version():
     # rows cached at 439c84f / 90cd6a7 used the fixed-window budget, InfiniGen's look-ahead and SnapKV's pooling spill
     assert METHODS["quarot_kv"].version == 2
     # 2026-10-20: SnapKV and InfiniGen take H2O's fixed cache; their standard rows forget, so they are redone
-    assert METHODS["snapkv"].version == METHODS["infinigen"].version == 3
+    assert METHODS["snapkv"].version == 4 and METHODS["infinigen"].version == 3
     assert METHODS["h2o"].version == 3  # 2026-10-20: fixed cache; its standard row forgets, so it is redone
     # 2026-10-20: their standard rows forget nothing and were timed with the model's own attention
     assert (METHODS["rtn_kv"].version, METHODS["kvquant"].version) == (2, 3)
@@ -137,8 +137,45 @@ def test_snapkv_window_votes_do_not_spill_onto_earlier_words():
     s[..., 0] = torch.where(torch.isinf(s[..., 0]), s[..., 0], torch.zeros_like(s[..., 0]))  # word 0 mildly liked
     idx = torch.arange(30)
     s[..., idx, idx] = 10.0  # every query mostly looks at itself (inside the window)
-    keep = snapkv_keep(s, groups=2, keep_ratio=0.2, window=4, kernel=7)  # word 25: 6 kept, 4 in the window
+    keep = snapkv_keep(s, groups=2, keep_ratio=0.2, window=4, kernel=7)  # word 25: 6 kept, 3 in the window
     assert keep[..., 25, 0].all()  # not a word next to the window, whose pooled vote would come from the window
+
+
+def _sink_scores(n):
+    """Every query mildly likes every earlier word, and strongly the first one."""
+    s = torch.zeros(1, 2, n, n).masked_fill(~torch.ones(n, n, dtype=torch.bool).tril(), -math.inf)
+    s[..., 0] = 8.0
+    return s
+
+
+def test_snapkv_on_a_small_cache_still_picks_the_attention_sink():
+    # 40 words at 0.2: a cache of 8. The whole cache was the window, so word 0 was forgotten (2026-10-31)
+    n, size = 40, 8
+    keep = snapkv_keep(_sink_scores(n), groups=2, keep_ratio=size / n)
+    _check_budgets(keep, size / n)
+    for i in range(size, n):
+        assert keep[..., i, i - size // 2 + 1:i + 1].all()  # a window of half the cache
+        assert keep[..., i, :i - size // 2 + 1].sum(-1).eq(size - size // 2).all()  # the rest picked by vote
+        assert keep[..., i, 0].all()
+
+
+@pytest.mark.parametrize("size", [2, 3, 4, 63])
+def test_snapkv_window_leaves_room_for_a_picked_word(size):
+    n = size * 2 + 2
+    keep = snapkv_keep(_sink_scores(n), groups=2, keep_ratio=size / n)
+    _check_budgets(keep, size / n)
+    assert keep[..., n - 1, 0].all()
+
+
+def test_snapkv_on_a_cache_of_64_words_or_more_keeps_the_full_window():
+    n, size = 512, 64
+    s = _scores(n=n)
+    keep = snapkv_keep(s, groups=2, keep_ratio=size / n, window=SNAPKV_WINDOW)
+    _check_budgets(keep, size / n)
+    for i in (size, 300, n - 1):
+        assert keep[..., i, i - SNAPKV_WINDOW + 1:i + 1].all()
+        # exactly the window's share is left to the vote, as before
+        assert keep[..., i, :i - SNAPKV_WINDOW + 1].sum(-1).eq(size - SNAPKV_WINDOW).all()
 
 
 def test_infinigen_fetches_the_words_with_the_highest_guess():

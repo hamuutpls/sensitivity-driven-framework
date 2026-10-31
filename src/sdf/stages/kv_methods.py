@@ -132,7 +132,10 @@ def h2o_keep(scores: torch.Tensor, groups: int, keep_ratio: float) -> torch.Tens
 def snapkv_keep(scores: torch.Tensor, groups: int, keep_ratio: float, window: int = SNAPKV_WINDOW,
                 kernel: int = SNAPKV_KERNEL) -> torch.Tensor:
     """SnapKV, with every word treated as the end of a prompt: keep the last `window` words, plus the earlier words
-    the window's queries attend to most (summed over the window, max-pooled over neighbouring words)."""
+    the window's queries attend to most (summed over the window, max-pooled over neighbouring words). The window takes
+    at most half the cache, so a small cache still picks words by vote, the first word (the attention sink) included:
+    with the whole cache as the window, short texts got a plain sliding window (2026-10-31: accuracy 0.37 vs FP16's
+    0.63 on lm-eval items of 30-100 words). Caches of 64 words or more keep the full window."""
     b, _, n, _ = scores.shape
     dev = scores.device
     causal = _causal(n, dev)
@@ -140,7 +143,7 @@ def snapkv_keep(scores: torch.Tensor, groups: int, keep_ratio: float, window: in
     if keep_ratio >= 1:
         return keep
     budget = cache_budgets(keep_ratio, n, dev)
-    w = budget.clamp(max=window)
+    w = (budget // 2).clamp(min=1, max=window)
     c = group_mean(scores.float().softmax(-1), groups).cumsum(2)
     rows = torch.arange(n, device=dev)
     votes = c - F.pad(c, (0, 0, 1, 0))[:, :, rows + 1 - w]  # row i: attention of queries i-w+1..i
