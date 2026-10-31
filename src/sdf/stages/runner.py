@@ -39,7 +39,7 @@ from sdf.stage0.pruning_levels import layer_caps
 from sdf.stage0.run import (_cost_metrics, _kv_metrics, calib_batches, fp16_key, load_fp16, source_key,
                             setup, stage_reporter, weight_cost)
 from sdf.stage0.sensitivity import SensitivityProfile, find_decoder_layers, normalize
-from sdf.stages.methods import AFTER, WITH, JointPlan, Method, MethodCall, methods_for, series
+from sdf.stages.methods import AFTER, NO_KV, WITH, JointPlan, Method, MethodCall, methods_for, series
 from sdf.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -191,6 +191,8 @@ def original_plan(m: Method, plans: Stage0Plans, s0, prune_ratio: float, quarot_
         w, a = m.joint
         return JointPlan(uniform_plan(scores(), w or s0.uniform_bits, 0.0),
                          uniform_activation_plan(plans.num_layers, a or s0.act_uniform_bits))
+    if m.name == NO_KV:  # every word kept at full precision: the predicted KV memory is the uncompressed cache's
+        return uniform_kv_plan(plans.num_layers, s0.baseline_bits)
     if m.forgets:
         return uniform_kv_plan(plans.num_layers, s0.baseline_bits, s0.kv_standard_keep_ratio)
     plan = uniform_kv_plan(plans.num_layers, s0.kv_uniform_bits)
@@ -619,10 +621,14 @@ def run_stage(
                 info["label"], info["plain_desc"] = plain
             with rep.method(mf.name + suffix, "framework", **info) as row:
                 _label_level(row, mf, level, None, plans.profile.layer_numel)  # until the plan is known
-                if gone := [plans.files[k] for k in _plan_keys(mf, plan_key) if k not in plans.plans]:
+                # "none" reads no plan, so it also runs without Stage 0's KV plan
+                if mf.name != NO_KV and (gone := [plans.files[k] for k in _plan_keys(mf, plan_key)
+                                                  if k not in plans.plans]):
                     raise FileNotFoundError(f"{', '.join(gone)} not in {plans.dir}; re-run Stage 0 with this plan "
                                             "enabled")
-                plan, cap_note = _capped(mf, framework_plan(mf, plans, plan_key), caps, plans.profile.layer_numel)
+                # not the Stage 0 KV plan for "none": nothing is compressed
+                plan, cap_note = (original_plan(mf, plans, s0, 0.0), "") if mf.name == NO_KV else _capped(
+                    mf, framework_plan(mf, plans, plan_key), caps, plans.profile.layer_numel)
                 _label_level(row, mf, level, plan, plans.profile.layer_numel)
                 _require(mf)
                 if note := " ".join(n for n in (mf.note, mf.framework_note) if n):

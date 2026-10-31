@@ -153,6 +153,8 @@ TARGET_LATENCY_MS = 2.5  # the final model's vLLM decode time per token must be 
 # need to beat the uncompressed version"; FP16 is 2.53 ms/token on vLLM); None: no limit
 SEARCH_LATENCY_METRIC = "vllm_decode_ms_per_token"  # what TARGET_LATENCY_MS is checked against: a vLLM metric runs vLLM
 # in every try (needs VLLM_PYTHON); "decode_ms_per_token_mean" = Hugging Face, no backend in the tries
+SEARCH_PPL_METRIC = "ppl_val"  # what TARGET_PPL is checked against: "ppl_val" = Hugging Face; "vllm_ppl_val" = the vLLM
+# file's validation perplexity (runs vLLM in every try, needs VLLM_PYTHON; 2026-10-31)
 SEARCHERS = ["mobo"]  # each gets the same budget and seed (Mohammad, 2026-10-29: "yes from now on mobo only"; was MOBO
 # and MFBO; "mfbo" and "nsga3" also work)
 SEARCH_BUDGET = 100  # full tries per searcher (MFBO's rough tries count by their share of the windows, so it builds
@@ -177,7 +179,8 @@ SEARCH_STAGE1 = [f"{w}_with_{a}" for w in ("rtn", "gptq", "awq", "omniquant", "s
 # faithfully; squeezellm, spqr, quip, quipsharp, pbllm and bitsandbytes store values the export would change
 SEARCH_STAGE1 += ["rtn", "gptq", "awq", "omniquant", "efficientqat"]
 SEARCH_STAGE2 = ["unstructured_prune", "structured_prune"]  # pruning techniques (low-rank cannot follow Stage 1)
-SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]  # KV-cache techniques
+SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]  # KV-cache techniques; "none" (alone
+# or as one choice) skips Stage 3: the Stage 2 model is measured as it is, with an uncompressed KV cache (2026-10-31)
 SEARCH_FINALISTS = 3  # MODE "stage_search": chained models built and measured under the limit, best pairs first
 # MODE "search": lm-eval tasks the final model (the best under the limits on SEARCH_OBJECTIVES' first, then the
 # next) is tested on (Mohammad, 2026-10-25: "then that accuracy will be compared with tinyllama accuracy"); [] = none
@@ -223,6 +226,7 @@ def build_config():
         "requirement.target_ppl": TARGET_PPL,
         "requirement.target_latency_ms": TARGET_LATENCY_MS,
         "search.latency_metric": SEARCH_LATENCY_METRIC,
+        "search.ppl_metric": SEARCH_PPL_METRIC,
         "eval.vllm_python": VLLM_PYTHON,
         "search.searchers": SEARCHERS,
         "search.budget": SEARCH_BUDGET,

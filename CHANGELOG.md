@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-31: A vLLM perplexity limit, and a "no KV method" choice for Stage 3
+
+- `search.ppl_metric` (main.py `SEARCH_PPL_METRIC`, default `"ppl_val"`, so nothing changes unless it is set):
+  `TARGET_PPL` can be checked on `"vllm_ppl_val"`, as `search.latency_metric` does for the latency. It applies to the
+  search's tries, the search report's label and the stage reports. A row without the metric leaves the limit
+  unmeasured: not met, and counted as a violation for MOBO. A vLLM perplexity metric needs `eval.vllm_python` and makes
+  every try run vLLM. `sdf.requirements.with_latency` is now `with_limit_metrics`.
+- `"none"` in `search.stage3_methods` (main.py `SEARCH_STAGE3`): a Stage 3 method that does nothing, so the Stage 2
+  model is measured as it is. Its row reports the uncompressed cache's predicted KV memory, not the Stage 0 KV plan's.
+  It has its own cache key and search_tried.csv entry like any other technique, and needs no Stage 0 KV plan. As one
+  choice among others it usually wins unless `requirement.kv_budget_gb` is set: no objective rewards a smaller cache.
+- A backend number that diverged (NaN or inf) adds 1 to a try's violation, so a searcher's constraint stays finite.
+  `ppl_heldout` is refused as the limit's metric, as it is as an objective. MODE "stage_search" stops at the start when
+  a limit is on a vLLM metric and `eval.vllm_python` is not set. The search report's tables show the limit's perplexity,
+  and its Stage 4 text no longer says the tries ran on Hugging Face only when they ran vLLM.
+
 ## 2026-10-29: Stage 4 tests the lowest-perplexity model under both limits
 
 - Mohammad (2026-10-29) chose "b" on which model Stage 4 tests: the lowest perplexity among the tries that meet both

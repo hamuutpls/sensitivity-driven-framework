@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from sdf.reporting.metrics import NOT_IN_VERDICT, ONE_OFF_COSTS, is_better, is_number, label
-from sdf.requirements import LATENCY, DeploymentRequirement, with_latency
+from sdf.requirements import LATENCY, PPL, DeploymentRequirement, with_limit_metrics
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.logging import get_logger
 
@@ -99,6 +99,7 @@ class StageReporter:
         original_model: dict[str, Any] | None = None,
         subdir: str | None = None,
         latency_metric: str = LATENCY,
+        ppl_metric: str = PPL,
     ):
         self.stage = stage
         self.title = title
@@ -109,6 +110,7 @@ class StageReporter:
         self.conditions = conditions  # the identical conditions every row shares (calibration, seed, eval data...)
         self.requirement = requirement
         self.latency_metric = latency_metric  # what the latency limit is checked on (search.latency_metric)
+        self.ppl_metric = ppl_metric  # what the perplexity limit is checked on (search.ppl_metric)
         self.main_metrics = main_metrics
         # The uncompressed model's parameters (sdf.utils.model_info.describe_model), shown in every report.
         self.original_model: dict[str, Any] = dict(original_model or {})
@@ -152,7 +154,8 @@ class StageReporter:
             row.status = "ok"
             self._sanity_check(row)
             log.info("[stage %d] %s: done", self.stage, row.key)
-        row.requirement = self.requirement.check(with_latency(row.metrics, self.latency_metric)).to_dict()
+        row.requirement = self.requirement.check(
+            with_limit_metrics(row.metrics, self.latency_metric, self.ppl_metric)).to_dict()
         self.flush()
 
     def add_raw(self, method: str, variant: str, records: list[dict[str, Any]]) -> None:

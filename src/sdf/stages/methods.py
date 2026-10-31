@@ -188,6 +188,14 @@ def _kv_method(rounding: str, forget: str) -> Callable[[MethodCall], ContextMana
     return apply
 
 
+NO_KV = "none"  # search.stage3_methods: skip Stage 3
+
+
+@contextmanager
+def _no_kv(call: MethodCall) -> Iterator[dict[str, Any]]:
+    yield {}
+
+
 _KV_NOTE = ("Simulated: keys and values are rounded in place and forgotten words are masked out of attention for "
             "each word, so accuracy is real but memory is the plan's prediction, speed is not a smaller cache's, and peak "
             "memory includes the simulation's masks.")
@@ -298,6 +306,9 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     # rank chosen so each layer keeps (1 - planned share) of its numbers; activation-aware SVD
     Method("low_rank", 2, "Low-rank (activation-aware SVD)", _PRUNE_PLANS, _calibrated(low_rank_),
            calibrated=True, storage="free", library="in repo (torch)", version=2),
+    # no KV technique (2026-10-31): nothing is hooked, so the row measures the model it was given, with the full cache
+    Method(NO_KV, 3, "No KV method", ("kv",), _no_kv, simulated=False, library="none",
+           note="No KV technique: the model is measured as Stage 2 left it, with an uncompressed KV cache."),
     # Stage 3: KV cache (stages/kv_methods.py). Standard rows: rounding techniques at stage0.kv_uniform_bits keeping
     # every word, forgetting techniques at 16 bits keeping stage0.kv_standard_keep_ratio (H2O's 20%; SnapKV and
     # InfiniGen set no share: SnapKV a fixed word count, InfiniGen an attention threshold).

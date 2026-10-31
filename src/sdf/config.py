@@ -230,6 +230,9 @@ class SearchConfig:
     # the metric requirement.target_latency_ms is checked against; "vllm_decode_ms_per_token" needs eval.vllm_python,
     # and then every try runs vLLM (Mohammad, 2026-10-29: "we need to beat the uncompressed version" on vLLM)
     latency_metric: str = "decode_ms_per_token_mean"
+    # the metric requirement.target_ppl is checked against; "vllm_ppl_val" (the vLLM file's validation perplexity)
+    # needs eval.vllm_python, and then every try runs vLLM (2026-10-31)
+    ppl_metric: str = "ppl_val"
     mfbo_eta: int = 3  # successive halving: keep the best 1/eta at each rung, with eta times the windows
     finalists: int = 3  # MODE "stage_search": chained models built under the limit from the best Stage 1 + Stage 2 pairs
     accuracy_tasks: list[str] = field(default_factory=list)  # MODE "search": lm-eval tasks the lowest-perplexity final

@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from sdf.config import FrameworkConfig, config_hash
-from sdf.requirements import RequirementCheck, with_latency
+from sdf.requirements import RequirementCheck, with_limit_metrics
 from sdf.run import RunContext
 from sdf.search_space import SEARCH_SPACE, Param, SearchSpace
 from sdf.utils.cache import atomic_write_text
@@ -126,11 +126,12 @@ def cached_point(ctx: RunContext, kind: str, key: dict[str, Any], tdir: Path, bu
 def check_requirement(cfg: FrameworkConfig, metrics: dict[str, Any]) -> RequirementCheck:
     """The requirement checked with the memory limit on cfg.search.memory_metric, before and after the build alike
     (the requirement on its own prefers model_size_gb, which a simulated method fills with the 16-bit size), and the
-    latency limit on cfg.search.latency_metric. A latency not measured (vLLM failed, or before the build) leaves met
+    latency and perplexity limits on cfg.search.latency_metric and ppl_metric. One not measured (vLLM failed, or before
+    the build) leaves met
     None: not met after the build (cached_point), but no reason to skip building."""
     s = cfg.search
-    return cfg.requirement.check(with_latency({**metrics, "model_size_gb": metrics.get(s.memory_metric)},
-                                              s.latency_metric))
+    return cfg.requirement.check(with_limit_metrics({**metrics, "model_size_gb": metrics.get(s.memory_metric)},
+                                                    s.latency_metric, s.ppl_metric))
 
 
 def _version(name: str, methods: dict) -> int:
@@ -404,7 +405,10 @@ def violation(result: dict[str, Any]) -> float:
     limit that could not be measured (vLLM failed, so no vLLM latency): never 0, or MOBO would take it as met."""
     if result.get("met"):
         return 0.0
-    return float(sum(result.get("shortfall", {}).values())) + float(len(result.get("unmeasured", [])))
+    # a diverged backend (NaN or inf, while the Hugging Face numbers are fine) counts like an unmeasured limit: the
+    # constraint a searcher gets must stay finite
+    return (sum(v if math.isfinite(v) else 1.0 for v in result.get("shortfall", {}).values())
+            + float(len(result.get("unmeasured", []))))
 
 
 def _sample(space: SearchSpace, rng: random.Random) -> dict[str, Any]:
@@ -550,10 +554,10 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     if s.memory_metric != "predicted_weight_memory_gb":  # the limit is checked on the plan, before building
         raise ValueError(f"search.memory_metric must be predicted_weight_memory_gb, not {s.memory_metric!r}: only "
                          "the predicted size is known before a model is built")
-    if "ppl_heldout" in s.objectives:
+    if "ppl_heldout" in [*s.objectives, s.ppl_metric]:
         raise ValueError("ppl_heldout is measured to check the choice, never optimised: use ppl_val")
     needs_vllm = tries_need_vllm(cfg)
-    if backend := [o for o in [*s.objectives, s.latency_metric] if o.startswith(BACKEND_PREFIXES)
+    if backend := [o for o in [*s.objectives, s.latency_metric, s.ppl_metric] if o.startswith(BACKEND_PREFIXES)
                    and not (o.startswith("vllm_") and cfg.eval.vllm_python)]:
         raise ValueError(f"the metrics {backend} come from a backend; tries run only vLLM, and only with "
                          "eval.vllm_python set (llama.cpp and TensorRT-LLM test only the final model, in Stage 4)")
@@ -607,10 +611,12 @@ NO_BACKENDS = {"eval.vllm_python": None, "eval.trtllm_python": None, "eval.llama
 
 
 def tries_need_vllm(cfg: FrameworkConfig) -> bool:
-    """True when a try must run vLLM: an objective is a vLLM metric, or the latency limit is checked on one."""
+    """True when a try must run vLLM: an objective is a vLLM metric, or the latency or perplexity limit is checked
+    on one."""
     s = cfg.search
     return (any(o.startswith("vllm_") for o in s.objectives)
-            or cfg.requirement.target_latency_ms is not None and s.latency_metric.startswith("vllm_"))
+            or cfg.requirement.target_latency_ms is not None and s.latency_metric.startswith("vllm_")
+            or cfg.requirement.target_ppl is not None and s.ppl_metric.startswith("vllm_"))
 
 
 def final_model(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[str], **kw: Any) -> dict[str, Any] | None:

@@ -2,8 +2,10 @@
 perplexity <= 11.5 and vLLM decode < 2.5 ms per token, "we need to beat the uncompressed version")."""
 
 import copy
+from pathlib import Path
 
 import pytest
+import torch
 
 from sdf import search
 from sdf.reporting import search as search_report
@@ -124,7 +126,6 @@ def test_a_weight_only_try_gets_its_vllm_latency_and_the_limit_is_checked_on_it(
     (plan, acts), = [x for x in seen if x[0] is not None]
     assert acts is None  # weights only: the GPTQ export, no activation rounding
     import json
-    from pathlib import Path
     rows = json.loads((Path(t["dir"]) / "stage_3" / "results.json").read_text())["rows"]
     fw = next(x for x in rows if x["variant"] == "framework")
     assert fw["requirement"]["met"] is True  # the point's own report checks the vLLM latency too, not HF's
@@ -234,3 +235,145 @@ def test_main_py_builds_a_valid_search_config(monkeypatch, tmp_path):
     monkeypatch.setitem(__import__("sys").modules, "lm_eval", object())  # SEARCH_ACCURACY_TASKS needs lm-eval
     with pytest.raises(Passed):
         run_search(start_run(c.with_overrides({"eval.vllm_python": "/content/vllm-venv/bin/python"})))
+
+
+# ---------------------------------------------------------------- the vLLM perplexity limit, no KV method (2026-10-31)
+
+VLLM_PPL = "vllm_ppl_val"
+
+
+def test_the_perplexity_limit_is_checked_on_the_search_ppl_metric(cfg):
+    c = cfg.with_overrides({"search.ppl_metric": VLLM_PPL, "requirement.target_latency_ms": None})
+    base = {"ppl_val": 10.0, "predicted_weight_memory_gb": 0.5}  # HF under the limit
+    assert check_requirement(c, {**base, VLLM_PPL: 11.0}).met is True
+    over = check_requirement(c, {**base, VLLM_PPL: 12.0})
+    assert over.met is False and over.shortfall["target_ppl"] == pytest.approx(0.5)
+    missing = check_requirement(c, base)  # vLLM failed: the HF perplexity must not stand in for it
+    assert missing.met is None and missing.unmeasured == ["target_ppl"]
+    # the default is the HF perplexity, as before
+    hf = c.with_overrides({"search.ppl_metric": "ppl_val"})
+    assert check_requirement(hf, {**base, "ppl_val": 12.0, VLLM_PPL: 11.0}).met is False
+
+
+def test_a_try_without_the_vllm_perplexity_violates_the_limit_for_mobo(cfg, monkeypatch):
+    c = cfg.with_overrides({"search.ppl_metric": VLLM_PPL, "requirement.target_latency_ms": None})
+    monkeypatch.setattr(search, "_build_and_measure", lambda *a: {
+        "metrics": {"ppl_val": 10.0, "predicted_weight_memory_gb": 0.5}, "errors": {"vllm_error": "out of memory"}})
+    t = search.Recorder(start_run(c), "mobo", 6)(technique_space(c).make({}))
+    assert t["ok"] and not t["met"] and t["violation"] == 1.0
+
+
+def test_a_vllm_perplexity_limit_makes_the_tries_run_vllm(cfg):
+    off = {"requirement.target_latency_ms": None}
+    assert not tries_need_vllm(cfg.with_overrides(off))
+    assert tries_need_vllm(cfg.with_overrides({**off, "search.ppl_metric": VLLM_PPL}))
+    # no perplexity limit: nothing to check on vLLM
+    assert not tries_need_vllm(cfg.with_overrides({**off, "search.ppl_metric": VLLM_PPL,
+                                                   "requirement.target_ppl": None}))
+    with pytest.raises(ValueError, match="vllm_python"):
+        run_search(start_run(cfg.with_overrides({**off, "search.ppl_metric": VLLM_PPL,  # only the ppl metric is vLLM
+                                                 "search.latency_metric": "decode_ms_per_token_mean"})))
+    with pytest.raises(ValueError, match="ppl_heldout"):
+        run_search(start_run(cfg.with_overrides({"search.ppl_metric": "ppl_heldout"})))
+
+
+def test_a_diverged_vllm_number_keeps_the_constraint_finite(cfg):
+    c = cfg.with_overrides({"search.ppl_metric": VLLM_PPL, "requirement.target_latency_ms": None})
+    check = check_requirement(c, {"ppl_val": 10.0, "predicted_weight_memory_gb": 0.5, VLLM_PPL: float("inf")})
+    assert check.met is False
+    assert search.violation({"met": False, "shortfall": check.shortfall, "unmeasured": check.unmeasured}) == 1.0
+
+
+def test_stage_search_stops_when_a_limit_needs_vllm_it_does_not_have(cfg):
+    from sdf.stage_search import run_stage_search
+
+    c = cfg.with_overrides({"search.objectives": ["ppl_val", "predicted_weight_memory_gb"],
+                            "search.latency_metric": "decode_ms_per_token_mean", "search.ppl_metric": VLLM_PPL})
+    with pytest.raises(ValueError, match="vllm_python"):
+        run_stage_search(start_run(c))
+
+
+def test_main_py_and_the_stage_reporter_get_the_ppl_metric(cfg, tiny_llama, tokenizer, monkeypatch):
+    import main
+    from sdf.stage0.run import stage_reporter
+    import inspect
+
+    monkeypatch.setattr(main, "SEARCH_PPL_METRIC", VLLM_PPL)
+    assert main.build_config().search.ppl_metric == VLLM_PPL
+    assert "ppl_metric=cfg.search.ppl_metric" in inspect.getsource(stage_reporter)
+
+
+def test_stage_reports_and_the_search_report_use_the_ppl_metric(cfg, tmp_path):
+    from sdf.reporting.reporter import StageReporter
+    from sdf.reporting.search import _req
+    from sdf.requirements import DeploymentRequirement
+
+    rep = StageReporter(stage=1, run_dir=tmp_path, title="t", config={}, environment={}, conditions={},
+                        requirement=DeploymentRequirement(target_ppl=11.5), main_metrics=["ppl_val"],
+                        ppl_metric=VLLM_PPL)
+    with rep.method("gptq", "framework") as r:
+        r.metrics.update(ppl_val=12.0, **{VLLM_PPL: 11.0})  # only the vLLM value counts
+    with rep.method("awq", "framework") as r:
+        r.metrics.update(ppl_val=11.0)
+    assert rep.rows[0].requirement["met"] is True
+    assert rep.rows[1].requirement["unmeasured"] == ["target_ppl"]
+    text = _req(cfg.with_overrides({"search.ppl_metric": VLLM_PPL}))
+    assert "vLLM perplexity" in text and "at most 11.5" in text
+
+
+def test_no_kv_method_passes_the_stage2_model_on_unchanged(cfg, tiny_llama, tokenizer):
+    # "none" as one choice: built and measured, cached under its own key, with the uncompressed cache's KV memory
+    c = cfg.with_overrides({"search.latency_metric": "decode_ms_per_token_mean", "requirement.target_latency_ms": None,
+                            "requirement.target_ppl": None, "search.stage1_methods": ["rtn_with_rtn_act"],
+                            "search.stage3_methods": ["none", "rtn_kv"]})
+    ctx = start_run(c)
+    kw = _kw(tiny_llama, tokenizer)
+    over = {"calib_samples": 16, "prune_ratio_aggressive": 0.4}
+    none = evaluate(ctx, technique_space(c).make({**over, "stage3_method": "none"}), **kw)
+    kv = evaluate(ctx, technique_space(c).make({**over, "stage3_method": "rtn_kv"}), **kw)
+    assert "error" not in none and "error" not in kv, (none, kv)
+    assert none["dir"] != kv["dir"]
+    assert evaluate(ctx, technique_space(c).make({**over, "stage3_method": "none"}), **kw)["cached"]
+    m, k = none["metrics"], kv["metrics"]
+    assert "No KV method" in (Path(none["dir"]) / "stage_3" / "report.md").read_text(encoding="utf-8")
+    assert m["kv_kept_share"] == 1.0 and m["avg_kv_bits"] == 16 and m["predicted_kv_memory_gb"] > k["predicted_kv_memory_gb"]
+    assert m["decoder_weights_removed"] > 0 and m["predicted_weight_memory_gb"] == k["predicted_weight_memory_gb"]
+
+
+def test_no_kv_method_alone_hooks_nothing_and_needs_no_kv_plan(cfg, tiny_llama, tokenizer, monkeypatch):
+    from sdf.stages import methods
+    from sdf.stages.methods import METHODS, MethodCall
+
+    # the model comes out of "none" answering exactly as it went in, with nothing hooked
+    x = torch.arange(8).unsqueeze(0)
+    model = copy.deepcopy(tiny_llama).eval()
+    with torch.no_grad():
+        before = model(x).logits.clone()
+        with METHODS["none"].apply(MethodCall(model, None, {}, cfg, lambda: [])) as extra:
+            assert extra == {} and not any(m._forward_hooks or m._forward_pre_hooks for m in model.modules())
+            assert torch.equal(model(x).logits, before)
+
+    def refuse(*a, **k):
+        raise AssertionError("no KV technique may run")
+
+    monkeypatch.setattr(methods, "kv_attention", refuse)  # what every real KV technique enters
+    c = cfg.with_overrides({"search.latency_metric": "decode_ms_per_token_mean", "requirement.target_latency_ms": None,
+                            "requirement.target_ppl": None, "search.stage1_methods": ["rtn_with_rtn_act"],
+                            "search.stage3_methods": ["none"], "stage0.kv_cache": False})
+    r = evaluate(start_run(c), technique_space(c).make({"calib_samples": 16, "prune_ratio_aggressive": 0.4}),
+                 **_kw(tiny_llama, tokenizer))
+    assert "error" not in r, r
+    assert r["metrics"]["decoder_weights_removed"] > 0 and r["metrics"]["ppl_val"] > 1  # the Stage 2 model, measured
+
+
+def test_no_kv_method_is_reused_from_the_tried_log(cfg, tmp_path):
+    c = cfg.with_overrides({"search.stage3_methods": ["none"]})
+    space = technique_space(c)
+    assert [p.choices for p in space.params if p.name == "stage3_method"] == [("none",)]
+    ctx = start_run(c)
+    point = space.make({})
+    m = {"ppl_val": 10.0, "ppl_heldout": 10.2, "predicted_weight_memory_gb": 0.5, VLLM: 2.0}
+    path = tmp_path / "tried.csv"
+    search.TriedLog(path, "old").add(ctx, "mobo", {"n": 1, "point": point, "windows": 6, "over_limit": False,
+                                                   "ok": True, "met": True, "metrics": m}, {"metrics": m, "errors": {}})
+    assert search.TriedLog(path, "new").get(ctx, point, 6) is not None

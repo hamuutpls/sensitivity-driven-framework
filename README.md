@@ -90,7 +90,7 @@ What to change at the top of `main.py`:
 | 3-4b. Stage 0 | sensitivity score, bits, KV-cache plan, activation plan |
 | 5-6. Sweeps | `SWEEP`, `PRUNE_SWEEP_RATIOS`, `PRUNING_LEVELS`, `THRESHOLD_SWEEP`, `GUARD_SWEEP` |
 | 7. Stages 1-3 | `STAGE0_DIR`, `STAGE1_METHODS`, `STAGE2_METHODS`, `STAGE2_AFTER`, `STAGE3_METHODS` |
-| 8. Search | limits `TARGET_PPL`, `TARGET_MEMORY_GB`, `TARGET_LATENCY_MS` (checked on `SEARCH_LATENCY_METRIC`); `SEARCHERS`, `SEARCH_BUDGET`, `SEARCH_OBJECTIVES`, `VLLM_PYTHON`; the techniques each stage may pick (`SEARCH_STAGE1`, `SEARCH_STAGE2`, `SEARCH_STAGE3`, `SEARCH_EXTRA_STAGE1`); `SEARCH_JOINT_PLAN`, `SEARCH_RANGES`, `SEARCH_LOW_THRESHOLD_MAX` |
+| 8. Search | limits `TARGET_PPL`, `TARGET_MEMORY_GB`, `TARGET_LATENCY_MS` (checked on `SEARCH_LATENCY_METRIC`), with `TARGET_PPL` checked on `SEARCH_PPL_METRIC`; `SEARCHERS`, `SEARCH_BUDGET`, `SEARCH_OBJECTIVES`, `VLLM_PYTHON`; the techniques each stage may pick (`SEARCH_STAGE1`, `SEARCH_STAGE2`, `SEARCH_STAGE3`, `SEARCH_EXTRA_STAGE1`); `SEARCH_JOINT_PLAN`, `SEARCH_RANGES`, `SEARCH_LOW_THRESHOLD_MAX` |
 
 The modes:
 
@@ -136,9 +136,21 @@ and run its cells top to bottom. `main.py` holds these settings except `MODE`, `
 Why the weight-only techniques: vLLM runs WxAy rows on Humming kernels in eager mode (`src/sdf/eval/vllm_worker.py`),
 35-42 ms per token, while weight-only rows go through the GPTQ export with CUDA graphs at about 2 ms per token
 (2026-10-07: GPTQ 1.98, RTN 2.06, AWQ 2.06). Only weight techniques on a uniform per-group grid are listed, which the
-export re-rounds faithfully. With a vLLM objective, or the latency limit on a vLLM metric, every try runs vLLM
+export re-rounds faithfully. With a vLLM objective, or the latency or perplexity limit on a vLLM metric, every try runs vLLM
 (`sdf.search.tries_need_vllm`); otherwise tries run no backend, and vLLM, llama.cpp and TensorRT-LLM measure only the
 final model. A try whose vLLM measurement fails does not meet the latency limit.
+
+Two more options for a search run (neither is used in the table above):
+
+- `SEARCH_PPL_METRIC = "vllm_ppl_val"`: `TARGET_PPL` is checked on the validation perplexity of the file vLLM runs,
+  not on the Hugging Face model's (default `"ppl_val"`). Every try then runs vLLM, so it needs `VLLM_PYTHON`, and a
+  try without that number does not meet the limit.
+- `SEARCH_STAGE3 = ["none"]`, or `"none"` as one choice in the list: no KV technique, so the model is measured as
+  Stage 2 left it, with an uncompressed KV cache. Offered as one choice, `"none"` will usually win unless
+  `requirement.kv_budget_gb` is set, because no objective rewards a smaller cache and it adds no KV rounding error.
+
+  vLLM's numbers never include the KV technique (the file vLLM runs is the Stage 2 model), so `vllm_ppl_val` and vLLM
+  latency are the same for every Stage 3 choice.
 
 ### On Google Colab
 
