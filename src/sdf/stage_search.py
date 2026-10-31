@@ -204,7 +204,8 @@ def run_stage_search(ctx: RunContext, model_factory: Callable | None = None, tok
         raise ValueError(f"the objectives {s.objectives} need vLLM: set eval.vllm_python (Colab), or every try fails")
     req = ctx.cfg.requirement
     if (req.target_latency_ms is not None and s.latency_metric.startswith("vllm_")
-            or req.target_ppl is not None and s.ppl_metric.startswith("vllm_")) and not ctx.cfg.eval.vllm_python:
+            or req.target_ppl is not None and s.ppl_metric.startswith("vllm_")
+            or req.target_vllm_ppl is not None) and not ctx.cfg.eval.vllm_python:
         raise ValueError("a limit checked on a vLLM metric needs vLLM: set eval.vllm_python (Colab), or no pair can "
                          "meet it")
     if ctx.cfg.requirement.target_memory_gb is None:

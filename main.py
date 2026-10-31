@@ -155,6 +155,8 @@ SEARCH_LATENCY_METRIC = "vllm_decode_ms_per_token"  # what TARGET_LATENCY_MS is 
 # in every try (needs VLLM_PYTHON); "decode_ms_per_token_mean" = Hugging Face, no backend in the tries
 SEARCH_PPL_METRIC = "ppl_val"  # what TARGET_PPL is checked against: "ppl_val" = Hugging Face; "vllm_ppl_val" = the vLLM
 # file's validation perplexity (runs vLLM in every try, needs VLLM_PYTHON; 2026-10-31)
+TARGET_VLLM_PPL = None  # the vLLM file's validation perplexity must also be at most this, ON TOP of TARGET_PPL on the
+# Hugging Face model (runs vLLM in every try, needs VLLM_PYTHON; None: no limit). SEARCH_PPL_METRIC replaces the HF check
 SEARCHERS = ["mobo"]  # each gets the same budget and seed (Mohammad, 2026-10-29: "yes from now on mobo only"; was MOBO
 # and MFBO; "mfbo" and "nsga3" also work)
 SEARCH_BUDGET = 100  # full tries per searcher (MFBO's rough tries count by their share of the windows, so it builds
@@ -224,6 +226,7 @@ def build_config():
         "stages.stage3_methods": STAGE3_METHODS,
         "requirement.target_memory_gb": TARGET_MEMORY_GB,
         "requirement.target_ppl": TARGET_PPL,
+        "requirement.target_vllm_ppl": TARGET_VLLM_PPL,
         "requirement.target_latency_ms": TARGET_LATENCY_MS,
         "search.latency_metric": SEARCH_LATENCY_METRIC,
         "search.ppl_metric": SEARCH_PPL_METRIC,

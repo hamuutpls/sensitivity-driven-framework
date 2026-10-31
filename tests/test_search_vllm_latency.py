@@ -377,3 +377,81 @@ def test_no_kv_method_is_reused_from_the_tried_log(cfg, tmp_path):
     search.TriedLog(path, "old").add(ctx, "mobo", {"n": 1, "point": point, "windows": 6, "over_limit": False,
                                                    "ok": True, "met": True, "metrics": m}, {"metrics": m, "errors": {}})
     assert search.TriedLog(path, "new").get(ctx, point, 6) is not None
+
+
+# ---------------------------------------------------------------- both perplexity limits (2026-10-31)
+
+def _both(cfg):
+    return cfg.with_overrides({"requirement.target_vllm_ppl": 11.5, "requirement.target_latency_ms": None})
+
+
+def test_both_perplexity_limits_must_hold(cfg):
+    c = _both(cfg)
+    size = {"predicted_weight_memory_gb": 0.5}
+    over = check_requirement(c, {**size, "ppl_val": 12.3, VLLM_PPL: 11.3})  # passed with search.ppl_metric alone
+    assert over.met is False and set(over.shortfall) == {"target_ppl"}
+    assert check_requirement(c, {**size, "ppl_val": 11.4, VLLM_PPL: 11.3}).met is True
+    assert set(check_requirement(c, {**size, "ppl_val": 11.4, VLLM_PPL: 11.6}).shortfall) == {"target_vllm_ppl"}
+    missing = check_requirement(c, {**size, "ppl_val": 11.4})  # no HF fallback
+    assert missing.met is None and missing.unmeasured == ["target_vllm_ppl"]
+    assert search.violation({"met": False, "shortfall": missing.shortfall, "unmeasured": missing.unmeasured}) == 1.0
+    # unset, as before
+    off = cfg.with_overrides({"requirement.target_latency_ms": None})
+    assert check_requirement(off, {**size, "ppl_val": 11.4}).met is True
+
+
+def test_a_try_without_the_vllm_perplexity_misses_both_limits_for_mobo(cfg, monkeypatch):
+    c = _both(cfg)
+    monkeypatch.setattr(search, "_build_and_measure", lambda *a: {
+        "metrics": {"ppl_val": 11.4, "predicted_weight_memory_gb": 0.5}, "errors": {"vllm_error": "out of memory"}})
+    t = search.Recorder(start_run(c), "mobo", 6)(technique_space(c).make({}))
+    assert t["ok"] and not t["met"] and t["violation"] == 1.0
+
+
+def test_the_vllm_perplexity_limit_needs_vllm_in_every_try(cfg, tiny_llama, tokenizer, monkeypatch):
+    from sdf.reporting.search import _req
+    from sdf.stage_search import run_stage_search
+
+    hf = {"search.latency_metric": "decode_ms_per_token_mean"}
+    c = _both(cfg).with_overrides(hf)
+    assert tries_need_vllm(c) and not tries_need_vllm(cfg.with_overrides({**hf, "requirement.target_latency_ms": None}))
+    with pytest.raises(ValueError, match="target_vllm_ppl"):
+        run_search(start_run(c))
+    with pytest.raises(ValueError, match="vllm_python"):
+        run_stage_search(start_run(c.with_overrides({"search.objectives": ["ppl_val", "predicted_weight_memory_gb"]})))
+    seen = []
+    monkeypatch.setitem(search.SEARCHERS, "mobo", lambda rec, *a, **k: seen.append(rec.ctx.cfg.eval.vllm_python))
+    monkeypatch.setattr(search_report, "write_search_report", lambda *a, **k: {})
+    run_search(start_run(c.with_overrides({"eval.vllm_python": "py", "search.searchers": ["mobo"]})),
+               **_kw(tiny_llama, tokenizer))
+    assert seen == ["py"]
+    text = _req(c)
+    assert "at most 11.5" in text and "vLLM perplexity" in text and "alidation" in text
+
+
+def test_main_py_passes_the_vllm_perplexity_limit(monkeypatch):
+    import main
+
+    assert main.build_config().requirement.target_vllm_ppl is None
+    monkeypatch.setattr(main, "TARGET_VLLM_PPL", 11.5)
+    assert main.build_config().requirement.target_vllm_ppl == 11.5
+
+
+@pytest.mark.parametrize("limit", [11.5, None])
+def test_the_search_report_shows_the_vllm_perplexity_when_it_is_a_limit(cfg, tiny_llama, tokenizer, monkeypatch, limit):
+    from sdf.eval import vllm_backend
+    from sdf.reporting.metrics import label
+
+    monkeypatch.setattr(vllm_backend, "measure", lambda model, tok, plan, *a, **k: {
+        VLLM: 2.0, VLLM_PPL: 11.0, "vllm_size_gb": 0.1})
+    c = cfg.with_overrides({"eval.vllm_python": "py", "requirement.target_ppl": None, "search.searchers": ["mobo"],
+                            "requirement.target_latency_ms": None, "requirement.target_vllm_ppl": limit,
+                            "requirement.target_memory_gb": 1.0,  # a limit the toy model meets, so a try is final
+                            "search.latency_metric": "decode_ms_per_token_mean", "search.budget": 1,
+                            "search.objectives": ["ppl_val", VLLM, "predicted_weight_memory_gb"],
+                            "search.stage1_methods": ["rtn"]})
+    text = run_search(start_run(c), **_kw(tiny_llama, tokenizer))["search_report"].read_text(encoding="utf-8")
+    tables = "\n".join(line for line in text.splitlines() if line.startswith("| #"))
+    assert (label(VLLM_PPL) in tables) is (limit is not None)  # the column
+    assert ("the limit is checked on it" in text) is (limit is not None)  # the final model's text
+    assert ("not the verdict" in text) is (limit is None)

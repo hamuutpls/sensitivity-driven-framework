@@ -14,6 +14,7 @@ _CHECKS: dict[str, tuple[str, ...]] = {
     "target_latency_ms": ("decode_ms_per_token_mean",),
     "target_memory_gb": ("model_size_gb", "predicted_weight_memory_gb"),
     "target_ppl": ("ppl_val",),
+    "target_vllm_ppl": ("vllm_ppl_val",),
     "kv_budget_gb": ("kv_cache_gb", "predicted_kv_memory_gb"),
 }
 
@@ -52,6 +53,8 @@ class DeploymentRequirement:
     target_latency_ms: float | None = None  # decode latency per token
     target_memory_gb: float | None = None
     target_ppl: float | None = None  # accuracy target, as a maximum validation-half perplexity
+    # the same on the file vLLM runs, on top of target_ppl: both must hold; without the number it is unmeasured
+    target_vllm_ppl: float | None = None
     kv_budget_gb: float | None = None
     hardware_profile: str = "unspecified"  # e.g. "RTX-5070-Ti", "A100-40GB"
 

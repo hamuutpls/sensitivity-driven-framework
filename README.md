@@ -90,7 +90,7 @@ What to change at the top of `main.py`:
 | 3-4b. Stage 0 | sensitivity score, bits, KV-cache plan, activation plan |
 | 5-6. Sweeps | `SWEEP`, `PRUNE_SWEEP_RATIOS`, `PRUNING_LEVELS`, `THRESHOLD_SWEEP`, `GUARD_SWEEP` |
 | 7. Stages 1-3 | `STAGE0_DIR`, `STAGE1_METHODS`, `STAGE2_METHODS`, `STAGE2_AFTER`, `STAGE3_METHODS` |
-| 8. Search | limits `TARGET_PPL`, `TARGET_MEMORY_GB`, `TARGET_LATENCY_MS` (checked on `SEARCH_LATENCY_METRIC`), with `TARGET_PPL` checked on `SEARCH_PPL_METRIC`; `SEARCHERS`, `SEARCH_BUDGET`, `SEARCH_OBJECTIVES`, `VLLM_PYTHON`; the techniques each stage may pick (`SEARCH_STAGE1`, `SEARCH_STAGE2`, `SEARCH_STAGE3`, `SEARCH_EXTRA_STAGE1`); `SEARCH_JOINT_PLAN`, `SEARCH_RANGES`, `SEARCH_LOW_THRESHOLD_MAX` |
+| 8. Search | limits `TARGET_PPL`, `TARGET_MEMORY_GB`, `TARGET_LATENCY_MS` (checked on `SEARCH_LATENCY_METRIC`), with `TARGET_PPL` checked on `SEARCH_PPL_METRIC`, and `TARGET_VLLM_PPL` on the vLLM file; `SEARCHERS`, `SEARCH_BUDGET`, `SEARCH_OBJECTIVES`, `VLLM_PYTHON`; the techniques each stage may pick (`SEARCH_STAGE1`, `SEARCH_STAGE2`, `SEARCH_STAGE3`, `SEARCH_EXTRA_STAGE1`); `SEARCH_JOINT_PLAN`, `SEARCH_RANGES`, `SEARCH_LOW_THRESHOLD_MAX` |
 
 The modes:
 
@@ -140,9 +140,13 @@ export re-rounds faithfully. With a vLLM objective, or the latency or perplexity
 (`sdf.search.tries_need_vllm`); otherwise tries run no backend, and vLLM, llama.cpp and TensorRT-LLM measure only the
 final model. A try whose vLLM measurement fails does not meet the latency limit.
 
-Two more options for a search run (neither is used in the table above):
+Three more options for a search run (none is used in the table above):
 
-- `SEARCH_PPL_METRIC = "vllm_ppl_val"`: `TARGET_PPL` is checked on the validation perplexity of the file vLLM runs,
+- `TARGET_VLLM_PPL = 11.5`: both perplexity limits must hold, `TARGET_PPL` on the Hugging Face model and this one on
+  the file vLLM runs. Every try then runs vLLM, so it needs `VLLM_PYTHON`, and a try without that number does not meet
+  the limit. Use this for "both limits".
+- `SEARCH_PPL_METRIC = "vllm_ppl_val"`: replaces the Hugging Face check, so a model can pass on vLLM alone: `TARGET_PPL`
+  is checked on the validation perplexity of the file vLLM runs,
   not on the Hugging Face model's (default `"ppl_val"`). Every try then runs vLLM, so it needs `VLLM_PYTHON`, and a
   try without that number does not meet the limit.
 - `SEARCH_STAGE3 = ["none"]`, or `"none"` as one choice in the list: no KV technique, so the model is measured as
