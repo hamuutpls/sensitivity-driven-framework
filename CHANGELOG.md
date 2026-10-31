@@ -8,6 +8,8 @@
   unmeasured, so not met and a violation for MOBO. It makes every try run vLLM; MODE "search" and "stage_search" stop
   at the start without `eval.vllm_python`. `search.ppl_metric` stays. Stage report rows without a vLLM number show
   the limit as unmeasured.
+- With the limit set, the search report's tables show `vllm_ppl_val`, so a try that misses only the vLLM limit has the
+  number that explains why, and the Stage 4 text says the limit is checked on the vLLM file's perplexity.
 
 ## 2026-10-31: A vLLM perplexity limit, and a "no KV method" choice for Stage 3
 

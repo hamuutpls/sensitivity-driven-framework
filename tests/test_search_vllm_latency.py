@@ -435,3 +435,23 @@ def test_main_py_passes_the_vllm_perplexity_limit(monkeypatch):
     assert main.build_config().requirement.target_vllm_ppl is None
     monkeypatch.setattr(main, "TARGET_VLLM_PPL", 11.5)
     assert main.build_config().requirement.target_vllm_ppl == 11.5
+
+
+@pytest.mark.parametrize("limit", [11.5, None])
+def test_the_search_report_shows_the_vllm_perplexity_when_it_is_a_limit(cfg, tiny_llama, tokenizer, monkeypatch, limit):
+    from sdf.eval import vllm_backend
+    from sdf.reporting.metrics import label
+
+    monkeypatch.setattr(vllm_backend, "measure", lambda model, tok, plan, *a, **k: {
+        VLLM: 2.0, VLLM_PPL: 11.0, "vllm_size_gb": 0.1})
+    c = cfg.with_overrides({"eval.vllm_python": "py", "requirement.target_ppl": None, "search.searchers": ["mobo"],
+                            "requirement.target_latency_ms": None, "requirement.target_vllm_ppl": limit,
+                            "requirement.target_memory_gb": 1.0,  # a limit the toy model meets, so a try is final
+                            "search.latency_metric": "decode_ms_per_token_mean", "search.budget": 1,
+                            "search.objectives": ["ppl_val", VLLM, "predicted_weight_memory_gb"],
+                            "search.stage1_methods": ["rtn"]})
+    text = run_search(start_run(c), **_kw(tiny_llama, tokenizer))["search_report"].read_text(encoding="utf-8")
+    tables = "\n".join(line for line in text.splitlines() if line.startswith("| #"))
+    assert (label(VLLM_PPL) in tables) is (limit is not None)  # the column
+    assert ("the limit is checked on it" in text) is (limit is not None)  # the final model's text
+    assert ("not the verdict" in text) is (limit is None)

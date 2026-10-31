@@ -138,7 +138,10 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
     outputs.update(_plots(d, trials, front, s.objectives, s.memory_metric, comparison))
 
     # --- report
-    shown = list(dict.fromkeys(m for m in (s.objectives[0], s.memory_metric, *s.objectives[1:], s.ppl_metric, "ppl_heldout") if m))
+    # the limits' perplexities too, so a try that misses only the vLLM limit has the number that explains why
+    vllm_ppl = "vllm_ppl_val" if cfg.requirement.target_vllm_ppl is not None else None
+    shown = list(dict.fromkeys(m for m in (s.objectives[0], s.memory_metric, *s.objectives[1:], s.ppl_metric, vllm_ppl,
+                                           "ppl_heldout") if m))
     tech = [n for n in ("stage1_method", "stage2_method", "prune_ratio_aggressive", "stage3_method") if n in names]
     rest = [n for n in names if n not in tech]
     lines = [
@@ -221,6 +224,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             + " **What it means:** how fast and how accurate the chosen model is where it would be deployed. A backend "
             "re-rounds the model into its own file format, so its perplexity is that file's"
             + (" (the limit is checked on it)." if cfg.search.ppl_metric.startswith("vllm_")
+               or cfg.requirement.target_vllm_ppl is not None
                else ", not the verdict."), "",
             _md([["Measure", "Value"]] + _backend_rows(backends))
             if backends else (f"The final model could not be built again: {accuracy['error']}." if accuracy.get("error")
