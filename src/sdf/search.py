@@ -554,6 +554,8 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     if s.memory_metric != "predicted_weight_memory_gb":  # the limit is checked on the plan, before building
         raise ValueError(f"search.memory_metric must be predicted_weight_memory_gb, not {s.memory_metric!r}: only "
                          "the predicted size is known before a model is built")
+    if cfg.requirement.target_vllm_ppl is not None and not cfg.eval.vllm_python:
+        raise ValueError("requirement.target_vllm_ppl is checked on vLLM: set eval.vllm_python (Colab)")
     if "ppl_heldout" in [*s.objectives, s.ppl_metric]:
         raise ValueError("ppl_heldout is measured to check the choice, never optimised: use ppl_val")
     needs_vllm = tries_need_vllm(cfg)
@@ -616,7 +618,8 @@ def tries_need_vllm(cfg: FrameworkConfig) -> bool:
     s = cfg.search
     return (any(o.startswith("vllm_") for o in s.objectives)
             or cfg.requirement.target_latency_ms is not None and s.latency_metric.startswith("vllm_")
-            or cfg.requirement.target_ppl is not None and s.ppl_metric.startswith("vllm_"))
+            or cfg.requirement.target_ppl is not None and s.ppl_metric.startswith("vllm_")
+            or cfg.requirement.target_vllm_ppl is not None)
 
 
 def final_model(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[str], **kw: Any) -> dict[str, Any] | None:

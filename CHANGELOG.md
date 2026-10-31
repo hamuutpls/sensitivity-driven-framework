@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-31: A vLLM perplexity limit on top of the Hugging Face one
+
+- `search.ppl_metric = "vllm_ppl_val"` replaces the Hugging Face check, so a try at HF 12.31 and vLLM 11.35 would pass;
+  the run asked for needs both at most 11.5. New `requirement.target_vllm_ppl` (main.py `TARGET_VLLM_PPL`, default None)
+  is checked on `vllm_ppl_val` next to `target_ppl`, with no Hugging Face fallback: without the number the limit is
+  unmeasured, so not met and a violation for MOBO. It makes every try run vLLM; MODE "search" and "stage_search" stop
+  at the start without `eval.vllm_python`. `search.ppl_metric` stays. Stage report rows without a vLLM number show
+  the limit as unmeasured.
+- With the limit set, the search report's tables show `vllm_ppl_val`, so a try that misses only the vLLM limit has the
+  number that explains why, and the Stage 4 text says the limit is checked on the vLLM file's perplexity.
+
 ## 2026-10-31: A vLLM perplexity limit, and a "no KV method" choice for Stage 3
 
 - `search.ppl_metric` (main.py `SEARCH_PPL_METRIC`, default `"ppl_val"`, so nothing changes unless it is set):
