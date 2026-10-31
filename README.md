@@ -156,6 +156,28 @@ Three more options for a search run (none is used in the table above):
   vLLM's numbers never include the KV technique (the file vLLM runs is the Stage 2 model), so `vllm_ppl_val` and vLLM
   latency are the same for every Stage 3 choice.
 
+## Reproduce the 2026-10-31 run queue
+
+Mohammad asked for every untried combination ("do them all", 2026-10-31). Each run starts from the
+2026-10-29 settings above and changes only what its row says. Every run has a fresh full test suite on the VM
+first, and copies its results to `D:\Thesis\results\colab\<RUN_ID>\` at the end.
+
+| RUN_ID | Commit | Change from the 2026-10-29 settings |
+|---|---|---|
+| `20261031-colab-a100-weightonly` | 5675e83 | `SEARCH_STAGE1 = ["rtn", "gptq", "awq", "omniquant", "efficientqat"]`, `SEARCH_EXTRA_STAGE1 = []` |
+| `20261031-colab-a100-ppl11-lat2.5` | 5675e83 | `TARGET_PPL = 11.0` |
+| `20261031-colab-a100-ppl11.5-lat2.0` | 5675e83 | `TARGET_LATENCY_MS = 2.0` |
+| `20261031-colab-a100-weightonly-acc-snapkvfix` | SnapKV fix | Stage 4 only: run 1's final model built again with the fixed SnapKV, then its ppl and accuracy measured |
+| `20261031-colab-a100-structonly` | SnapKV fix | `SEARCH_STAGE2 = ["structured_prune"]` |
+| `20261031-colab-a100-smallest` | SnapKV fix | `SEARCH_OBJECTIVES = ["predicted_weight_memory_gb", "ppl_val", "vllm_decode_ms_per_token"]` (the final model is the smallest under both limits) |
+| `20261031-colab-a100-b40` | SnapKV fix | `SEARCH_BUDGET = 40` |
+| `20261031-colab-a100-nokv` | SnapKV fix | `SEARCH_STAGE3 = ["none"]` |
+| `20261031-colab-a100-vllmppl11.5` | SnapKV fix | `TARGET_VLLM_PPL = 11.5` (`SEARCH_PPL_METRIC` stays `"ppl_val"`) |
+| `20261031-colab-a100-ppl11-lat2.5-b40` | SnapKV fix | `TARGET_PPL = 11.0`, `SEARCH_BUDGET = 40` (run again because no try met ppl 11.0) |
+
+"SnapKV fix" is main after the merge of PR #93. Runs 1–3 ran before that fix. With the old SnapKV, short prompts
+kept only the most recent words, so an accuracy measured on a SnapKV model from those runs is not valid.
+
 ### On Google Colab
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hamuutpls/sensitivity-driven-framework/blob/main/notebooks/colab_run.ipynb)
