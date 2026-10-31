@@ -155,10 +155,11 @@ def weight_cost(profile: SensitivityProfile, group_size: int, s0, reference: lis
 def stage_reporter(ctx: RunContext, candidate: dict[str, Any], handle: _ModelHandle,
                    profile: SensitivityProfile, sections: tuple[str, ...], **kw: Any) -> StageReporter:
     """A StageReporter with the shared config record (candidate + the `sections` of the config), environment,
-    requirement (its latency limit checked on search.latency_metric, as in the search) and original model."""
+    requirement (its latency and perplexity limits checked on the search's metrics) and original model."""
     cfg = ctx.cfg
     return StageReporter(run_dir=ctx.run_dir, environment=environment_info(), requirement=cfg.requirement,
-                         latency_metric=cfg.search.latency_metric, config={"hyperparams": dict(candidate), **{s: asdict(getattr(cfg, s)) for s in sections}},
+                         latency_metric=cfg.search.latency_metric, ppl_metric=cfg.search.ppl_metric,
+                         config={"hyperparams": dict(candidate), **{s: asdict(getattr(cfg, s)) for s in sections}},
                          original_model=original_model_info(ctx, handle, profile), **kw)
 
 
