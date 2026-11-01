@@ -331,7 +331,8 @@ METHODS: dict[str, Method] = {m.name: m for m in [
            "recent and half heavy hitters; scores are averaged over the query heads sharing a key/value head. SnapKV "
            "and InfiniGen use the same cache size.", version=3),
     # keeps an observation window and the earlier words it attends to most; 3: H2O's fixed cache
-    Method("snapkv", 3, "SnapKV", ("kv",), _kv_method("rtn", "snapkv"), forgets=True, version=3,
+    # 4: the observation window takes at most half the cache (a small cache was a plain sliding window)
+    Method("snapkv", 3, "SnapKV", ("kv",), _kv_method("rtn", "snapkv"), forgets=True, version=4,
            library="in repo (attention function)", note=_KV_NOTE + " SnapKV: its paper keeps a fixed number of words; "
            "the standard row keeps H2O's 20% instead, in the same fixed cache as H2O (ceil(share x window) words, "
            "filled first), and the choice is redone at every word."),
