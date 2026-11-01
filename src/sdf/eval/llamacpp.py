@@ -27,6 +27,7 @@ from torch import nn
 
 from sdf.config import EvalConfig
 from sdf.reporting.metrics import METRICS, MetricSpec
+from sdf.eval.keep import keep
 from sdf.eval.worker import run_killing_group
 from sdf.stage0.planner import CompressionPlan
 from sdf.utils.logging import get_logger
@@ -160,5 +161,7 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
         for name, w in (("val", val), ("heldout", held)):
             out[f"llamacpp_ppl_{name}"] = _perplexity(cfg, gguf, tokenizer.decode(w.flatten()), len(w),
                                                       d / f"{name}.txt")
+        if plan is not None:
+            keep("llamacpp", gguf)
     log.info("llama.cpp: %s", ", ".join(f"{k}={v:.4g}" for k, v in out.items()))
     return out

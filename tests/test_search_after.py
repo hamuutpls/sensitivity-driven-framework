@@ -71,10 +71,13 @@ def test_the_lowest_perplexity_final_model_is_tested_for_accuracy_next_to_the_un
     assert acc["metrics"]["acc_arc_easy"] == 0.4 and acc["fp16"] == {"acc_arc_easy": 0.5, "downstream_acc_mean": 0.5}
     text = write_search_report(ctx, [worse, better], technique_space(c), accuracy=acc)["search_report"].read_text()
     assert "## Accuracy of the final model" in text and text.count("| 0.4 | 0.5 | -0.1 | -20 |") == 2  # + the mean
-    # a rerun in a new run folder finds the point cached, builds nothing, and still has the uncompressed accuracy
-    again = final_model(start_run(c.with_overrides({"run.run_id": "again"})), [better], ["arc_easy"],
-                           **_kw(tiny_llama, tokenizer))
-    assert len(calls) == 2 and again["fp16"] == acc["fp16"] and again["metrics"] == acc["metrics"]
+    # a rerun in a new run folder builds the final model again, so its backend files are kept (2026-11-01), and
+    # reads the uncompressed accuracy from the cache
+    actx = start_run(c.with_overrides({"run.run_id": "again"}))
+    again = final_model(actx, [better], ["arc_easy"], **_kw(tiny_llama, tokenizer))
+    assert len(calls) == 3 and again["fp16"] == acc["fp16"]
+    assert all(again["metrics"][k] == acc["metrics"][k] for k in ("ppl_val", "acc_arc_easy", "predicted_weight_memory_gb"))
+    assert json.loads((actx.run_dir / "search" / "final_model" / "point.json").read_text())["point"] == better["point"]
     assert json.dumps(acc, default=str)
 
 
@@ -147,3 +150,16 @@ def test_the_search_checks_its_after_steps_before_any_try(cfg, monkeypatch):  # 
     monkeypatch.setitem(sys.modules, "lm_eval", None)  # not installed
     with pytest.raises(ValueError, match="lm-eval"):
         search.run_search(start_run(cfg.with_overrides({"search.accuracy_tasks": ["arc_easy"]})))
+
+
+def test_the_final_model_keeps_its_backend_files_in_the_run_folder(cfg, monkeypatch):  # noqa: F811
+    # Mohammad, 2026-11-01: "i mean the model at the end of each run after stage 4"
+    from sdf.eval import keep
+
+    folders = []
+    monkeypatch.setattr(search, "evaluate", lambda ctx, point, **kw: folders.append(keep._FOLDER.get()) or
+                        {"metrics": {}, "dir": "d"})
+    c = cfg.with_overrides({"eval.vllm_python": "py"})
+    ctx = start_run(c)
+    final_model(ctx, [_trial(_point(c), 1, ppl_val=10.0)], [])
+    assert folders == [ctx.run_dir / "search" / "final_model"] and keep._FOLDER.get() is None  # the tries keep none

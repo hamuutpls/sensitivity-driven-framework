@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-01: The final model's backend files are kept
+
+- Each backend exported into a temporary folder that was deleted after measuring, so no run kept its final model.
+  Stage 4 of the search (`final_model`) now keeps the export of each backend it measures in
+  `<OUTPUT_ROOT>/<RUN_ID>/search/final_model/<backend>/`: `vllm/model/`, `llamacpp/<file>.gguf`, `trtllm/model/` and
+  `trtllm/engine/`. The uncompressed row and the search tries are not kept. New `sdf.eval.keep`.
+- The final model is now always built in Stage 4, even when the same point is in the cache (a relaunch, or a run
+  whose tries already measure the same backends without accuracy tasks), so its files exist; this costs one build.
+  The folder is emptied first and `point.json` names the chosen try. A failed move logs a warning and keeps the numbers.
+  No numbers or cache keys change.
+
 ## 2026-11-01: A model is built once per plan, not once per threshold
 
 - Two thresholds between the same two layer ranks give the same 8/4-bit plan, so the same model, but each was built

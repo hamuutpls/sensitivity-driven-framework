@@ -25,6 +25,7 @@ from torch import nn
 
 from sdf.config import EvalConfig
 from sdf.eval import gptq_export
+from sdf.eval.keep import keep
 from sdf.eval.worker import run_worker
 from sdf.reporting.metrics import METRICS, MetricSpec
 from sdf.stage0.planner import CompressionPlan
@@ -115,5 +116,7 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
                 "repeats": cfg.latency_repeats, "prompt_len": cfg.latency_prompt_len,
                 "decode_tokens": cfg.latency_decode_tokens}
         out = run_worker(cfg.trtllm_python, "trtllm_worker.py", args, d, TRTLLMError)
+        if plan is not None:  # the checkpoint and the engine built from it
+            keep("trtllm", d / "model", d / "engine")
     log.info("TensorRT-LLM: %s", ", ".join(f"{k}={v:.4g}" for k, v in out.items() if isinstance(v, float)))
     return out
