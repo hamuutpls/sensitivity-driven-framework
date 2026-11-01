@@ -182,8 +182,11 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
     # structonly #11, #14 and #17 were one model built three times): a model is built once per plan
     mkey = model_key(ctx, point, plan, plans)
     mpath, model = ctx.cache.path("search_model", mkey), config_hash(mkey, length=10)
-    if mpath.exists():
-        return {**json.loads(mpath.read_text(encoding="utf-8"))["value"], "model": model, "same_model": True}
+    try:  # an unreadable file (cut short) is built again
+        if mpath.exists():
+            return {**json.loads(mpath.read_text(encoding="utf-8"))["value"], "model": model, "same_model": True}
+    except (ValueError, KeyError, TypeError):
+        log.warning("search_model: rebuilding %s, its file is unreadable", mpath.name)
     try:  # from here a model is built, so a failure still used up a try ("attempted")
         out = run_stage(ctx, 3, [point["stage3_method"]], candidate, stage0_dir, only="framework", subdir="stage_3",
                         before={"framework": (replace(m, name=prune.name), plan)}, model_factory=model_factory, **kw)
@@ -212,7 +215,8 @@ def model_key(ctx: RunContext, point: dict[str, Any], plan: Any, plans: Any) -> 
 
     rest = {k: v for k, v in point.items() if k not in PLAN_SETTINGS}
     key = point_key(ctx, ctx.cfg, rest, [point["stage1_method"], point["stage2_method"], point["stage3_method"]])
-    key["stage0"].pop("low_threshold", None)  # evaluate() sets it from the point
+    key["stage0"].pop("low_threshold", None)  # evaluate() sets it from the point; point_key() drops low_bits
+    key["stage0"].pop("low_bits", None)  # with a 0 threshold only, and 3-bit layers show in the plan
     kv = plans.plans.get("kv")
     return {**key, "plan": _plan_key(plan), "kv_plan": kv.to_dict() if kv is not None else None}
 
@@ -397,7 +401,7 @@ class TriedLog:
     def add(self, ctx: RunContext, searcher: str, t: dict[str, Any], r: dict[str, Any]) -> None:
         if t["over_limit"]:
             return
-        keep = {"point": t["point"], **{k: r[k] for k in ("metrics", "error", "errors", "attempted", "dir") if k in r}}
+        keep = {"point": t["point"], **{k: r[k] for k in ("metrics", "error", "errors", "attempted", "dir", "model") if k in r}}
         row = {"combination": self.combination(ctx, t["point"], t["windows"]), "run_id": self.run_id,
                "searcher": searcher, "n": t["n"], "windows": t["windows"], **t["point"],
                "status": "ok" if t["ok"] else "failed", "met": t["met"],

@@ -399,7 +399,8 @@ def test_two_thresholds_that_give_the_same_plan_build_one_model(cfg, tiny_llama,
     builds = []
     real = runner.run_stage
     monkeypatch.setattr(runner, "run_stage", lambda *a, **k: builds.append(1) or real(*a, **k))
-    rec = Recorder(ctx, "mobo", c.eval.max_windows, **_kw(tiny_llama, tokenizer))
+    rec = Recorder(ctx, "mobo", c.eval.max_windows, tried=search.TriedLog(search.tried_path(ctx), ctx.run_id),
+                   **_kw(tiny_llama, tokenizer))
     first = rec(_point(c, sensitive_threshold=0.46))
     same = rec(_point(c, sensitive_threshold=0.47))  # 4 layers: ranks 0, 1/3, 2/3, 1, so no rank in between
     assert first["ok"] and same["ok"] and len(builds) == 1
@@ -411,10 +412,29 @@ def test_two_thresholds_that_give_the_same_plan_build_one_model(cfg, tiny_llama,
     assert len(builds) == 3 and pruned["cost"] == 1
     kv = rec(_point(c, sensitive_threshold=0.47, stage3_method="h2o"))  # another technique on the same plan
     assert len(builds) == 4 and kv["cost"] == 1
-    later = Recorder(start_run(c.with_overrides({"run.run_id": "later"})), "mobo", c.eval.max_windows,
+    lctx = start_run(c.with_overrides({"run.run_id": "later"}))  # a relaunch with more tries
+    later = Recorder(lctx, "mobo", c.eval.max_windows, tried=search.TriedLog(search.tried_path(lctx), "later"),
                      **_kw(tiny_llama, tokenizer))
-    again = later(_point(c, sensitive_threshold=0.465))  # a later run: the model is reused, not built
-    assert len(builds) == 4 and again["values"] == first["values"]
+    replay = later(_point(c, sensitive_threshold=0.46))  # replayed from search_tried.csv: a try, nothing built
+    again = later(_point(c, sensitive_threshold=0.465))  # a new threshold on the replayed try's plan
+    assert replay["earlier_run"] == ctx.run_id and replay["cost"] == 1
+    assert len(builds) == 4 and again["values"] == first["values"] and again["cost"] == 0
+
+
+def test_a_3_bit_threshold_below_every_layer_keys_the_same_model_as_none(cfg):
+    # point_key() drops low_bits with a 0 threshold only; the plan, the same in both, decides the model
+    on = start_run(cfg.with_overrides({"search.joint_plan": False, "search.low_threshold_max": 0.4}))
+    plans = type("P", (), {"plans": {}})()
+    from sdf.stage0.planner import CompressionPlan, LayerPlan
+
+    def plan(bits):
+        return CompressionPlan(tuple(LayerPlan(i, b, 0.0, b == 8, 0.5) for i, b in enumerate(bits)), "sensitivity",
+                               0.5, 0.0)
+
+    keys = [search.model_key(start_run(on.cfg.with_overrides({"stage0.low_threshold": t})),
+                             _point(on.cfg, low_threshold=t), plan([4, 8]), plans) for t in (0.0, 0.05)]
+    assert keys[0] == keys[1]
+    assert search.model_key(on, _point(on.cfg, low_threshold=0.05), plan([3, 8]), plans) != keys[0]
 
 
 def test_an_extra_stage1_try_can_be_the_final_model(cfg, monkeypatch):
