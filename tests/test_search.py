@@ -390,6 +390,33 @@ def test_a_setting_the_techniques_do_not_read_never_makes_a_new_model(cfg, monke
     assert again["earlier_run"] == "a" and again["cost"] == 0 and len(built) == 4
 
 
+def test_two_thresholds_that_give_the_same_plan_build_one_model(cfg, tiny_llama, tokenizer, monkeypatch):
+    # Colab, 2026-11-01, structonly run: #11, #14 and #17 (thresholds 0.8465 and 0.8418 between the same two layer
+    # ranks) gave the same 8/4-bit plan and the same numbers, yet each was built and used up a try; Mohammad: no
+    # repeated combinations
+    c = cfg.with_overrides({"search.joint_plan": False, "stage0.guard_top_k": 0})
+    ctx = start_run(c)
+    builds = []
+    real = runner.run_stage
+    monkeypatch.setattr(runner, "run_stage", lambda *a, **k: builds.append(1) or real(*a, **k))
+    rec = Recorder(ctx, "mobo", c.eval.max_windows, **_kw(tiny_llama, tokenizer))
+    first = rec(_point(c, sensitive_threshold=0.46))
+    same = rec(_point(c, sensitive_threshold=0.47))  # 4 layers: ranks 0, 1/3, 2/3, 1, so no rank in between
+    assert first["ok"] and same["ok"] and len(builds) == 1
+    assert same["values"] == first["values"] and same["plan_model"] == first["plan_model"]
+    assert first["cost"] == 1 and same["cost"] == 0  # nothing new: no budget used
+    other = rec(_point(c, sensitive_threshold=0.2))  # protects one more layer: another plan, another model
+    assert len(builds) == 2 and other["plan_model"] != first["plan_model"] and other["cost"] == 1
+    pruned = rec(_point(c, sensitive_threshold=0.46, prune_ratio_aggressive=0.2))  # another pruning share
+    assert len(builds) == 3 and pruned["cost"] == 1
+    kv = rec(_point(c, sensitive_threshold=0.47, stage3_method="h2o"))  # another technique on the same plan
+    assert len(builds) == 4 and kv["cost"] == 1
+    later = Recorder(start_run(c.with_overrides({"run.run_id": "later"})), "mobo", c.eval.max_windows,
+                     **_kw(tiny_llama, tokenizer))
+    again = later(_point(c, sensitive_threshold=0.465))  # a later run: the model is reused, not built
+    assert len(builds) == 4 and again["values"] == first["values"]
+
+
 def test_an_extra_stage1_try_can_be_the_final_model(cfg, monkeypatch):
     # the 11.5 run: the QuIP# extra try (0.88 GB at 11.02) was smaller and better than every searcher's try, and the
     # goal is the smallest model under the limit (Mohammad, 2026-10-26)
