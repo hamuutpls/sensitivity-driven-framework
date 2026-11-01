@@ -23,6 +23,7 @@ from torch import nn
 
 from sdf.config import EvalConfig
 from sdf.eval import ct_export, gptq_export
+from sdf.eval.keep import keep
 from sdf.eval.worker import run_worker
 from sdf.reporting.metrics import METRICS, MetricSpec
 from sdf.stage0.activation import ActivationPlan
@@ -103,5 +104,7 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
                 "act_layers": [] if acts is None else [lp.layer for lp, w in zip(acts.layers, plan.layers)
                                                        if lp.act_bits < baseline_bits and w.bit_width < baseline_bits]}
         out = {"vllm_size_gb": size, **run_worker(cfg.vllm_python, "vllm_worker.py", args, d, VLLMError)}
+        if plan is not None:  # the final model of a run (keep_models), not the uncompressed row
+            keep("vllm", d / "model")
     log.info("vLLM: %s", ", ".join(f"{k}={v:.4g}" for k, v in out.items() if isinstance(v, float)))
     return out

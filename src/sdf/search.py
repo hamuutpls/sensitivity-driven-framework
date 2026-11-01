@@ -21,12 +21,14 @@ import json
 import math
 import os
 import random
+import shutil
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Callable
 
 from sdf.config import FrameworkConfig, config_hash
+from sdf.eval.keep import keep_models, keeping
 from sdf.requirements import RequirementCheck, with_limit_metrics
 from sdf.run import RunContext
 from sdf.search_space import SEARCH_SPACE, Param, SearchSpace
@@ -109,7 +111,7 @@ def cached_point(ctx: RunContext, kind: str, key: dict[str, Any], tdir: Path, bu
             return {"error": f"{type(e).__name__}: {e}"}
 
     path = ctx.cache.path(kind, key)
-    cached = path.exists()
+    cached = path.exists() and not keeping()  # the final model is built, so its backend files can be kept
     if cached:
         result = json.loads(path.read_text(encoding="utf-8"))["value"]
     else:
@@ -183,7 +185,7 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
     mkey = model_key(ctx, point, plan, plans)
     mpath, model = ctx.cache.path("search_model", mkey), config_hash(mkey, length=10)
     try:  # an unreadable file (cut short) is built again
-        if mpath.exists():
+        if mpath.exists() and not keeping():
             return {**json.loads(mpath.read_text(encoding="utf-8"))["value"], "model": model, "same_model": True}
     except (ValueError, KeyError, TypeError):
         log.warning("search_model: rebuilding %s, its file is unreadable", mpath.name)
@@ -669,7 +671,13 @@ def final_model(ctx: RunContext, trials: list[dict[str, Any]], tasks: list[str],
 
     cfg = ctx.cfg.with_overrides({"eval.downstream_tasks": list(tasks)})
     actx = RunContext(cfg, ctx.run_id, ctx.run_dir, ctx.cache)
-    r = evaluate(actx, best["point"], **kw)
+    folder = ctx.run_dir / "search" / "final_model"  # each backend's files of the final model, built (not cached)
+    shutil.rmtree(folder, ignore_errors=True)  # never an older final model's files next to this one's
+    folder.mkdir(parents=True)
+    atomic_write_text(folder / "point.json", json.dumps({"searcher": best["searcher"], "n": best["n"],
+                                                         "point": best["point"]}, indent=1, default=str))
+    with keep_models(folder):
+        r = evaluate(actx, best["point"], **kw)
     # the uncompressed model's accuracy, as the run_stage call measured and cached it (a cached point builds nothing)
     entry = ctx.cache.path("fp16_downstream", {**fp16_key(actx, setup(actx)[0]), "tasks": list(tasks),
                                                "limit": cfg.eval.downstream_limit})

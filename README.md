@@ -186,7 +186,13 @@ session copies the archive to `D:\Thesis`, and on a local runtime on the PC the 
 `D:\Thesis\thesis_compression\` directly. Outputs of the search are in `<OUTPUT_ROOT>/<RUN_ID>/search/`:
 `points/<hash>/` (each try's Stage 0 and Stage 3 reports), `trials.json`, `search_report.md`, `search_results.xlsx`
 (Trials, Pareto, Searcher comparison, Best configs) and the plots; every try is also logged in
-`<CACHE_DIR>/search_tried.csv`. A model is built once per plan: two tries whose threshold, 3-bit threshold or pruning
+`<CACHE_DIR>/search_tried.csv`. The final model's Stage 4 files are kept in `search/final_model/<backend>/`: the
+vLLM checkpoint (`vllm/model/`), the llama.cpp GGUF and the TensorRT-LLM checkpoint and engine, for each backend the
+run measures, with the chosen try in `point.json`; the search tries' exports are still deleted after measuring. The
+final model is always built again in Stage 4 (never read from the cache), so a relaunch keeps it too. A weight-only
+checkpoint loads with `vllm.LLM(model=...)`; a WxAy one (compressed-tensors) was measured with
+`linear_backend="humming"` and `enforce_eager=True` (see `src/sdf/eval/vllm_worker.py`), since vLLM's default kernels
+skip the activation rounding. A model is built once per plan: two tries whose threshold, 3-bit threshold or pruning
 share give the same per-layer plan (with the same techniques and other settings) share one model, kept in
 `<CACHE_DIR>/search_model/`. The second is not built, so its `points/<hash>/` folder has Stage 0 only (the cache
 file's `built_in` names the run that built it); within one searcher it uses up no try, while in another searcher

@@ -104,3 +104,53 @@ def test_backend_hands_the_memory_share_setting_to_the_worker(monkeypatch, tmp_p
             vllm_backend.measure(Model(), Tok(), None, w, w,
                                  EvalConfig(vllm_python="py", vllm_gpu_memory_utilization=share), 16, 128)
     assert seen == [None, 0.6]
+
+
+def test_the_final_model_is_kept_and_other_exports_are_deleted(monkeypatch, tmp_path):
+    # Mohammad, 2026-11-01: "save every model produced by each test", "i mean the model at the end of each run
+    # after stage 4"
+    from sdf.eval.keep import keep_models
+    from sdf.stage0.planner import CompressionPlan, LayerPlan
+
+    import tempfile
+
+    monkeypatch.setattr(vllm_backend, "run_worker", lambda *a: {"vllm_decode_ms_per_token": 2.0})
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))  # where the exports go before they are kept
+
+    class Model:
+        def save_pretrained(self, d, safe_serialization=True):
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "model.safetensors").write_bytes(b"w")
+
+    class Tok:
+        def save_pretrained(self, d):
+            (d / "tokenizer.json").write_text("{}")
+
+    w = torch.zeros(2, 4, dtype=torch.long)
+    plan = CompressionPlan((LayerPlan(0, 16, 0.0, True, 1.0),), "sensitivity", 0.5, 0.0)
+    cfg = EvalConfig(vllm_python="py")
+    vllm_backend.measure(Model(), Tok(), plan, w, w, cfg, 16, 128)  # a search try: nothing kept
+    with keep_models(tmp_path / "final") as folder:
+        vllm_backend.measure(Model(), Tok(), None, w, w, cfg, 16, 128)  # the uncompressed row: not kept
+        assert not (folder / "vllm").exists()
+        vllm_backend.measure(Model(), Tok(), plan, w, w, cfg, 16, 128)
+    kept = tmp_path / "final" / "vllm" / "model"
+    assert (kept / "model.safetensors").exists() and (kept / "tokenizer.json").exists()
+    assert not any((tmp_path / "tmp").iterdir())  # every other export deleted
+
+
+def test_keep_moves_every_export_and_replaces_an_older_copy(tmp_path):
+    from sdf.eval.keep import keep, keep_models
+
+    src = tmp_path / "tmp"
+    (src / "model").mkdir(parents=True)
+    (src / "engine").mkdir()
+    (src / "q.gguf").write_bytes(b"g")
+    assert keep("llamacpp", src / "q.gguf") is None and (src / "q.gguf").exists()  # outside keep_models
+    with keep_models(tmp_path / "final"):
+        (tmp_path / "final" / "trtllm" / "old").mkdir(parents=True)
+        dest = keep("trtllm", src / "model", src / "engine")
+        keep("llamacpp", src / "q.gguf")
+    assert sorted(p.name for p in dest.iterdir()) == ["engine", "model"]  # the older copy replaced
+    assert (tmp_path / "final" / "llamacpp" / "q.gguf").exists() and not any(src.iterdir())
