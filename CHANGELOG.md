@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-01: A model is built once per plan, not once per threshold
+
+- Two thresholds between the same two layer ranks give the same 8/4-bit plan, so the same model, but each was built
+  and used up a try (structonly run on af9dde7: #11, #14 and #17 at ppl 12.164, 0.836 GB; #15 and #16 at 12.188).
+- The search now keys each built model on its plan (each layer's bits, activation bits and pruning share, and the KV
+  plan) with the other settings, techniques and versions, in `<CACHE_DIR>/search_model/`. A try whose plan was already
+  built reuses that model's numbers; within a searcher it uses up no try, as a setting no technique reads already did.
+- Cached tries and `search_tried.csv` rows are kept: their keys do not change.
+
 ## 2026-10-31: SnapKV's observation window takes at most half the cache
 
 - `snapkv_keep` used the whole cache as its observation window when the cache was 32 words or fewer (short lm-eval items

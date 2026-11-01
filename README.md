@@ -186,7 +186,11 @@ session copies the archive to `D:\Thesis`, and on a local runtime on the PC the 
 `D:\Thesis\thesis_compression\` directly. Outputs of the search are in `<OUTPUT_ROOT>/<RUN_ID>/search/`:
 `points/<hash>/` (each try's Stage 0 and Stage 3 reports), `trials.json`, `search_report.md`, `search_results.xlsx`
 (Trials, Pareto, Searcher comparison, Best configs) and the plots; every try is also logged in
-`<CACHE_DIR>/search_tried.csv`.
+`<CACHE_DIR>/search_tried.csv`. A model is built once per plan: two tries whose threshold, 3-bit threshold or pruning
+share give the same per-layer plan (with the same techniques and other settings) share one model, kept in
+`<CACHE_DIR>/search_model/`. The second is not built, so its `points/<hash>/` folder has Stage 0 only (the cache
+file's `built_in` names the run that built it); within one searcher it uses up no try, while in another searcher
+or a later run it counts as a try, like a replayed earlier try.
 
 ## Reproduce the 2026-10-31 run queue
 

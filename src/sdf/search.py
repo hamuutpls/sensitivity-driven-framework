@@ -178,6 +178,15 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
     size = plan_metrics(plan, plans, cfg, candidate, m.storage, m.overhead)
     if check_requirement(cfg, size).met is False:  # the size follows from the plan: not worth building
         return {"metrics": size, "errors": {}, "not_built": "over the limit, so not built"}
+    # Two thresholds between the same two layer ranks give the same plan, so the same model (Colab, 2026-11-01:
+    # structonly #11, #14 and #17 were one model built three times): a model is built once per plan
+    mkey = model_key(ctx, point, plan, plans)
+    mpath, model = ctx.cache.path("search_model", mkey), config_hash(mkey, length=10)
+    try:  # an unreadable file (cut short) is built again
+        if mpath.exists():
+            return {**json.loads(mpath.read_text(encoding="utf-8"))["value"], "model": model, "same_model": True}
+    except (ValueError, KeyError, TypeError):
+        log.warning("search_model: rebuilding %s, its file is unreadable", mpath.name)
     try:  # from here a model is built, so a failure still used up a try ("attempted")
         out = run_stage(ctx, 3, [point["stage3_method"]], candidate, stage0_dir, only="framework", subdir="stage_3",
                         before={"framework": (replace(m, name=prune.name), plan)}, model_factory=model_factory, **kw)
@@ -189,7 +198,27 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
         return {"error": row.get("error") or "the row failed", "attempted": True}
     metrics = {k: v for k, v in row["metrics"].items() if isinstance(v, (int, float))}
     errors = {k: v for k, v in row["info"].items() if k.endswith("_error")}  # e.g. a plan vLLM cannot load
-    return {"metrics": metrics, "errors": errors}
+    if not errors:  # as in cached_point: a backend failure may pass, so it is built again
+        atomic_write_text(mpath, json.dumps({"key": mkey, "value": {"metrics": metrics, "errors": errors,
+                                                                    "built_in": str(ctx.run_dir)}}, default=str))
+    return {"metrics": metrics, "errors": errors, "model": model}
+
+
+# settings Stage 0 turns into the plan; the plan itself stands for them in model_key()
+PLAN_SETTINGS = ("sensitive_threshold", "low_threshold", "prune_ratio_aggressive")
+
+
+def model_key(ctx: RunContext, point: dict[str, Any], plan: Any, plans: Any) -> dict[str, Any]:
+    """What decides a built model: point_key() with the settings Stage 0 turns into the plan replaced by the plan
+    the model is built from (each layer's bits, activation bits and pruning share) and the KV plan."""
+    from sdf.stages.runner import _plan_key
+
+    rest = {k: v for k, v in point.items() if k not in PLAN_SETTINGS}
+    key = point_key(ctx, ctx.cfg, rest, [point["stage1_method"], point["stage2_method"], point["stage3_method"]])
+    key["stage0"].pop("low_threshold", None)  # evaluate() sets it from the point; point_key() drops low_bits
+    key["stage0"].pop("low_bits", None)  # with a 0 threshold only, and 3-bit layers show in the plan
+    kv = plans.plans.get("kv")
+    return {**key, "plan": _plan_key(plan), "kv_plan": kv.to_dict() if kv is not None else None}
 
 
 # ----------------------------------------------------------------------------------------------------- searchers
@@ -239,9 +268,13 @@ class Recorder:
         # uses up no budget (Colab, 2026-10-27: MOBO #16 was #14's model; Mohammad: no repeated combinations)
         model = self.tried.same_model(self.tried.combination(self.ctx, point, windows)) if self.tried else None
         repeat = repeat or bool(earlier and any(t.get("model") == model and t["built"] for t in self.trials))
+        # the same plan as a model this searcher built (another threshold between the same two layer ranks)
+        repeat = repeat or bool(r.get("same_model") and any(t.get("plan_model") == r.get("model") and t["built"]
+                                                             for t in self.trials))
         ok = "error" not in r and all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
         t = {"searcher": self.searcher, "n": len(self.trials) + 1, "point": point, "windows": windows,
              "cost": windows / self.full if built and not repeat else 0.0, "built": built, "model": model,
+             "plan_model": r.get("model"),
              "over_limit": "not_built" in r,
              "full": windows == self.full, "ok": ok, "met": ok and r.get("met", False),
              "values": values if ok else [FAILED] * len(values),
@@ -368,7 +401,7 @@ class TriedLog:
     def add(self, ctx: RunContext, searcher: str, t: dict[str, Any], r: dict[str, Any]) -> None:
         if t["over_limit"]:
             return
-        keep = {"point": t["point"], **{k: r[k] for k in ("metrics", "error", "errors", "attempted", "dir") if k in r}}
+        keep = {"point": t["point"], **{k: r[k] for k in ("metrics", "error", "errors", "attempted", "dir", "model") if k in r}}
         row = {"combination": self.combination(ctx, t["point"], t["windows"]), "run_id": self.run_id,
                "searcher": searcher, "n": t["n"], "windows": t["windows"], **t["point"],
                "status": "ok" if t["ok"] else "failed", "met": t["met"],
