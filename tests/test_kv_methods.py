@@ -164,7 +164,14 @@ def test_snapkv_window_leaves_room_for_a_picked_word(size):
     n = size * 2 + 2
     keep = snapkv_keep(_sink_scores(n), groups=2, keep_ratio=size / n)
     _check_budgets(keep, size / n)
-    assert keep[..., n - 1, 0].all()
+    size = int(cache_budgets(size / n, n)[-1])  # the cache row n - 1 really has
+    w = min(max(size // 2, 1), 32)
+    picked = keep[..., n - 1, :n - w]
+    # the rest of the cache is picked by vote (before the fix: nothing outside the window)
+    assert picked.sum(-1).eq(size - w).all()
+    # from the words the sink's vote reaches after max-pooling (word 0 and its 3 neighbours tie, so which of them is
+    # picked when only one fits depends on topk's tie-breaking, which differs by platform: 2026-11-01 A100 vs PC)
+    assert not picked[..., 4:].any() or size - w > 4
 
 
 def test_snapkv_on_a_cache_of_64_words_or_more_keeps_the_full_window():
