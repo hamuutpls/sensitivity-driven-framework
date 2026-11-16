@@ -36,8 +36,8 @@ def arrow(ax, a, b, text=None, rad=0.0, off=(0, 0.08), style="-|>", ls="-"):
 
 
 def overview():
-    fig, ax = plt.subplots(figsize=(8.0, 4.9))
-    ax.set_xlim(0, 12.8), ax.set_ylim(0, 7.8), ax.axis("off")
+    fig, ax = plt.subplots(figsize=(8.0, 5.15))
+    ax.set_xlim(0, 12.8), ax.set_ylim(0, 8.2), ax.axis("off")
     w, h, y = 2.36, 2.3, 2.6
     xs = [0.1 + i * 2.56 for i in range(5)]
     stages = [
@@ -52,7 +52,7 @@ def overview():
     for a, b in zip(xs, xs[1:]):
         arrow(ax, (a + w, y + h / 2), (b, y + h / 2))
     # inputs
-    box(ax, xs[0], 0.35, w, 1.3, "FP16 model\ncalibration text", GREY)
+    box(ax, xs[0], 0.35, w, 1.3, "TinyLlama", GREY)
     arrow(ax, (xs[0] + w / 2, 1.65), (xs[0] + w / 2, y))
     # plans handed down
     ax.plot([xs[0] + w / 2 + 0.6, xs[0] + w / 2 + 0.6], [y, 2.05], color=EDGE, lw=1.0, ls="--")
@@ -61,13 +61,19 @@ def overview():
         arrow(ax, (x + w / 2, 2.05), (x + w / 2, y), ls="--")
     ax.text((xs[1] + xs[3] + w) / 2, 1.95, "per-layer plans and predicted memory", ha="center", va="top", size=8.5)
     # search on top
-    box(ax, xs[0], 5.9, xs[4] + w - xs[0], 1.5,
+    box(ax, xs[0], 6.3, xs[4] + w - xs[0], 1.5,
         "proposes the technique for Stages 1, 2 and 3 and the plan settings for the next try;\n"
         "limits on perplexity and decode latency; minimises perplexity, latency and size", YELLOW,
         bold="Search (Gaussian-process Bayesian optimisation) under the deployment requirement", size=9)
-    arrow(ax, (xs[0] + w / 2, 5.9), (xs[0] + w / 2, y + h), "settings", off=(0.62, -0.1))
-    arrow(ax, (xs[2] + w / 2, 5.9), (xs[2] + w / 2, y + h), "techniques", off=(0.75, -0.1))
-    arrow(ax, (xs[4] + w / 2, y + h), (xs[4] + w / 2, 5.9), "measurements", off=(-1.1, -0.1))
+    arrow(ax, (xs[0] + w / 2, 6.3), (xs[0] + w / 2, y + h), "settings", off=(0.62, -0.1))
+    # one technique for each of Stages 1, 2 and 3: a line down from the search that branches to the three stages
+    ty = 5.5
+    ax.plot([xs[2] + w / 2, xs[2] + w / 2], [6.3, ty], color=EDGE, lw=1.0)
+    ax.plot([xs[1] + w / 2, xs[3] + w / 2], [ty, ty], color=EDGE, lw=1.0)
+    for x in xs[1:4]:
+        arrow(ax, (x + w / 2, ty), (x + w / 2, y + h))
+    ax.text(xs[2] + w / 2 - 0.12, ty + 0.07, "one technique for each stage", ha="right", va="bottom", size=8.5)
+    arrow(ax, (xs[4] + w / 2, y + h), (xs[4] + w / 2, 6.3), "measurements", off=(-1.1, -0.1))
     fig.savefig(HERE / "ch4-framework-overview.pdf", bbox_inches="tight", pad_inches=0.02)
     plt.close(fig)
 
