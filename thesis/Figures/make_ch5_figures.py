@@ -12,6 +12,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.ticker
 
 HERE = Path(__file__).parent
 DATA = HERE.parent / "data"
@@ -99,7 +100,51 @@ def kv():
     save(fig, "ch5-kv.pdf")
 
 
+def sensitivity():
+    r = rows("stage0-per-layer.csv")
+    fig, ax = plt.subplots(figsize=(7.2, 3.0))
+    for x in r:
+        guarded, prot = x["guarded"] == "True", x["protected"] == "True"
+        c = "#D55E00" if guarded else OURS if prot else "#999999"
+        h = "xx" if guarded else "//" if prot else ""
+        ax.bar(int(x["layer"]), float(x["raw_score"]), 0.75, color=c, hatch=h, edgecolor="white")
+    from matplotlib.patches import Patch
+    ax.legend(handles=[Patch(fc="#D55E00", hatch="xx", ec="white", label="protected (8 bits) and never pruned"),
+                       Patch(fc=OURS, hatch="//", ec="white", label="protected (8 bits)"),
+                       Patch(fc="#999999", label="compressed (4 bits, pruned)")], frameon=False, fontsize=8)
+    ax.set_yscale("log"), ax.set_xticks(range(22)), ax.set_xlabel("Decoder layer")
+    ax.set_ylabel("Rise in calibration perplexity\nwhen the layer is bypassed (log scale)")
+    save(fig, "ch5-sensitivity.pdf")
+
+
+def tries():
+    fig, axes = plt.subplots(1, 2, figsize=(7.3, 3.0), sharey=True)
+    for ax, (name, title) in zip(axes, (("search-lowest-perplexity-smallest-size-40tries.csv",
+                                         "Lowest-perplexity and smallest-size search"),
+                                        ("search-fastest-smallest-size-40tries.csv",
+                                         "Fastest and smallest-size search"))):
+        r = rows(name)
+        wo = [x for x in r if "_with_" not in x["stage1"]]
+        wa = [x for x in r if "_with_" in x["stage1"]]
+        ax.scatter([float(x["vllm_decode_ms_per_token"]) for x in wo], [float(x["vllm_ppl_val"]) for x in wo],
+                   color=OURS, marker="o", s=22, label="weights only (%d tries)" % len(wo))
+        ax.scatter([float(x["vllm_decode_ms_per_token"]) for x in wa], [float(x["vllm_ppl_val"]) for x in wa],
+                   color=STD, marker="^", s=26, label="weights and activations (%d tries)" % len(wa))
+        ax.axvline(2.5, color=FP, ls="--", lw=1), ax.axhline(11.5, color=FP, ls="--", lw=1)
+        ax.scatter([2.54], [10.18], color="black", marker="*", s=70, label="FP16")
+        ax.set_xscale("log"), ax.set_xticks([2, 2.5, 5, 10, 20, 40]), ax.set_xticklabels(["2", "2.5", "5", "10", "20", "40"])
+        ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        ax.set_xlabel("vLLM decode latency (ms per token)"), ax.set_title(title, size=9)
+        ax.set_ylim(9.5, 26.5)
+    axes[0].set_ylabel("vLLM validation perplexity\n(lower is better)")
+    axes[0].text(5, 11.7, "limits: 11.5 and 2.5 ms", color=FP, size=8, va="bottom")
+    axes[1].legend(frameon=False, fontsize=7.5, loc="upper center")
+    save(fig, "ch5-search-tries.pdf")
+
+
 if __name__ == "__main__":
     quantization()
     pruning()
     kv()
+    sensitivity()
+    tries()

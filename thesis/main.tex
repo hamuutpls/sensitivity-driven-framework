@@ -168,8 +168,12 @@ headsepline, % Uncomment to get a line under the header
 
 \begin{abstract}
 \addchaptertocentry{\abstractname} % Add the abstract to the table of contents
-Add Abstract here
+\input{FrontMatter/abstract}
 \end{abstract}
+
+\cleardoublepage
+
+\input{FrontMatter/executive-summary}
 
 \cleardoublepage
 
@@ -203,8 +207,8 @@ Add Abstract here
 \include{Chapters/Chapter2v2}
 \include{Chapters/Chapter3v2}
 \include{Chapters/Chapter4v2}
-%\include{Chapters/Chapter5v2}
-%\include{Chapters/Chapter6v2}
+\include{Chapters/Chapter5v2}
+\include{Chapters/Chapter6v2}
 
 
 %----------------------------------------------------------------------------------------
