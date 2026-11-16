@@ -59,21 +59,21 @@ def overview():
     ax.plot([xs[0] + w / 2 + 0.6, xs[3] + w / 2], [2.05, 2.05], color=EDGE, lw=1.0, ls="--")
     for x in xs[1:4]:
         arrow(ax, (x + w / 2, 2.05), (x + w / 2, y), ls="--")
-    ax.text((xs[1] + xs[3] + w) / 2, 1.95, "per-layer plans and predicted memory", ha="center", va="top", size=8.5)
+    ax.text((xs[1] + xs[3] + w) / 2, 1.95, "per-layer plans", ha="center", va="top", size=8.5)
     # search on top
     box(ax, xs[0], 6.3, xs[4] + w - xs[0], 1.5,
         "proposes the technique for Stages 1, 2 and 3 and the plan settings for the next try;\n"
         "limits on perplexity and decode latency; minimises perplexity, latency and size", YELLOW,
         bold="Search (Gaussian-process Bayesian optimisation) under the deployment requirement", size=9)
-    arrow(ax, (xs[0] + w / 2, 6.3), (xs[0] + w / 2, y + h), "settings", off=(0.62, -0.1))
+    arrow(ax, (xs[0] + w / 2, 6.3), (xs[0] + w / 2, y + h), "settings", off=(0.62, -0.55))
     # one technique for each of Stages 1, 2 and 3: a line down from the search that branches to the three stages
     ty = 5.5
     ax.plot([xs[2] + w / 2, xs[2] + w / 2], [6.3, ty], color=EDGE, lw=1.0)
     ax.plot([xs[1] + w / 2, xs[3] + w / 2], [ty, ty], color=EDGE, lw=1.0)
     for x in xs[1:4]:
         arrow(ax, (x + w / 2, ty), (x + w / 2, y + h))
-    ax.text(xs[2] + w / 2 - 0.12, ty + 0.07, "one technique for each stage", ha="right", va="bottom", size=8.5)
-    arrow(ax, (xs[4] + w / 2, y + h), (xs[4] + w / 2, 6.3), "measurements", off=(-1.1, -0.1))
+    ax.text(xs[2] + w / 2 - 0.12, ty + 0.07, "one technique and settings for each stage", ha="right", va="bottom", size=8.5)
+    arrow(ax, (xs[4] + w / 2, y + h), (xs[4] + w / 2, 6.3), "measurements", off=(-1.1, -0.55))
     fig.savefig(HERE / "ch4-framework-overview.pdf", bbox_inches="tight", pad_inches=0.02)
     plt.close(fig)
 
