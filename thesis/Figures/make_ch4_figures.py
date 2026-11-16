@@ -45,7 +45,7 @@ def overview():
         ("Stage 1", "Quantization\n\nweights and\nactivations at\nthe planned bits", GREEN),
         ("Stage 2", "Pruning\n\nweights removed\nat the planned\nshare per layer", GREEN),
         ("Stage 3", "KV cache\n\nkeys and values\nrounded, tokens\ndropped per layer", GREEN),
-        ("Stage 4", "Evaluation\n\nquality, size,\nmemory, latency\nin four engines", ORANGE),
+        ("Stage 4", "Evaluation\n\nquality, size,\nmemory, latency\nin the engines", ORANGE),
     ]
     for x, (name, text, color) in zip(xs, stages):
         box(ax, x, y, w, h, text, color, bold=name)
@@ -111,7 +111,7 @@ def search_loop():
     fy = 0.25
     box(ax, 0.3, fy, 12.3, 1.45,
         "the try that meets every limit and is best on the first objective (ties: the next objective) is built again,\n"
-        "its files are kept, and it is measured in Hugging Face, llama.cpp, vLLM and TensorRT-LLM\n"
+        "its files are kept, and it is measured in the inference engines\n"
         "and on the four accuracy tasks, next to the FP16 model", ORANGE, bold="After the last try: final model (Stage 4)",
         size=8.6)
     arrow(ax, (x + w / 2, ys[5]), (x + w / 2, fy + 1.45))

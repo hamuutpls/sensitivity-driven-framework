@@ -6,7 +6,7 @@ This chapter describes the framework that was built for this thesis and the meth
 \section{Overview of the Framework}
 \label{sec:ch4-overview}
 
-The framework is organised as five stages, shown in Figure~\ref{fig:ch4-overview}. Stage~0 measures how sensitive each decoder layer of the model is and turns the measurements into per-layer plans. Stages~1, 2 and 3 compress the model by following those plans: Stage~1 quantizes the weights and the activations, Stage~2 prunes weights, and Stage~3 compresses the KV cache. Stage~4 evaluates the resulting model in four inference engines. A search sits on top of the stages: it proposes which technique each stage should use and which settings Stage~0 should plan with, receives the Stage~4 measurements, and proposes the next configuration.
+The framework is organised as five stages, shown in Figure~\ref{fig:ch4-overview}. Stage~0 measures how sensitive each decoder layer of the model is and turns the measurements into per-layer plans. Stages~1, 2 and 3 compress the model by following those plans: Stage~1 quantizes the weights and the activations, Stage~2 prunes weights, and Stage~3 compresses the KV cache. Stage~4 evaluates the resulting model in the inference engines. A search sits on top of the stages: it proposes which technique each stage should use and which settings Stage~0 should plan with, receives the Stage~4 measurements, and proposes the next configuration.
 
 \begin{figure}[htbp]
 \centering
@@ -197,7 +197,7 @@ In the Standard run a rounding technique stores every key and value at 4 bits an
 \section{Stage 4: Evaluation}
 \label{sec:ch4-stage4}
 
-Stage~4 measures a model. It always measures the simulated model in Hugging Face Transformers \cite{wolf2020transformers}, and it exports the model to llama.cpp \cite{ggml2025llamacpp}, vLLM \cite{kwon2023vllm} and TensorRT-LLM \cite{nvidia2025tensorrtllm} to measure real file size, memory and speed.
+Stage~4 measures a model. It always measures the simulated model in Hugging Face Transformers \cite{wolf2020transformers}, and it exports the model to llama.cpp \cite{ggml2025llamacpp} and vLLM \cite{kwon2023vllm} to measure real file size, memory and speed. An export to TensorRT-LLM \cite{nvidia2025tensorrtllm} is also implemented, but no TensorRT-LLM measurement is reported in this thesis.
 
 \subsection{Measurements in Hugging Face Transformers}
 \label{sec:ch4-hf}
@@ -222,7 +222,7 @@ Table~\ref{tab:ch4-engines} summarises how a model reaches each engine. In every
 llama.cpp & The model is converted to GGUF \cite{ggml2025gguf} and quantized with llama.cpp's own quantization types, each decoder layer at its planned bit width. Speed is measured with the llama-bench program and perplexity with the llama-perplexity program, which scores the second half of each window. \\
 vLLM, weights only & The model is saved as a GPTQ-format checkpoint with per-layer bit widths of 2, 3, 4 or 8 bits. The weights are re-rounded onto symmetric per-group grids, because vLLM loads only symmetric grids in this format. \\
 vLLM, weights and activations & The model is saved as a compressed-tensors checkpoint in which each decoder layer has its own weight bits and activation bits; vLLM rounds the activations while the model runs. \\
-TensorRT-LLM & The same GPTQ-format checkpoint is built into a TensorRT engine, with one bit width or with a per-layer mixed-precision configuration. \\
+TensorRT-LLM (implemented, not measured in this thesis) & The same GPTQ-format checkpoint is built into a TensorRT engine, with one bit width or with a per-layer mixed-precision configuration. \\
 \hline
 \end{tabularx}
 \end{table}
@@ -252,7 +252,7 @@ The search answers the question of which combination of techniques and settings 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.95\textwidth]{Figures/ch4-search-loop.pdf}
-\caption{One run of the search. Each try builds one model through Stages~1, 2 and 3 in sequence and measures it. After the last try the final model is evaluated in all four engines and on the accuracy tasks.}
+\caption{One run of the search. Each try builds one model through Stages~1, 2 and 3 in sequence and measures it. After the last try the final model is evaluated in the engines and on the accuracy tasks.}
 \label{fig:ch4-search}
 \end{figure}
 
@@ -305,7 +305,7 @@ Two other optimisers are implemented in the framework: successive halving \cite{
 \subsection{Final Model}
 \label{sec:ch4-final}
 
-After the last try, the final model is selected among all tries, of this run and of earlier runs in the log, that were measured on the full validation set and meet every limit. The selected try is the one with the lowest value of the first objective; ties are broken by the second objective and then by the third. This model is built again and its exported files are kept. It is then evaluated in all four engines and on the four accuracy tasks. The FP16 model is evaluated on the same tasks in the same run, so that the two accuracies are measured under the same conditions. When no try meets every limit, no final model is selected, and the report lists the tries with their shortfalls.
+After the last try, the final model is selected among all tries, of this run and of earlier runs in the log, that were measured on the full validation set and meet every limit. The selected try is the one with the lowest value of the first objective; ties are broken by the second objective and then by the third. This model is built again and its exported files are kept. It is then evaluated in the engines that are installed on the machine of the run (Hugging Face and vLLM for the searches of Chapter~5) and on the four accuracy tasks. The FP16 model is evaluated on the same tasks in the same run, so that the two accuracies are measured under the same conditions. When no try meets every limit, no final model is selected, and the report lists the tries with their shortfalls.
 
 \section{Experimental Setup}
 \label{sec:ch4-setup}
@@ -327,15 +327,15 @@ Framework & Python 3.10 or later, PyTorch 2.1 or later, Transformers 4.56 or lat
 Search & Optuna 5 or later (Gaussian-process sampler); pymoo 0.6 or later (NSGA-III option) \\
 Accuracy tasks & lm-evaluation-harness 0.4 or later \\
 vLLM & version 0.31.0, in its own Python environment (Linux only) \\
-TensorRT-LLM & version 1.2, in its own Python environment (Linux only) \\
+TensorRT-LLM & version 1.2, in its own Python environment (Linux only); not measured in this thesis \\
 llama.cpp & release programs with CUDA support \\
 \hline
 \end{tabularx}
 \end{table}
 
-Because vLLM and TensorRT-LLM run on Linux only, every measurement that involves them, including all search runs, was made on the A100. Every run writes its configuration, a log, a table of all rows and a report to its own folder, and the tables and figures of Chapter~5 are taken from these files.
+Because vLLM runs on Linux only, every measurement that involves it, including all search runs, was made on the A100. Every run writes its configuration, a log, a table of all rows and a report to its own folder, and the tables and figures of Chapter~5 are taken from these files.
 
 \section{Summary}
 \label{sec:ch4-summary}
 
-The framework separates where to compress from how to compress. Stage~0 measures each decoder layer directly, by the rise in calibration perplexity, and writes per-layer plans for the weights, the activations, pruning and the KV cache together with a prediction of their memory. Stages~1 to 3 apply published techniques that follow those plans, and each technique is also run on a uniform plan so that Standard and Our method differ only in the plan. Stage~4 measures every model in Hugging Face Transformers and, after export, in llama.cpp, vLLM and TensorRT-LLM. A constrained Bayesian search chooses one technique per stage and the plan settings under limits on perplexity and decode latency, builds each candidate as one model through Stages~1 to 3 in sequence, never builds the same combination twice, and selects a final model for full evaluation. Chapter~5 reports the results obtained with this method.
+The framework separates where to compress from how to compress. Stage~0 measures each decoder layer directly, by the rise in calibration perplexity, and writes per-layer plans for the weights, the activations, pruning and the KV cache together with a prediction of their memory. Stages~1 to 3 apply published techniques that follow those plans, and each technique is also run on a uniform plan so that Standard and Our method differ only in the plan. Stage~4 measures the models in Hugging Face Transformers and, after export, in llama.cpp and vLLM. A constrained Bayesian search chooses one technique per stage and the plan settings under limits on perplexity and decode latency, builds each candidate as one model through Stages~1 to 3 in sequence, never builds the same combination twice, and selects a final model for full evaluation. Chapter~5 reports the results obtained with this method.
