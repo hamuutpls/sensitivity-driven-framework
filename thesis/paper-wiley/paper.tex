@@ -42,7 +42,7 @@ Model compression reduces these costs. Quantization stores weights and activatio
 This paper presents a framework that measures the sensitivity of each decoder layer directly, as the rise in perplexity when the layer is bypassed, and turns the measurement into per-layer plans for the weights, the activations, pruning and the KV cache. Published techniques then follow the plans, every resulting model is measured in real inference engines, and a constrained search chooses the joint configuration for a stated requirement on perplexity and decode latency. The contributions are:
 
 \begin{itemize}
-  \item A perplexity-based profiling stage that scores every decoder layer in about two minutes on one GPU and writes per-layer plans for weight bits, activation bits, pruning ratios and KV-cache bits and token shares.
+  \item A perplexity-based profiling stage that scores every decoder layer and writes per-layer plans for weight bits, activation bits, pruning ratios and KV-cache bits and token shares.
   \item A controlled comparison in which eleven weight-quantization techniques, three pruning techniques and six KV-cache techniques are each run on a uniform plan and on the measured plan with identical code, data, seed and hardware.
   \item A deployment-aware evaluation that exports each model to llama.cpp and vLLM and measures real file size, memory and latency, and that quantifies where simulated results do not carry over.
   \item A constrained multi-objective Bayesian search over the joint pipeline of quantization, pruning and KV-cache compression, which produced models about 60 percent smaller and 20 percent faster than the uncompressed model in vLLM.
