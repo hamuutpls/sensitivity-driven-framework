@@ -92,20 +92,42 @@ FP16 & \multicolumn{2}{c}{10.18} & \multicolumn{2}{c}{10.62} & \multicolumn{2}{c
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.95\textwidth]{Figures/ch5-quantization.pdf}
-\caption{Hugging Face validation perplexity of weight-only quantization (lower is better). The dashed line is the FP16 model.}
+\includegraphics[width=0.9\textwidth]{Figures/ch5-quant-dumbbell.pdf}
+\caption{Weight-only quantization: Hugging Face validation perplexity of each technique on the Standard plan (circle) and with Our method (square). Further left is better. The dashed line is the FP16 model.}
 \label{fig:ch5-quant}
 \end{figure}
 
-\textbf{What this shows.} Our method has a lower perplexity than Standard for all eleven techniques, on the validation set and on the held-out set, in Hugging Face and in llama.cpp. The gain is largest for the techniques that lose most at 4 bits: PB-LLM improves from 11.70 to 10.48 and round-to-nearest from 10.97 to 10.41. It is smallest for the technique that is already close to FP16: SpQR improves from 10.27 to 10.21. With Our method every technique is between 10.21 and 10.48, so the choice of technique matters much less than on the Standard plan, where the range is 10.27 to 11.70.
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\textwidth]{Figures/ch5-quant-gain.pdf}
+\caption{How much lower the validation perplexity of each weight technique is with Our method than on the Standard plan, in percent of the Standard value (a longer bar is a larger gain).}
+\label{fig:ch5-quant-gain}
+\end{figure}
 
-\textbf{What it costs.} The Our method file is larger, 1.05~GB against 0.81~GB, because half of the layers keep 8 bits. It is also slower in llama.cpp: 532 to 559 tokens per second against 624 to 655. Both are still well ahead of the FP16 model, which needs 2.20~GB and reaches 324 tokens per second on the same GPU. The comparison is therefore not at equal size. Our method buys back a part of the quality lost at 4 bits (for round-to-nearest, 71 percent of the gap between the 4-bit model and FP16) for 0.24~GB of extra file size and about 15 percent of the llama.cpp speed.
+\textbf{What this shows.} Our method has a lower perplexity than Standard for all eleven techniques, on the validation set and on the held-out set, in Hugging Face and in llama.cpp. The gain is largest for the techniques that lose most at 4 bits: PB-LLM improves from 11.70 to 10.48 and round-to-nearest from 10.97 to 10.41. It is smallest for the technique that is already close to FP16: SpQR improves from 10.27 to 10.21. With Our method every technique is between 10.21 and 10.48, so the choice of technique matters much less than on the Standard plan, where the range is 10.27 to 11.70. Figure~\ref{fig:ch5-quant-gain} gives the same gain in percent: 10.4 percent for PB-LLM, 5.1 percent for round-to-nearest and 0.6 percent for SpQR.
+
+\textbf{What it costs.} The Our method file is larger, 1.05~GB against 0.81~GB, because half of the layers keep 8 bits. It is also slower in llama.cpp: 532 to 559 tokens per second against 624 to 655. Both are still well ahead of the FP16 model, which needs 2.20~GB and reaches 324 tokens per second on the same GPU. The comparison is therefore not at equal size. Our method buys back a part of the quality lost at 4 bits (for round-to-nearest, 71 percent of the gap between the 4-bit model and FP16) for 0.24~GB of extra file size and about 15 percent of the llama.cpp speed. Figure~\ref{fig:ch5-quant-size} shows this trade of quality against size for every technique.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\textwidth]{Figures/ch5-quant-size.pdf}
+\caption{Quality against size for weight-only quantization. Each line joins one technique on the Standard plan (circle, 0.81~GB) to the same technique with Our method (square, 1.05~GB). Lower is better for perplexity and smaller is better for size. The dashed line is the FP16 model.}
+\label{fig:ch5-quant-size}
+\end{figure}
 
 \textbf{What Hugging Face does not show.} The decode latency of the simulated model in Hugging Face is between 4.09 and 4.22~ms per token for every weight-only row, against 4.32~ms for FP16. The simulated model stores rounded values in 16-bit tensors, so it cannot be faster or smaller; the real gain appears only in the exported file.
 
 \subsection{Weights and Activations}
 
-Table~\ref{tab:ch5-quant-wa} reports the combined techniques. The Standard row uses 4-bit weights and 8-bit activations in every layer. The Our method row uses the Stage~0 quantization plan and the Stage~0 activation plan, which averages 6 bits. A second Our method row uses the joint weight and activation plan, and a second Standard row uses 8-bit weights and 8-bit activations in every layer.
+Table~\ref{tab:ch5-quant-wa} and Figure~\ref{fig:ch5-quant-wa} report the combined techniques.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\textwidth]{Figures/ch5-quant-wa-dumbbell.pdf}
+\caption{Weights and activations: Hugging Face validation perplexity of each combined technique on the Standard plan (circle) and with Our method (square). Further left is better. The dashed line is the FP16 model.}
+\label{fig:ch5-quant-wa}
+\end{figure}
+ The Standard row uses 4-bit weights and 8-bit activations in every layer. The Our method row uses the Stage~0 quantization plan and the Stage~0 activation plan, which averages 6 bits. A second Our method row uses the joint weight and activation plan, and a second Standard row uses 8-bit weights and 8-bit activations in every layer.
 
 \begin{table}[htbp]
 \centering

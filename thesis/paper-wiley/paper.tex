@@ -2,6 +2,12 @@
 % Written for the Overleaf "Wiley Journal Template" (class wiley-article.cls).
 \usepackage{tabularx}
 \usepackage{amsmath}
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.8}
+\renewcommand{\textfraction}{0.08}
+\renewcommand{\floatpagefraction}{0.85}
+\setcounter{topnumber}{3}
+\setcounter{totalnumber}{4}
 
 \papertype{Original Article}
 \paperfield{Journal Section}
@@ -59,7 +65,7 @@ Section~\ref{sec:related} reviews related work. Section~\ref{sec:framework} desc
 
 Table~\ref{tab:related} compares representative studies. Three limitations follow from it. The methods are rarely compared under identical conditions; their reported gains are tied to particular kernels or hardware, so the same model is seldom measured in more than one engine; and compression settings are rarely chosen per layer from a stated requirement on latency, memory or quality. The framework of the next section addresses these three points on one model.
 
-\begin{table}[htbp]
+\begin{table}[tp]
 \caption{Representative compression studies. Results are those reported by the cited papers.}
 \label{tab:related}
 \scriptsize
@@ -91,9 +97,9 @@ The framework separates two questions. \emph{Where} to compress, that is, which 
 
 Figure~\ref{fig:arch} shows the five stages. Stage~0 takes the 16-bit floating-point (FP16) model and calibration text and writes the plans. Stages~1, 2 and 3 quantize the model, prune it and compress its KV cache by following the plans. Stage~4 measures the result. A search sits on top: it proposes one technique for each of Stages~1 to 3 and the plan settings, receives the Stage~4 measurements, and proposes the next configuration.
 
-\begin{figure}[htbp]
+\begin{figure}[tp]
 \centering
-\includegraphics[width=0.82\textwidth]{Figures/ch4-framework-overview.pdf}
+\includegraphics[width=0.75\textwidth]{Figures/ch4-framework-overview.pdf}
 \caption{The framework. Stage~0 measures the model and writes per-layer plans; Stages~1 to 3 compress the model following the plans; Stage~4 evaluates the result. The search proposes the techniques and the plan settings and receives the measurements.}
 \label{fig:arch}
 \end{figure}
@@ -102,7 +108,7 @@ Figure~\ref{fig:arch} shows the five stages. Stage~0 takes the 16-bit floating-p
 
 Table~\ref{tab:modules} lists the techniques of each stage. Most are published methods re-implemented in simplified form so that they can follow a per-layer plan. The stages can run individually on a fresh copy of the FP16 model, which isolates the effect of one stage, or in sequence on one model (quantize, then prune, then compress the KV cache), which is the joint pipeline used by the search. The quantization and pruning of Stages~1 and 2 are simulated in Hugging Face Transformers, with the rounded values written back into 16-bit tensors, and the model is then exported to the inference engines; the KV-cache techniques act inside the attention computation of the Hugging Face model.
 
-\begin{table}[htbp]
+\begin{table}[tp]
 \caption{Compression modules of the framework.}
 \label{tab:modules}
 \small
@@ -152,9 +158,9 @@ A configuration of the joint pipeline consists of one technique for each of Stag
 
 Figure~\ref{fig:workflow} shows one search run. For each proposed configuration, Stage~0 makes the plans from the cached measurements, one model is built through Stages~1, 2 and 3 in sequence, and the model is measured in Hugging Face and in vLLM. The objective values and any shortfall are returned to the optimiser. A combination that was already built in an earlier run is not built again; its logged measurements are reused. After the last try, the configuration that meets every limit and is best on the first objective is built again as the final model and evaluated in full, including task accuracy.
 
-\begin{figure}[htbp]
+\begin{figure}[tp]
 \centering
-\includegraphics[width=0.55\textwidth]{Figures/ch4-search-loop.pdf}
+\includegraphics[width=0.5\textwidth]{Figures/ch4-search-loop.pdf}
 \caption{Execution workflow of one search run. Each try builds one model through Stages~1, 2 and 3 in sequence and measures it; the final model is selected after the last try.}
 \label{fig:workflow}
 \end{figure}
@@ -191,36 +197,37 @@ The evaluation asks four questions: how much each technique compresses and what 
 
 \subsection{Compression Performance and Quality Evaluation}
 
-Table~\ref{tab:quant} compares the eleven weight techniques. The Standard file is 0.81~GB (2.7 times smaller than FP16) and the Our method file, with 8 bits in the 11 protected layers, is 1.05~GB (2.1 times smaller). Our method has a lower perplexity than Standard for all eleven techniques, on both sets and in both engines. The gain is largest where 4 bits lose most (PB-LLM, 11.70 to 10.48; round-to-nearest, 10.97 to 10.41) and smallest for the technique that is already close to FP16 (SpQR, 10.27 to 10.21). With the plan every technique is between 10.21 and 10.48, so the choice of technique matters much less than on the uniform plan. The comparison is not at equal size: the plan buys back part of the quality lost at 4 bits (71 percent of the gap to FP16 for round-to-nearest) for 0.24~GB.
+Figure~\ref{fig:dumbbell} compares the eleven weight techniques, measured on the RTX~5070~Ti. The Standard file is 0.81~GB (2.7 times smaller than FP16) and the Our method file, with 8 bits in the 11 protected layers, is 1.05~GB (2.1 times smaller). Our method has a lower perplexity than Standard for all eleven techniques, on both sets and in both engines (in llama.cpp, for example, 9.02 against 8.38 for round-to-nearest, with 8.12 for FP16). The gain is largest where 4 bits lose most (PB-LLM, 11.70 to 10.48; round-to-nearest, 10.97 to 10.41) and smallest for the technique that is already close to FP16 (SpQR, 10.27 to 10.21). With the plan every technique is between 10.21 and 10.48, so the choice of technique matters much less than on the uniform plan; Figure~\ref{fig:gain} gives the gain of each technique in percent. The comparison is not at equal size: the plan buys back part of the quality lost at 4 bits (71 percent of the gap to FP16 for round-to-nearest) for 0.24~GB (Figure~\ref{fig:size}).
 
-\begin{table}[htbp]
-\caption{Weight-only quantization on the uniform 4-bit plan (Std, 0.81~GB) and on the Stage~0 plan (Ours, 1.05~GB), measured on the RTX~5070~Ti. Perplexity on the validation set: lower is better. Tokens per second: higher is better.}
-\label{tab:quant}
-\small
-\renewcommand{\arraystretch}{1.1}
-\begin{tabularx}{0.92\textwidth}{Xrrrrrr}
-\hline
- & \multicolumn{2}{c}{\textbf{Hugging Face perplexity}} & \multicolumn{2}{c}{\textbf{llama.cpp perplexity}} & \multicolumn{2}{c}{\textbf{llama.cpp tokens/s}} \\
-\textbf{Technique} & Std & Ours & Std & Ours & Std & Ours \\
-\hline
-FP16 (2.20~GB) & \multicolumn{2}{c}{10.18} & \multicolumn{2}{c}{8.12} & \multicolumn{2}{c}{324} \\
-\hline
-Round-to-nearest & 10.97 & 10.41 & 9.02 & 8.38 & 651 & 551 \\
-GPTQ & 10.68 & 10.31 & 8.76 & 8.27 & 647 & 559 \\
-AWQ & 10.66 & 10.37 & 8.84 & 8.38 & 655 & 559 \\
-OmniQuant & 10.90 & 10.39 & 8.95 & 8.37 & 654 & 532 \\
-SqueezeLLM & 10.60 & 10.33 & 8.82 & 8.30 & 654 & 552 \\
-SpQR & 10.27 & 10.21 & 8.63 & 8.23 & 632 & 539 \\
-EfficientQAT & 10.51 & 10.25 & 8.58 & 8.24 & 654 & 553 \\
-QuIP & 10.42 & 10.30 & 8.74 & 8.31 & 654 & 554 \\
-QuIP\# & 10.37 & 10.27 & 8.73 & 8.31 & 655 & 553 \\
-PB-LLM & 11.70 & 10.48 & 10.02 & 8.50 & 652 & 556 \\
-bitsandbytes & 10.74 & 10.30 & 8.80 & 8.32 & 624 & 550 \\
-\hline
-\end{tabularx}
-\end{table}
+\begin{figure}[tp]
+\centering
+\includegraphics[width=0.62\textwidth]{Figures/ch5-quant-dumbbell.pdf}
+\caption{Weight-only quantization: Hugging Face validation perplexity of each technique on the Standard plan (circle) and with Our method (square). Further left is better. The dashed line is the FP16 model.}
+\label{fig:dumbbell}
+\end{figure}
 
-When the activations are rounded as well, the plan does not help in the same way. The Standard setting uses 8-bit activations in every layer, while the activation plan averages 6 bits. Our method was better than Standard for four of twelve combined techniques and worse for eight (for SpQR, 10.28 against 10.64). With 8-bit weights and activations everywhere, every technique is within 0.04 of the FP16 perplexity at a file of 1.29~GB.
+\begin{figure}[tp]
+\centering
+\includegraphics[width=0.58\textwidth]{Figures/ch5-quant-gain.pdf}
+\caption{How much lower the validation perplexity of each weight technique is with Our method than on the Standard plan, in percent of the Standard value (a longer bar is a larger gain).}
+\label{fig:gain}
+\end{figure}
+
+\begin{figure}[tp]
+\centering
+\includegraphics[width=0.6\textwidth]{Figures/ch5-quant-size.pdf}
+\caption{Quality against size for weight-only quantization. Each line joins one technique on the Standard plan (circle, 0.81~GB) to the same technique with Our method (square, 1.05~GB). Lower is better for perplexity and smaller is better for size.}
+\label{fig:size}
+\end{figure}
+
+When the activations are rounded as well, the plan does not help in the same way. The Standard setting uses 8-bit activations in every layer, while the activation plan averages 6 bits. Our method was better than Standard for four of twelve combined techniques and worse for eight (for SpQR, 10.28 against 10.64), as Figure~\ref{fig:wa} shows. With 8-bit weights and activations everywhere, every technique is within 0.04 of the FP16 perplexity at a file of 1.29~GB.
+
+\begin{figure}[tp]
+\centering
+\includegraphics[width=0.62\textwidth]{Figures/ch5-quant-wa-dumbbell.pdf}
+\caption{Weights and activations: Hugging Face validation perplexity of each combined technique on the Standard plan (4-bit weights, 8-bit activations; circle) and with Our method (square). Further left is better. The dashed line is the FP16 model.}
+\label{fig:wa}
+\end{figure}
 
 For the KV cache, measured in Hugging Face, the plan both rounds and evicts, and needs 3.2~MB for a context of 2{,}048 tokens against 46.1~MB for FP16, 13.0~MB for uniform 4-bit rounding and 9.2~MB for uniform eviction. For five of the six techniques this smaller cache comes with a higher perplexity than the Standard setting; for example 11.68 against 10.25 for round-to-nearest rounding and 11.11 against 10.56 for SnapKV. With InfiniGen the plan is better on both counts (10.38 against 11.00).
 
@@ -228,9 +235,9 @@ For the KV cache, measured in Hugging Face, the plan both rounds and evicts, and
 
 \textbf{Individual stages.} Of the three stages applied alone, quantization gives the best trade-off: a file 2.1 to 2.7 times smaller for a perplexity rise of 0.03 to 1.5. Pruning alone costs more quality for no deployment gain. At a level of 30 percent, unstructured pruning reaches 10.66 on the Standard plan and 10.37 with Our method, structured pruning 17.47 and 12.00, and the low-rank factorisation 163 and 26.84, and the exported file stays at 2.20~GB in every case (Section~\ref{sec:resource}). KV-cache compression reduces the cache and leaves the model file unchanged.
 
-\textbf{Joint pipeline.} Table~\ref{tab:finals} gives the final models of four searches over the joint pipeline. Under the two limits, the search for the lowest perplexity selected OmniQuant on the weights only (threshold 0.857, per-channel groups, 32 calibration windows of C4), unstructured pruning with a ratio of 0.082 and InfiniGen. Restricted to weight-only quantization, the search selected round-to-nearest (threshold 0.800, which protects five layers; groups of 64; 128 windows of C4), no pruning and SnapKV. Both models are about 60 percent smaller and 20 percent faster than FP16 in vLLM. Two earlier searches, with the perplexity limit only and size as the first objective, selected GPTQ with round-to-nearest activations and SqueezeLLM with SmoothQuant. These two models are equally small but 13.5 and 16.7 times slower than FP16 in vLLM, because vLLM runs models with rounded activations on slower kernels. The searched models use a higher threshold than the single-stage experiment (0.76 to 0.88 against 0.5), so fewer layers keep 8 bits: their vLLM files are 0.84 to 0.90~GB and their Hugging Face perplexity is 11.1 to 11.5, against 10.2 to 10.5 for the plan-based quantization of Table~\ref{tab:quant}. In the models within both limits the pruning ratio chosen by the search is zero or small: the joint search itself turns pruning nearly off.
+\textbf{Joint pipeline.} Table~\ref{tab:finals} gives the final models of four searches over the joint pipeline. Under the two limits, the search for the lowest perplexity selected OmniQuant on the weights only (threshold 0.857, per-channel groups, 32 calibration windows of C4), unstructured pruning with a ratio of 0.082 and InfiniGen. Restricted to weight-only quantization, the search selected round-to-nearest (threshold 0.800, which protects five layers; groups of 64; 128 windows of C4), no pruning and SnapKV. Both models are about 60 percent smaller and 20 percent faster than FP16 in vLLM. Two earlier searches, with the perplexity limit only and size as the first objective, selected GPTQ with round-to-nearest activations and SqueezeLLM with SmoothQuant. These two models are equally small but 13.5 and 16.7 times slower than FP16 in vLLM, because vLLM runs models with rounded activations on slower kernels. The searched models use a higher threshold than the single-stage experiment (0.76 to 0.88 against 0.5), so fewer layers keep 8 bits: their vLLM files are 0.84 to 0.90~GB and their Hugging Face perplexity is 11.1 to 11.5, against 10.2 to 10.5 for the plan-based quantization of Figure~\ref{fig:dumbbell}. In the models within both limits the pruning ratio chosen by the search is zero or small: the joint search itself turns pruning nearly off.
 
-\begin{table}[htbp]
+\begin{table}[tp]
 \caption{Final models of four searches over the joint pipeline, measured in vLLM on the A100. Perplexity is given on the validation set and on the held-out set. Lower is better for size, perplexity, latency and memory; higher is better for accuracy. HF: Hugging Face.}
 \label{tab:finals}
 \scriptsize
@@ -256,7 +263,7 @@ Mean accuracy & 0.625 & 0.556 & 0.495 & 0.538 & 0.539 \\
 \subsection{Resource Utilization and Inference Efficiency}
 \label{sec:resource}
 
-\textbf{Quantization.} In llama.cpp on the RTX~5070~Ti, the 4-bit models run at 624 to 655 tokens per second and the plan-based models at 532 to 559, against 324 for FP16 (Table~\ref{tab:quant}). In vLLM on the A100, weight-only models decode in about 2.0~ms per token against 2.54~ms for FP16, and their peak GPU memory is 2.40 to 2.45~GB against 3.77~GB (Table~\ref{tab:finals}). Models with rounded activations decode in 33 to 43~ms per token.
+\textbf{Quantization.} In llama.cpp on the RTX~5070~Ti, the 4-bit models run at 624 to 655 tokens per second and the plan-based models at 532 to 559, against 324 for FP16. In vLLM on the A100, weight-only models decode in about 2.0~ms per token against 2.54~ms for FP16, and their peak GPU memory is 2.40 to 2.45~GB against 3.77~GB (Table~\ref{tab:finals}). Models with rounded activations decode in 33 to 43~ms per token.
 
 \textbf{Pruning.} Pruned weights are stored as zeros. In all 61 pruning rows the llama.cpp and vLLM files are 2.20~GB, the vLLM decode latency is between 2.51 and 2.55~ms per token and llama.cpp runs at 412 to 426 tokens per second (FP16: 421). Pruning returned nothing in size or latency in these engines.
 
@@ -268,7 +275,7 @@ Mean accuracy & 0.625 & 0.556 & 0.495 & 0.538 & 0.539 \\
 
 \textbf{Layer sensitivity.} Figure~\ref{fig:sens} shows the score of Equation~\ref{eq:score}. The calibration perplexity of the unchanged model is 14.12. Bypassing layer~0 raises it by 1{,}176 and layer~2 by 368; layers 7, 21 and 1 follow with 36.5, 23.6 and 11.6, and the other 17 layers are between 1.4 and 5.7. Sensitivity is concentrated in the first three layers, one middle layer and the last layer.
 
-\begin{figure}[htbp]
+\begin{figure}[tp]
 \centering
 \includegraphics[width=0.68\textwidth]{Figures/ch5-sensitivity.pdf}
 \caption{Sensitivity score of each decoder layer (log scale; a higher bar is a more sensitive layer) and the weight plan at the threshold $\tau = 0.5$.}
@@ -277,9 +284,9 @@ Mean accuracy & 0.625 & 0.556 & 0.495 & 0.538 & 0.539 \\
 
 \textbf{Pruning ratio and placement.} Figure~\ref{fig:prune} shows the perplexity against the pruning level. Our method, which leaves the protected layers unpruned and therefore removes about half as many weights (13 against 26 percent of all parameters at a level of 30 percent), is better than Standard in all 20 comparisons; with unstructured pruning at 50 percent the perplexity is 11.51 against 14.12. The plan that removes the same total as Standard but concentrates it on the robust layers isolates the effect of placement, and it is worse than Standard in 19 of 20 comparisons (11.60 against 10.66 at 30 percent). The score therefore identifies the layers to protect, but a layer that can be bypassed with little damage cannot absorb a much larger share of the pruning.
 
-\begin{figure}[htbp]
+\begin{figure}[tp]
 \centering
-\includegraphics[width=0.8\textwidth]{Figures/ch5-pruning.pdf}
+\includegraphics[width=0.72\textwidth]{Figures/ch5-pruning.pdf}
 \caption{Hugging Face validation perplexity after pruning, against the pruning level (log scale; lower is better). The dashed line is the FP16 model.}
 \label{fig:prune}
 \end{figure}
@@ -288,9 +295,9 @@ Mean accuracy & 0.625 & 0.556 & 0.495 & 0.538 & 0.539 \\
 
 \textbf{Where perplexity is judged.} Because the perplexity of an exported model can differ from its simulated perplexity, two further searches of 40 tries each checked the perplexity limit on the model as loaded in vLLM (Figure~\ref{fig:tries}). The 30 weight-only tries, all of which used OmniQuant, decode in 1.97 to 2.14~ms per token with a vLLM perplexity of 12.97 or higher; the 10 tries with rounded activations decode in 33 to 43~ms, and one reaches 10.98. No try is within both limits. The round-to-nearest model of Table~\ref{tab:finals}, which was not proposed in these tries, is within both limits in vLLM (11.10 at 2.00~ms).
 
-\begin{figure}[htbp]
+\begin{figure}[tp]
 \centering
-\includegraphics[width=0.75\textwidth]{Figures/ch5-search-tries.pdf}
+\includegraphics[width=0.68\textwidth]{Figures/ch5-search-tries.pdf}
 \caption{All 40 tries of the two searches that judge perplexity in vLLM. Lower and further left is better. The dashed lines are the two limits; a try within both limits would lie in the lower left corner.}
 \label{fig:tries}
 \end{figure}
