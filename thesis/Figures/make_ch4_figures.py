@@ -19,7 +19,15 @@ EDGE = "#333333"
 plt.rcParams.update({"font.family": "serif", "font.size": 8.5, "pdf.fonttype": 42})
 
 
+US = False  # True: American spelling in the figure text (Wiley paper variants)
+
+
+def _sp(t):
+    return t.replace("optimis", "optimiz").replace("minimis", "minimiz") if US and t else t
+
+
 def box(ax, x, y, w, h, text, color, bold=None, size=9.5):
+    text, bold = _sp(text), _sp(bold)
     ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.02,rounding_size=0.08", fc=color, ec=EDGE, lw=0.9))
     if bold:
         ax.text(x + w / 2, y + h - 0.16, bold, ha="center", va="top", weight="bold", size=size)
@@ -78,7 +86,7 @@ def overview(model_label="TinyLlama", out=None):
     plt.close(fig)
 
 
-def search_loop():
+def search_loop(out=None):
     fig, ax = plt.subplots(figsize=(8.0, 7.0))
     ax.set_xlim(0, 12.8), ax.set_ylim(0, 11.2), ax.axis("off")
     w, h, x = 7.1, 0.95, 0.75
@@ -115,12 +123,15 @@ def search_loop():
         "and on the four accuracy tasks, next to the FP16 model", ORANGE, bold="After the last try: final model (Stage 4)",
         size=8.6)
     arrow(ax, (x + w / 2, ys[5]), (x + w / 2, fy + 1.45))
-    fig.savefig(HERE / "ch4-search-loop.pdf", bbox_inches="tight", pad_inches=0.02)
+    fig.savefig(out or HERE / "ch4-search-loop.pdf", bbox_inches="tight", pad_inches=0.02)
     plt.close(fig)
 
 
 if __name__ == "__main__":
     overview()
     search_loop()
-    # Wiley paper variant of the overview (input box names the model generically)
-    overview("Desired model\n(TinyLlama in\nour case)", HERE.parent / "paper-wiley" / "Figures" / "ch4-framework-overview.pdf")
+    # Wiley paper variants: American spelling; the overview input box names the model generically
+    US = True
+    PW = HERE.parent / "paper-wiley" / "Figures"
+    overview("Desired model\n(TinyLlama in\nour case)", PW / "ch4-framework-overview.pdf")
+    search_loop(PW / "ch4-search-loop.pdf")
