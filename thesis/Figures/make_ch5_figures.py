@@ -243,6 +243,84 @@ def quant_wa_dumbbell():
     save(fig, "ch5-quant-wa-dumbbell.pdf")
 
 
+FINALS = [  # (start of the "Search" cell in searches.csv, name used in the paper and thesis, settings of the final model)
+    ("Lowest perplexity with perplexity up to 11.5 and decode up to 2.5", "Lowest perplexity, two limits",
+     "OmniQuant weights only, pruning 0.082, InfiniGen"),
+    ("Same goal as run 8", "Weight-only, two limits", "Round-to-nearest weights only, no pruning, SnapKV"),
+    ("Smallest model with perplexity up to 11.5 (rerun", "Smallest size, perplexity limit",
+     "GPTQ with rounded activations, no pruning, InfiniGen"),
+    ("Smallest model with perplexity up to 11.5, 3-bit", "Smallest size, narrower ranges",
+     "SqueezeLLM with SmoothQuant, pruning 0.262, InfiniGen"),
+]
+
+
+def _finals():
+    r = rows("searches.csv")
+    out = []
+    for key, name, settings in FINALS:
+        m = [x for x in r if x["Search"].startswith(key) and x["Which model"] == "final"]
+        assert len(m) == 1, key
+        out.append((name, settings, m[0]))
+    return r[0], out
+
+
+def finals_dumbbell():
+    """The full framework: each final model against the FP16 model, in the engine (vLLM)."""
+    fp, fin = _finals()
+    cols = [("vLLM file size (GB)", "File size (GB)\nsmaller is better", "%.2f", False),
+            ("vLLM decode (ms/token)", "Decode time (ms per token, log scale)\nlower is better", "%.2f", True),
+            ("vLLM ppl validation", "Validation perplexity in vLLM\nlower is better", "%.2f", False)]
+    fig, axes = plt.subplots(1, 3, figsize=(7.4, 2.9), sharey=True, gridspec_kw={"wspace": 0.12})
+    ys = list(range(len(fin) - 1, -1, -1))
+    for ax, (col, xlabel, fmt, log) in zip(axes, cols):
+        a, b = float(fp[col]), [float(x[col]) for _, _, x in fin]
+        for y, v in zip(ys, b):
+            ax.plot([a, v], [y, y], color="#cccccc", lw=4, solid_capstyle="round", zorder=1)
+            ax.text(0.5, y + 0.28, (fmt + " → " + fmt) % (a, v), transform=ax.get_yaxis_transform(), ha="center",
+                    va="center", size=7.5)
+        ax.scatter([a] * len(ys), ys, color=STD, marker="o", s=34, zorder=3, label="FP16 model (uncompressed)")
+        ax.scatter(b, ys, color=OURS, marker="s", s=34, zorder=3, label="Final model of the framework")
+        if log:
+            ax.set_xscale("log"), ax.set_xlim(1.4, 70)
+            ax.xaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%g"))
+            ax.set_xticks([2, 5, 10, 20, 50])
+            ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+        else:
+            lo, hi = min(b + [a]), max(b + [a])
+            ax.set_xlim(lo - 0.18 * (hi - lo), hi + 0.18 * (hi - lo))
+        ax.set_xlabel(xlabel, size=8), ax.set_ylim(-0.5, len(fin) - 0.3)
+        ax.grid(axis="x", color="#eeeeee", lw=0.8), ax.set_axisbelow(True)
+    axes[0].set_yticks(ys)
+    axes[0].set_yticklabels(["%s\n%s" % (n, st) for n, st, _ in fin], size=7.5)
+    h, l = axes[0].get_legend_handles_labels()
+    fig.legend(h, l, frameon=False, loc="lower center", bbox_to_anchor=(0.5, 0.9), ncol=2, fontsize=8)
+    save(fig, "ch5-finals-dumbbell.pdf")
+
+
+def finals_size():
+    """Quality against size for the full framework: the FP16 model joined to each final model."""
+    fp, fin = _finals()
+    fx, fy = float(fp["vLLM file size (GB)"]), float(fp["vLLM ppl validation"])
+    fig, ax = plt.subplots(figsize=(6.6, 3.6))
+    pts = [(n, float(x["vLLM file size (GB)"]), float(x["vLLM ppl validation"])) for n, _, x in fin]
+    for n, x, y in pts:
+        ax.plot([fx, x], [fy, y], color="#999999", lw=1.0, zorder=1)
+    ax.scatter([fx], [fy], color=STD, marker="o", s=38, zorder=3, label="FP16 model (uncompressed)")
+    ax.scatter([p[1] for p in pts], [p[2] for p in pts], color=OURS, marker="s", s=34, zorder=3,
+               label="Final model of the framework")
+    for n, x, y in pts:
+        ax.annotate("%s\n%.3f GB, perplexity %.2f" % (n, x, y), xy=(x, y), xytext=(x - 0.03, y), ha="right", va="center",
+                    size=7)
+    ax.annotate("FP16\n%.2f GB, perplexity %.2f" % (fx, fy), xy=(fx, fy), xytext=(fx, fy - 0.14), ha="center", va="top",
+                size=7, color=FP)
+    ax.set_xlim(0.0, 2.45), ax.set_ylim(9.5, 13.5)
+    ax.set_xlabel("vLLM file size in GB (smaller is better)")
+    ax.set_ylabel("Validation perplexity in vLLM (lower is better)")
+    ax.grid(color="#eeeeee", lw=0.8), ax.set_axisbelow(True)
+    ax.legend(frameon=False, loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2, fontsize=8)
+    save(fig, "ch5-finals-size.pdf")
+
+
 if __name__ == "__main__":
     quantization()
     pruning()
@@ -253,3 +331,5 @@ if __name__ == "__main__":
     quant_gain()
     quant_size()
     quant_wa_dumbbell()
+    finals_dumbbell()
+    finals_size()

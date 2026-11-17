@@ -197,7 +197,7 @@ The evaluation asks four questions: how much each technique compresses and what 
 
 \subsection{Compression Performance and Quality Evaluation}
 
-Figure~\ref{fig:dumbbell} compares the eleven weight techniques, measured on the RTX~5070~Ti. The Standard file is 0.81~GB (2.7 times smaller than FP16) and the Our method file, with 8 bits in the 11 protected layers, is 1.05~GB (2.1 times smaller). Our method has a lower perplexity than Standard for all eleven techniques, on both sets and in both engines (in llama.cpp, for example, 9.02 against 8.38 for round-to-nearest, with 8.12 for FP16). The gain is largest where 4 bits lose most (PB-LLM, 11.70 to 10.48; round-to-nearest, 10.97 to 10.41) and smallest for the technique that is already close to FP16 (SpQR, 10.27 to 10.21). With the plan every technique is between 10.21 and 10.48, so the choice of technique matters much less than on the uniform plan; Figure~\ref{fig:gain} gives the gain of each technique in percent. The comparison is not at equal size: the plan buys back part of the quality lost at 4 bits (71 percent of the gap to FP16 for round-to-nearest) for 0.24~GB (Figure~\ref{fig:size}).
+Figure~\ref{fig:dumbbell} compares the eleven weight techniques, measured on the RTX~5070~Ti. The Standard file is 0.81~GB (2.7 times smaller than FP16) and the Our method file, with 8 bits in the 11 protected layers, is 1.05~GB (2.1 times smaller). Our method has a lower perplexity than Standard for all eleven techniques, on both sets and in both engines (in llama.cpp, for example, 9.02 against 8.38 for round-to-nearest, with 8.12 for FP16). The gain is largest where 4 bits lose most (PB-LLM, 11.70 to 10.48; round-to-nearest, 10.97 to 10.41) and smallest for the technique that is already close to FP16 (SpQR, 10.27 to 10.21). With the plan every technique is between 10.21 and 10.48, so the choice of technique matters much less than on the uniform plan; Figure~\ref{fig:gain} gives the gain of each technique in percent. The comparison is not at equal size: the plan buys back part of the quality lost at 4 bits (71 percent of the gap to FP16 for round-to-nearest) for 0.24~GB.
 
 \begin{figure}[tp]
 \centering
@@ -213,21 +213,7 @@ Figure~\ref{fig:dumbbell} compares the eleven weight techniques, measured on the
 \label{fig:gain}
 \end{figure}
 
-\begin{figure}[tp]
-\centering
-\includegraphics[width=0.6\textwidth]{Figures/ch5-quant-size.pdf}
-\caption{Quality against size for weight-only quantization. Each line joins one technique on the Standard plan (circle, 0.81~GB) to the same technique with Our method (square, 1.05~GB). Lower is better for perplexity and smaller is better for size.}
-\label{fig:size}
-\end{figure}
-
-When the activations are rounded as well, the plan does not help in the same way. The Standard setting uses 8-bit activations in every layer, while the activation plan averages 6 bits. Our method was better than Standard for four of twelve combined techniques and worse for eight (for SpQR, 10.28 against 10.64), as Figure~\ref{fig:wa} shows. With 8-bit weights and activations everywhere, every technique is within 0.04 of the FP16 perplexity at a file of 1.29~GB.
-
-\begin{figure}[tp]
-\centering
-\includegraphics[width=0.62\textwidth]{Figures/ch5-quant-wa-dumbbell.pdf}
-\caption{Weights and activations: Hugging Face validation perplexity of each combined technique on the Standard plan (4-bit weights, 8-bit activations; circle) and with Our method (square). Further left is better. The dashed line is the FP16 model.}
-\label{fig:wa}
-\end{figure}
+When the activations are rounded as well, the plan does not help in the same way. The Standard setting uses 8-bit activations in every layer, while the activation plan averages 6 bits. Our method was better than Standard for four of twelve combined techniques and worse for eight (for SpQR, 10.28 against 10.64). With 8-bit weights and activations everywhere, every technique is within 0.04 of the FP16 perplexity at a file of 1.29~GB.
 
 For the KV cache, measured in Hugging Face, the plan both rounds and evicts, and needs 3.2~MB for a context of 2{,}048 tokens against 46.1~MB for FP16, 13.0~MB for uniform 4-bit rounding and 9.2~MB for uniform eviction. For five of the six techniques this smaller cache comes with a higher perplexity than the Standard setting; for example 11.68 against 10.25 for round-to-nearest rounding and 11.11 against 10.56 for SnapKV. With InfiniGen the plan is better on both counts (10.38 against 11.00).
 
@@ -235,7 +221,21 @@ For the KV cache, measured in Hugging Face, the plan both rounds and evicts, and
 
 \textbf{Individual stages.} Of the three stages applied alone, quantization gives the best trade-off: a file 2.1 to 2.7 times smaller for a perplexity rise of 0.03 to 1.5. Pruning alone costs more quality for no deployment gain. At a level of 30 percent, unstructured pruning reaches 10.66 on the Standard plan and 10.37 with Our method, structured pruning 17.47 and 12.00, and the low-rank factorisation 163 and 26.84, and the exported file stays at 2.20~GB in every case (Section~\ref{sec:resource}). KV-cache compression reduces the cache and leaves the model file unchanged.
 
-\textbf{Joint pipeline.} Table~\ref{tab:finals} gives the final models of four searches over the joint pipeline. Under the two limits, the search for the lowest perplexity selected OmniQuant on the weights only (threshold 0.857, per-channel groups, 32 calibration windows of C4), unstructured pruning with a ratio of 0.082 and InfiniGen. Restricted to weight-only quantization, the search selected round-to-nearest (threshold 0.800, which protects five layers; groups of 64; 128 windows of C4), no pruning and SnapKV. Both models are about 60 percent smaller and 20 percent faster than FP16 in vLLM. Two earlier searches, with the perplexity limit only and size as the first objective, selected GPTQ with round-to-nearest activations and SqueezeLLM with SmoothQuant. These two models are equally small but 13.5 and 16.7 times slower than FP16 in vLLM, because vLLM runs models with rounded activations on slower kernels. The searched models use a higher threshold than the single-stage experiment (0.76 to 0.88 against 0.5), so fewer layers keep 8 bits: their vLLM files are 0.84 to 0.90~GB and their Hugging Face perplexity is 11.1 to 11.5, against 10.2 to 10.5 for the plan-based quantization of Figure~\ref{fig:dumbbell}. In the models within both limits the pruning ratio chosen by the search is zero or small: the joint search itself turns pruning nearly off.
+\textbf{Joint pipeline.} Table~\ref{tab:finals} gives the final models of four searches over the joint pipeline. Figure~\ref{fig:finals} compares each final model with the FP16 model in vLLM, and Figure~\ref{fig:finals-size} shows the trade of quality against size. Under the two limits, the search for the lowest perplexity selected OmniQuant on the weights only (threshold 0.857, per-channel groups, 32 calibration windows of C4), unstructured pruning with a ratio of 0.082 and InfiniGen. Restricted to weight-only quantization, the search selected round-to-nearest (threshold 0.800, which protects five layers; groups of 64; 128 windows of C4), no pruning and SnapKV. Both models are about 60 percent smaller and 20 percent faster than FP16 in vLLM. Two earlier searches, with the perplexity limit only and size as the first objective, selected GPTQ with round-to-nearest activations and SqueezeLLM with SmoothQuant. These two models are equally small but 13.5 and 16.7 times slower than FP16 in vLLM, because vLLM runs models with rounded activations on slower kernels. The searched models use a higher threshold than the single-stage experiment (0.76 to 0.88 against 0.5), so fewer layers keep 8 bits: their vLLM files are 0.84 to 0.90~GB and their Hugging Face perplexity is 11.1 to 11.5, against 10.2 to 10.5 for the plan-based quantization of Figure~\ref{fig:dumbbell}. In the models within both limits the pruning ratio chosen by the search is zero or small: the joint search itself turns pruning nearly off.
+
+\begin{figure}[tp]
+\centering
+\includegraphics[width=0.95\textwidth]{Figures/ch5-finals-dumbbell.pdf}
+\caption{The full framework: each final model (square) against the FP16 model (circle), measured in vLLM. Each row names the search and the quantization, pruning and KV-cache settings of its final model. Further left is better in all three panels.}
+\label{fig:finals}
+\end{figure}
+
+\begin{figure}[tp]
+\centering
+\includegraphics[width=0.6\textwidth]{Figures/ch5-finals-size.pdf}
+\caption{Quality against size for the full framework. Each line joins the FP16 model (circle) to one final model (square). Lower is better for perplexity and smaller is better for size.}
+\label{fig:finals-size}
+\end{figure}
 
 \begin{table}[tp]
 \caption{Final models of four searches over the joint pipeline, measured in vLLM on the A100. Perplexity is given on the validation set and on the held-out set. Lower is better for size, perplexity, latency and memory; higher is better for accuracy. HF: Hugging Face.}
