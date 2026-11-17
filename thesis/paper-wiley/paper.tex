@@ -156,7 +156,7 @@ A configuration of the joint pipeline consists of one technique for each of Stag
 
 \subsection{Framework Execution Workflow}
 
-Figure~\ref{fig:workflow} shows one search run. For each proposed configuration, Stage~0 makes the plans from the cached measurements, one model is built through Stages~1, 2 and 3 in sequence, and the model is measured in Hugging Face and in vLLM. The objective values and any shortfall are returned to the optimiser. A combination that was already built in an earlier run is not built again; its logged measurements are reused. After the last try, the configuration that meets every limit and is best on the first objective is built again as the final model and evaluated in full, including task accuracy.
+Figure~\ref{fig:workflow} shows one search run. For each proposed configuration, Stage~0 makes the plans from the cached measurements, one model is built through Stages~1, 2 and 3 in sequence, and the model is measured in Hugging Face and in vLLM. Both are needed: Hugging Face is where the compression is applied, so it gives the perplexity of the model as it was built, while vLLM is the engine that serves the model, so it gives the real file size and decode latency, which the simulated model does not show. The objective values and any shortfall are returned to the optimiser. A combination that was already built in an earlier run is not built again; its logged measurements are reused. After the last try, the configuration that meets every limit and is best on the first objective is built again as the final model and evaluated in full, including task accuracy.
 
 \begin{figure}[tp]
 \centering
