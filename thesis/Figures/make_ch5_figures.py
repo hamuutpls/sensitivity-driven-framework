@@ -100,7 +100,7 @@ def kv():
     save(fig, "ch5-kv.pdf")
 
 
-def sensitivity():
+def sensitivity(word="bypassed", out="ch5-sensitivity.pdf"):
     r = rows("stage0-per-layer.csv")
     fig, ax = plt.subplots(figsize=(7.2, 3.0))
     for x in r:
@@ -113,8 +113,8 @@ def sensitivity():
                        Patch(fc=OURS, hatch="//", ec="white", label="protected (8 bits)"),
                        Patch(fc="#999999", label="compressed (4 bits, pruned)")], frameon=False, fontsize=8)
     ax.set_yscale("log"), ax.set_xticks(range(22)), ax.set_xlabel("Decoder layer")
-    ax.set_ylabel("Rise in calibration perplexity\nwhen the layer is bypassed (log scale)")
-    save(fig, "ch5-sensitivity.pdf")
+    ax.set_ylabel("Rise in calibration perplexity\nwhen the layer is %s (log scale)" % word)
+    save(fig, out)
 
 
 def tries():
@@ -333,3 +333,5 @@ if __name__ == "__main__":
     quant_wa_dumbbell()
     finals_dumbbell()
     finals_size()
+    # Wiley paper variant: the paper says "skipped" for a bypassed layer
+    sensitivity("skipped", "../paper-wiley/Figures/ch5-sensitivity.pdf")
