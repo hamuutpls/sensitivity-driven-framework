@@ -95,7 +95,7 @@ The framework separates two questions. \emph{Where} to compress, that is, which 
 
 \subsection{Framework Architecture}
 
-Figure~\ref{fig:arch} shows the five stages. Stage~0 takes the 16-bit floating-point (FP16) model and calibration text and writes the plans. Stages~1, 2 and 3 quantize the model, prune it and compress its KV cache by following the plans. Stage~4 measures the result. A search sits on top: it proposes one technique for each of Stages~1 to 3 and the plan settings, receives the Stage~4 measurements, and proposes the next configuration.
+Figure~\ref{fig:arch} shows the five stages. Stage~0 takes the 16-bit floating-point (FP16) TinyLlama model and calibration text and writes the plans. Stages~1, 2 and 3 quantize the model, prune it and compress its KV cache by following the plans. Stage~4 measures the result. A search sits on top: it proposes one technique for each of Stages~1 to 3 and the plan settings, receives the Stage~4 measurements, and proposes the next configuration.
 
 \begin{figure}[tp]
 \centering
