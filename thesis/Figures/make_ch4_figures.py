@@ -35,7 +35,7 @@ def arrow(ax, a, b, text=None, rad=0.0, off=(0, 0.08), style="-|>", ls="-"):
         ax.text((a[0] + b[0]) / 2 + off[0], (a[1] + b[1]) / 2 + off[1], text, ha="center", va="bottom", size=8.5)
 
 
-def overview():
+def overview(model_label="TinyLlama", out=None):
     fig, ax = plt.subplots(figsize=(8.0, 5.15))
     ax.set_xlim(0, 12.8), ax.set_ylim(0, 8.2), ax.axis("off")
     w, h, y = 2.36, 2.3, 2.6
@@ -52,7 +52,7 @@ def overview():
     for a, b in zip(xs, xs[1:]):
         arrow(ax, (a + w, y + h / 2), (b, y + h / 2))
     # inputs
-    box(ax, xs[0], 0.35, w, 1.3, "TinyLlama", GREY)
+    box(ax, xs[0], 0.35, w, 1.3, model_label, GREY)
     arrow(ax, (xs[0] + w / 2, 1.65), (xs[0] + w / 2, y))
     # plans handed down
     ax.plot([xs[0] + w / 2 + 0.6, xs[0] + w / 2 + 0.6], [y, 2.05], color=EDGE, lw=1.0, ls="--")
@@ -74,7 +74,7 @@ def overview():
         arrow(ax, (x + w / 2, ty), (x + w / 2, y + h))
     ax.text(xs[2] + w / 2 - 0.12, ty + 0.07, "one technique and settings for each stage", ha="right", va="bottom", size=8.5)
     arrow(ax, (xs[4] + w / 2, y + h), (xs[4] + w / 2, 6.3), "measurements", off=(-1.1, -0.55))
-    fig.savefig(HERE / "ch4-framework-overview.pdf", bbox_inches="tight", pad_inches=0.02)
+    fig.savefig(out or HERE / "ch4-framework-overview.pdf", bbox_inches="tight", pad_inches=0.02)
     plt.close(fig)
 
 
@@ -122,3 +122,5 @@ def search_loop():
 if __name__ == "__main__":
     overview()
     search_loop()
+    # Wiley paper variant of the overview (input box names the model generically)
+    overview("Desired model\n(TinyLlama in\nour case)", HERE.parent / "paper-wiley" / "Figures" / "ch4-framework-overview.pdf")
