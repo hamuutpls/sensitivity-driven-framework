@@ -243,26 +243,22 @@ Mean accuracy & 0.625 & 0.556 & 0.495 & 0.538 & 0.539 \\
 
 \textbf{Optimizers.} In the two searches for the smallest model, the Bayesian optimizer and successive halving were run with the same search space and budget. The Bayesian optimizer built 30 models in 245 and about 190 minutes. It found a smaller acceptable model than successive halving in the first search (a predicted size of 0.924 against 0.939~GB) and eight acceptable models against none in the second. Successive halving built 129 and 130 models in 495 and about 500 minutes.
 
-\textbf{Published work.} Table~\ref{tab:published} sets the two final models found under both limits next to published studies that compress the same model, TinyLlama. The engines, the hardware and the evaluation settings differ, so only the change against each study's own uncompressed TinyLlama is compared. One of the six studies applies more than one kind of compression to TinyLlama: it prunes, recovers with LoRA and quantizes to the GGUF format, and it reports task scores but no perplexity \cite{das2026largemodels}. The other five use quantization only or pruning only. Among the studies that report perplexity, 8-bit quantization raises it by 4.7 percent and pruning half of the weights by 38.6 to 44.4 percent, against 9.0 percent for our round-to-nearest model, which is 59 percent smaller. None of the listed studies combines quantization, pruning and KV-cache compression on TinyLlama, and none measures the model in vLLM.
+\textbf{Published work.} We compare with published studies that compress the same model, TinyLlama, and we compare only results measured in the same backend. Table~\ref{tab:published} covers Hugging Face, where two pruning studies report perplexity and accuracy. Our two final models found under both limits raise the Hugging Face perplexity by 9.2 and 13.0 percent while the vLLM file becomes 59 and 62 percent smaller; pruning half of the weights raises it by 38.6 to 44.4 percent, and pruning 30 percent by 6.9 percent. The pruning studies lose less accuracy than our models. For the other backends there is no result on both sides. In llama.cpp, Das et al.\ prune 7 percent of TinyLlama, recover with LoRA and quantize to 4-bit GGUF; the FP16 file becomes 4.9 percent smaller and the SQuAD F1 score falls by 52 percent \cite{das2026largemodels}; our final models were not measured in llama.cpp. On a phone processor, MobileQuant quantizes weights and activations to 8 bits with 4.7 percent higher perplexity and 15 percent lower decode time than with 16-bit activations \cite{tan2024mobilequant}. EdgeProfiler estimates with an analytical model that 4-bit TinyLlama is 71 percent smaller and 2.45 times faster \cite{pinnock2025edgeprofiler}, and Belhaouari and Kraidia report 45 percent compression and a 1.68 times speedup from pruning with retraining \cite{belhaouari2025smartpruning}. We found no published study that measures a compressed TinyLlama in vLLM, or that combines quantization, pruning and KV-cache compression on it.
 
 \begin{table}[tp]
-\caption{Change against each study's own uncompressed TinyLlama. Values for other studies are calculated from the numbers reported in the cited papers (perplexity on WikiText-2). Our perplexity is the vLLM value on the validation set. A dash means that the paper does not report the value.}
+\caption{Hugging Face results on TinyLlama: change against each study's own uncompressed model. Values for other studies are calculated from the numbers reported in the cited papers (perplexity on WikiText-2). Our perplexity is the Hugging Face value on the validation set.}
 \label{tab:published}
 \scriptsize
 \renewcommand{\arraystretch}{1.15}
-\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{2.7cm}>{\raggedright\arraybackslash}p{2.2cm}>{\raggedright\arraybackslash}p{2.1cm}>{\raggedright\arraybackslash}p{0.95cm}>{\raggedright\arraybackslash}X}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{3.0cm}>{\raggedright\arraybackslash}p{1.6cm}>{\raggedright\arraybackslash}p{2.4cm}}
 \hline
-\textbf{Study} & \textbf{Methods used} & \textbf{Measured on} & \textbf{Perplexity} & \textbf{Other reported change} \\
+\textbf{Study} & \textbf{Methods used} & \textbf{Perplexity} & \textbf{Mean accuracy} \\
 \hline
-This work: round-to-nearest, weights only ($\tau$ 0.800, group 64); no pruning; SnapKV & Quantization, pruning, KV cache & vLLM, A100 GPU & $+9.0\%$ & Size $-59\%$; decode time $-21\%$; mean accuracy $-21\%$ \\
-This work: OmniQuant, weights only ($\tau$ 0.857, per channel); pruning 0.082; InfiniGen & Quantization, pruning, KV cache & vLLM, A100 GPU & $+27.7\%$ & Size $-62\%$; decode time $-22\%$; mean accuracy $-11\%$ \\
-Das et al. \cite{das2026largemodels}, 7\% pruned & Structured pruning, LoRA recovery, 4-bit GGUF quantization & llama.cpp; GPU, CPU, Raspberry Pi & -- & FP16 file size $-4.9\%$; SQuAD F1 $-52\%$ \\
-MobileQuant \cite{tan2024mobilequant}, 8-bit weights and activations & Quantization & Phone processor (Snapdragon 8 Gen 3) & $+4.7\%$ & Decode time $-15\%$ against 16-bit activations \\
-QK-Wanda \cite{ilin2026qkwanda}, 30\% pruned & Unstructured pruning & Hugging Face & $+6.9\%$ & Mean accuracy unchanged (49.93 to 49.96) \\
-QK-Wanda \cite{ilin2026qkwanda}, 50\% pruned & Unstructured pruning & Hugging Face & $+44.4\%$ & Mean accuracy $-2.7\%$ \\
-Thanos \cite{ilin2025thanos}, 50\% pruned & Unstructured pruning & Hugging Face & $+38.6\%$ & Mean accuracy $-7.3\%$ \\
-EdgeProfiler \cite{pinnock2025edgeprofiler}, 4-bit & Quantization & Analytical model (estimated) & -- & Size $-71\%$; 2.45$\times$ faster \\
-Belhaouari and Kraidia \cite{belhaouari2025smartpruning} & Pruning with retraining & -- & -- & 45\% compression; 1.68$\times$ faster \\
+This work: round-to-nearest, weights only ($\tau$ 0.800, group 64); no pruning; SnapKV & Quantization, pruning, KV cache & $+9.2\%$ & $-21\%$ \\
+This work: OmniQuant, weights only ($\tau$ 0.857, per channel); pruning 0.082; InfiniGen & Quantization, pruning, KV cache & $+13.0\%$ & $-11\%$ \\
+QK-Wanda \cite{ilin2026qkwanda}, 30\% pruned & Unstructured pruning & $+6.9\%$ & unchanged \\
+QK-Wanda \cite{ilin2026qkwanda}, 50\% pruned & Unstructured pruning & $+44.4\%$ & $-2.7\%$ \\
+Thanos \cite{ilin2025thanos}, 50\% pruned & Unstructured pruning & $+38.6\%$ & $-7.3\%$ \\
 \hline
 \end{tabularx}
 \end{table}
@@ -302,7 +298,7 @@ Belhaouari and Kraidia \cite{belhaouari2025smartpruning} & Pruning with retraini
 
 Three points stand out. First, in the engine studied only weight-only quantization improved both size and latency: the models with low-bit activations are just as small but much slower in vLLM, and the search chose little or no pruning. Second, a simulated result does not always hold in the engine: the export changed the perplexity of two of the four final models, so a limit should be checked on the model as it is served. Third, perplexity did not rank the final models by task accuracy: every final model lost 11 to 21 percent of the mean accuracy, and the model with the lowest perplexity lost the most. A requirement that is meant to protect accuracy needs an accuracy measurement among its limits.
 
-The evidence has limits. The results are for one model of 1.1 billion parameters and one seed, on one GPU and not on an edge device, so they may not carry over unchanged to other architectures, sizes or hardware. The comparison with published work uses relative changes measured in different engines, on different hardware and with different evaluation settings, so it shows the order of the changes and is not a direct ranking. Most techniques are simplified re-implementations, and their numbers are not those of the original methods. The KV-cache techniques run only in the Hugging Face model, and they could not be exported. Finally, the number of tries of a search is small compared with the search space, and a search that found no acceptable configuration does not show that none exists.
+The evidence has limits. The results are for one model of 1.1 billion parameters and one seed, on one GPU and not on an edge device, so they may not carry over unchanged to other architectures, sizes or hardware. The comparison with published work is limited to Hugging Face, because no published TinyLlama result exists in vLLM, and it uses relative changes under different evaluation settings and accuracy tasks. Most techniques are simplified re-implementations, and their numbers are not those of the original methods. The KV-cache techniques run only in the Hugging Face model, and they could not be exported. Finally, the number of tries of a search is small compared with the search space, and a search that found no acceptable configuration does not show that none exists.
 
 \section{Conclusion and Future Work}
 \label{sec:conclusion}
