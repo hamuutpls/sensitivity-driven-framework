@@ -1,0 +1,20 @@
+\chapter*{Executive Summary}
+\addchaptertocentry{Executive Summary}
+
+\noindent\textbf{Problem.} A large language model (LLM) is expensive to run: its weights and its key--value (KV) cache must fit in GPU memory, and the speed of token generation is limited by how fast the weights can be read from memory. Compression methods such as quantization, pruning and KV-cache compression reduce this cost. Two things are missing in the published work reviewed in Chapter~\ref{Chapter3}: the methods are rarely compared under identical conditions, and they are mostly judged by simulated perplexity, not by the size and speed of the model in the inference engine that would serve it.
+
+\medskip\noindent\textbf{What was built.} The thesis implements a five-stage framework and applies it to TinyLlama, a 1.1-billion-parameter model of the Llama family. Stage~0 measures how sensitive each of the 22 decoder layers is and writes per-layer plans. Stages~1, 2 and 3 quantize the model, prune it and compress its KV cache with published techniques. Every technique is run twice with the same code: on a uniform plan (\emph{Standard}) and on the Stage~0 plan (\emph{Our method}). Stage~4 measures each model in Hugging Face Transformers, llama.cpp and vLLM. A constrained Bayesian search then chooses one technique per stage and the plan settings under two limits, a perplexity of at most 11.5 and a vLLM decode latency of at most 2.5~ms per token.
+
+\medskip\noindent\textbf{Main results.}
+\begin{itemize}
+  \item Sensitivity is very uneven: five layers (0, 1, 2, 7 and 21) carry almost all of it. Measuring it takes about two minutes.
+  \item Giving 8 bits to the sensitive layers and 4 bits to the rest lowered the perplexity of all eleven weight-quantization techniques compared with 4 bits everywhere, for a file of 1.05~GB instead of 0.81~GB (uncompressed: 2.20~GB). Leaving the sensitive layers unpruned lowered the perplexity of all three pruning techniques at every pruning level.
+  \item The plan is not a gain at equal size: a pruning plan that removes the same total as uniform pruning was worse in 19 of 20 comparisons, and the activation plan, which spends fewer bits than the uniform setting, was worse for eight of twelve techniques.
+  \item Pruning brought no gain in file size or latency in llama.cpp or vLLM, because removed weights are stored as zeros. Models with low-bit activations were small but 13 to 17 times slower than the uncompressed model in vLLM.
+  \item The perplexity of a model can change when it is exported: 11.50 in Hugging Face and 13.00 in vLLM for the same model.
+  \item The search gave two final models. The first uses OmniQuant on the weights only (threshold 0.857), unstructured pruning with a ratio of 0.082 and InfiniGen: 0.838~GB and 1.98~ms per token. The second uses round-to-nearest on the weights only (threshold 0.800), no pruning and SnapKV: 0.898~GB and 2.00~ms per token. The uncompressed model has 2.200~GB and 2.54~ms per token. Both final models are about 60 percent smaller and about 20 percent faster, and their mean accuracy on four tasks is 11 and 21 percent lower.
+\end{itemize}
+
+\noindent\textbf{What it means.} For a model of this kind on a single GPU, weight-only quantization with more bits in the few sensitive layers is the most effective step; pruning is not worth its quality cost unless the engine can use sparse weights; and a model should be chosen on measurements made in the engine that will serve it, with a task accuracy among the requirements.
+
+\medskip\noindent\textbf{Limits of the work.} The results are for one model and one seed, most techniques are simplified re-implementations, and no TensorRT-LLM measurement is reported. Chapter~\ref{Chapter6} lists the future work that follows from these limits.

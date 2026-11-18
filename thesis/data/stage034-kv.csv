@@ -1,0 +1,14 @@
+Method,Version,HF ppl validation,HF ppl held-out,llama.cpp ppl validation,llama.cpp ppl held-out,vLLM ppl validation,vLLM ppl held-out,llama.cpp file size (GB),vLLM file size (GB),Model size (GB),HF decode (ms/token),llama.cpp decode (tokens/s),vLLM decode (ms/token)
+FP16 baseline,FP16 baseline,10.18275861635772,10.62006993254698,8.121,8.5642,10.18254870608438,10.61989565581542,2.201017632,2.200119664,2.200096896,4.242433375003429,423.630904,2.53110091746041
+RTN KV,Standard (no Stage 0),10.25070751164594,10.68441293583142,not measured,not measured,not measured,not measured,not measured,not measured,2.200097024,5.405040012504969,not measured,not measured
+RTN KV,Our method (Stage 0 + method),11.67500985436864,12.00602511256719,not measured,not measured,not measured,not measured,not measured,not measured,2.200097024,5.404656017191201,not measured,not measured
+QuaRot KV,Standard (no Stage 0),10.32871134254564,10.77856145202167,not measured,not measured,not measured,not measured,not measured,not measured,2.200097024,6.123647550003852,not measured,not measured
+QuaRot KV,Our method (Stage 0 + method),11.7898151421685,12.12000475323681,not measured,not measured,not measured,not measured,not measured,not measured,2.200097024,6.123826239064556,not measured,not measured
+KVQuant,Standard (no Stage 0),10.26547671121149,10.70590225080871,not measured,not measured,not measured,not measured,not measured,not measured,2.200097024,8.165077998444303,not measured,not measured
+KVQuant,Our method (Stage 0 + method),11.73836852365033,12.06553974245952,not measured,not measured,not measured,not measured,not measured,not measured,2.200097024,8.162990934386016,not measured,not measured
+H2O,Standard (no Stage 0),11.09668702831371,11.48772414982918,not measured,not measured,not measured,not measured,not measured,not measured,2.200097024,4.160016706248371,not measured,not measured
+H2O,Our method (Stage 0 + method),11.67500985436864,12.00602511256719,not measured,not measured,not measured,not measured,not measured,not measured,2.200097024,5.403429437507157,not measured,not measured
+SnapKV,Standard (no Stage 0),10.56412208422983,10.98664499526119,not measured,not measured,not measured,not measured,not measured,not measured,2.200097024,4.162274034359825,not measured,not measured
+SnapKV,Our method (Stage 0 + method),11.10773658802812,11.50592563062621,not measured,not measured,not measured,not measured,not measured,not measured,2.200097024,5.404353221871361,not measured,not measured
+InfiniGen,Standard (no Stage 0),10.99824555841748,11.40817661956845,not measured,not measured,not measured,not measured,not measured,not measured,2.200097024,4.163084687490937,not measured,not measured
+InfiniGen,Our method (Stage 0 + method),10.38174867618479,10.79822034499695,not measured,not measured,not measured,not measured,not measured,not measured,2.200097024,5.404564553128921,not measured,not measured

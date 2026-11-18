@@ -1,0 +1,15 @@
+Search,Which model,Techniques,HF ppl validation,HF ppl held-out,vLLM ppl validation,vLLM ppl held-out,vLLM file size (GB),vLLM decode (ms/token)
+FP16 baseline (uncompressed),FP16 baseline,none,10.18,10.62,10.18,10.62,2.2,2.54
+Smallest model with perplexity up to 11.5 (rerun after a bug fix),final,GPTQ + RTN activations; Unstructured (Wanda) 0; KV InfiniGen,11.23,11.62,12.09,12.52,0.894,34.42
+"Smallest model with perplexity up to 11.5, 3-bit layers allowed",final,SqueezeLLM + SmoothQuant; Unstructured (Wanda) 0.262; KV InfiniGen,11.44,11.87,11.46,11.89,0.873,42.45
+Lowest perplexity with perplexity up to 11.5 and decode up to 2.5 ms/token,final,"OmniQuant, weights only (activations 16-bit); Unstructured (Wanda) 0.082; KV InfiniGen",11.5,11.91,13,13.41,0.838,1.98
+"Same goal as run 8, weight-only quantization only",final,"RTN, weights only (activations 16-bit); Unstructured (Wanda) 0; KV SnapKV (kept share 0.259)",11.12,11.52,11.1,11.54,0.898,2
+Lowest perplexity with perplexity up to 11.5 and decode up to 2.0 ms/token,final,"OmniQuant, weights only (activations 16-bit); Unstructured (Wanda) 0.031; KV InfiniGen",11.5,11.91,13,13.41,0.838,2.04
+"Lowest-perplexity + smallest-size search (perplexity judged in vLLM), 30 tries",closest fast,"OmniQuant, weights only (activations 16-bit); Unstructured (Wanda) 0.083; KV RTN KV (4 bits average)",12.68,12.98,12.97,13.36,0.86,2.09
+"Lowest-perplexity + smallest-size search (perplexity judged in vLLM), 30 tries",lowest vLLM ppl,RTN + SmoothQuant; Unstructured (Wanda) 0.063; KV H2O (kept share 0.259),12.06,12.44,10.98,11.44,0.896,42
+"Fastest + smallest-size search (perplexity judged in vLLM), 30 tries",fastest,"OmniQuant, weights only (activations 16-bit); Unstructured (Wanda) 0; KV InfiniGen (kept share 0.259)",11.42,11.81,12.98,13.37,0.86,1.99
+"Fastest + smallest-size search (perplexity judged in vLLM), 30 tries",lowest vLLM ppl,"OmniQuant, weights only (activations 16-bit); Unstructured (Wanda) 0; KV H2O (kept share 0.259)",12.67,12.98,12.97,13.35,0.86,2.1
+"Lowest-perplexity + smallest-size search, 10 more tries (40 in total)",lowest vLLM ppl of new tries,"OmniQuant, weights only (activations 16-bit); Unstructured (Wanda) 0.087; KV SnapKV (kept share 0.259)",12.03,12.41,12.97,13.36,0.86,2.02
+"Lowest-perplexity + smallest-size search, 10 more tries (40 in total)",fastest of new tries,"OmniQuant, weights only (activations 16-bit); Unstructured (Wanda) 0.17; KV InfiniGen (kept share 0.259)",11.43,11.82,13,13.39,0.86,1.97
+"Fastest + smallest-size search, 10 more tries (40 in total)",fastest of new tries,"OmniQuant, weights only (activations 16-bit); Unstructured (Wanda) 0.015; KV SnapKV (kept share 0.259)",12.14,12.54,13,13.41,0.838,1.98
+"Fastest + smallest-size search, 10 more tries (40 in total)",lowest vLLM ppl of new tries,"OmniQuant, weights only (activations 16-bit); Unstructured (Wanda) 0.042; KV QuaRot KV (4 bits)",12.82,13.13,12.97,13.36,0.86,2.06

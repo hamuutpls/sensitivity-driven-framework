@@ -1,0 +1,50 @@
+\chapter{Conclusions and Future Work}
+\label{Chapter6}
+
+\section{Summary of the Work}
+\label{sec:ch6-summary}
+
+This thesis built a framework that compresses a decoder-only LLM in stages and measures the result in the engines that would deploy it. Stage~0 measures each decoder layer by the rise in calibration perplexity when the layer is bypassed and writes per-layer plans for the weights, the activations, pruning and the KV cache. Stages~1 to 3 apply published quantization, pruning and KV-cache techniques that follow those plans, and each technique is also run on a uniform plan with the same code, so that Standard and Our method differ only in the plan. Stage~4 measures the model in Hugging Face Transformers and, after export, in llama.cpp and vLLM. A constrained Bayesian search chooses one technique per stage and the plan settings under limits on perplexity and decode latency. The six objectives of Chapter~1 were carried out on TinyLlama.
+
+\section{Conclusions}
+\label{sec:ch6-conclusions}
+
+The main findings, each for TinyLlama under the conditions of Chapter~\ref{Chapter4}, are the following.
+
+\begin{enumerate}
+  \item \textbf{Sensitivity is concentrated in a few layers and is cheap to measure.} Five of the 22 layers account for almost all of the measured sensitivity, with layers 0 and 2 far ahead of the rest. The profile takes about two minutes on one GPU and is reused by every later run.
+  \item \textbf{Protecting the sensitive layers improves quality at a cost in size.} With 8 bits in the 11 protected layers, all eleven weight techniques have a lower perplexity than at 4 bits in every layer, in Hugging Face and in llama.cpp, for a file of 1.05~GB instead of 0.81~GB. With the protected layers left unpruned, all three pruning techniques have a lower perplexity at every level. The plan narrows the difference between techniques: round-to-nearest on the plan (10.41) comes close to the best technique on the uniform plan (10.27).
+  \item \textbf{The plan does not help where it spends fewer bits than the uniform setting, or at equal size in pruning.} The activation plan (6 bits on average) was worse than uniform 8-bit activations for eight of twelve techniques. The pruning plan that removes the same total as uniform pruning was worse than uniform pruning in 19 of 20 comparisons. The KV-cache plan gives a cache 3 to 4 times smaller at a higher perplexity for five of six techniques.
+  \item \textbf{In the engines studied, only quantization reduces size and latency.} A 4-bit file is 0.81~GB against 2.20~GB and runs at twice the tokens per second of FP16 in llama.cpp. Pruned models keep the FP16 file size and the FP16 latency in llama.cpp and vLLM, because the removed weights are stored as zeros.
+  \item \textbf{Simulated results do not carry over unchanged.} The export can change the perplexity (11.50 in Hugging Face and 13.00 in vLLM for the same OmniQuant model), and the kind of quantization decides the speed in vLLM: weight-only models decode in about 2.0~ms per token against 2.54~ms for FP16, and models with rounded activations in 33 to 43~ms.
+  \item \textbf{The search finds deployable models when its limits are measured where the model will run.} Two searches gave final models that are about 60 percent smaller and about 20 percent faster than FP16 in vLLM. The first uses OmniQuant on the weights only (threshold 0.857, per-channel groups, 32 windows of C4), unstructured pruning with a ratio of 0.082 and InfiniGen: 0.838~GB, 1.98~ms per token, perplexity 11.50 in Hugging Face and 13.00 in vLLM, mean accuracy 0.556. The second uses round-to-nearest on the weights only (threshold 0.800, groups of 64, 128 windows of C4), no pruning and SnapKV: 0.898~GB, 2.00~ms per token, perplexity 11.12 in Hugging Face and 11.10 in vLLM, mean accuracy 0.495. The FP16 model has 2.200~GB, 2.54~ms per token, a perplexity of 10.18 and a mean accuracy of 0.625. When the perplexity limit was checked in vLLM, two searches of 40 tries each found no model within both limits.
+  \item \textbf{Perplexity is not enough to protect accuracy.} Every final model lost between 11 and 21 percent of the mean accuracy on the four tasks, and the final model with the lowest perplexity lost the most.
+\end{enumerate}
+
+\section{Guidance for Practitioners}
+\label{sec:ch6-guidance}
+
+The results suggest the following for someone who has to deploy a small LLM of this kind on a single GPU.
+
+\begin{itemize}
+  \item \textbf{Precision.} Start from weight-only quantization. If the 4-bit model is not good enough, give 8 bits to the most sensitive layers before changing the technique; a simple technique with a per-layer plan came close to the best technique without one.
+  \item \textbf{Activations.} Keep the activations at 16 bits if latency in vLLM matters. Models with rounded activations were small but 13 to 17 times slower than FP16 in vLLM.
+  \item \textbf{Pruning.} Do not prune for size or speed unless the engine stores or runs sparse weights. If pruning is used, leave the most sensitive layers unpruned.
+  \item \textbf{KV cache.} Choose a KV-cache technique for memory, not for speed, and check its effect on task accuracy.
+  \item \textbf{Measurement.} Measure perplexity, size and latency in the engine that will serve the model, and include a task accuracy in the requirement.
+\end{itemize}
+
+\section{Future Work}
+\label{sec:ch6-future}
+
+Several directions follow from the limitations stated in Section~\ref{sec:ch5-limits}.
+
+\begin{itemize}
+  \item \textbf{Other models and seeds.} Repeating the experiments on larger models of the Llama family and with several seeds would show whether the findings transfer and how large the variation between runs is.
+  \item \textbf{Comparisons at equal size.} A quantization plan that has the same file size as the uniform 4-bit model, for example with layers below 4 bits, would show whether the plan helps at equal size, which the pruning experiment could test and the quantization experiment could not.
+  \item \textbf{Export-aware quantization.} The Hugging Face and the vLLM perplexity differed for the models whose weights are re-rounded during export. Rounding the weights directly onto the grid of the target engine would avoid the second rounding.
+  \item \textbf{Accuracy in the requirement.} Adding a task accuracy as a limit or as an objective of the search would address the loss of accuracy seen in every final model.
+  \item \textbf{Engines and sparse formats.} Measurements in TensorRT-LLM, and in an engine that stores pruned weights in a sparse format, would complete the comparison across engines and give pruning a fair test of size and speed.
+  \item \textbf{KV cache in the engines.} Implementing the KV-cache techniques inside an engine, and testing them with longer contexts and larger batches where the cache is a larger share of the memory, would allow their effect on memory and speed to be measured.
+  \item \textbf{Other sensitivity scores.} The framework implements six other scores that were not used in the experiments; comparing the plans they produce is a direct extension.
+\end{itemize}
