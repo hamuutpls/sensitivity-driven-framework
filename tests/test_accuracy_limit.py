@@ -35,7 +35,7 @@ def test_the_accuracy_limit_needs_the_tasks(cfg):
         search.run_search(start_run(cfg.with_overrides({"requirement.min_accuracy": 0.6})))
 
 
-@pytest.mark.parametrize("limit, want", [(None, []), (0.6, ["arc_easy", "piqa"])])
+@pytest.mark.parametrize("limit, want", [(None, ([], None)), (0.6, (["arc_easy", "piqa"], 500))])
 def test_every_try_runs_the_accuracy_tasks_only_when_accuracy_is_a_limit(cfg, tokenizer, monkeypatch, limit, want):
     monkeypatch.setitem(sys.modules, "lm_eval", object())  # checked before the tries; no test is run here
     seen = []
@@ -44,17 +44,18 @@ def test_every_try_runs_the_accuracy_tasks_only_when_accuracy_is_a_limit(cfg, to
         pass
 
     def recorder(ctx, *a, **k):
-        seen.append(ctx.cfg.eval.downstream_tasks)
+        seen.append((ctx.cfg.eval.downstream_tasks, ctx.cfg.eval.downstream_limit))
         raise Stop
 
     monkeypatch.setattr(search, "Recorder", recorder)
     from conftest import fake_texts
 
-    run = start_run(cfg.with_overrides({"requirement.min_accuracy": limit,
+    run = start_run(cfg.with_overrides({"requirement.min_accuracy": limit, "search.accuracy_try_limit": 500,
                                         "search.accuracy_tasks": ["arc_easy", "piqa"]}))
     with pytest.raises(Stop):
         search.run_search(run, tokenizer=tokenizer, text_loader=fake_texts)
-    assert seen == [want]
+    assert seen == [want]  # the try limit only with the accuracy limit; the run's own limit (None) otherwise
+    assert run.cfg.eval.downstream_limit is None  # the final model keeps eval.downstream_limit
 
 
 def test_the_report_lists_the_accuracy_limit_as_a_minimum(cfg):

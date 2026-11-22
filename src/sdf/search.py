@@ -620,8 +620,10 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     off = {k: v for k, v in NO_BACKENDS.items() if not (needs_vllm and k == "eval.vllm_python")}
     # accuracy tasks only on the final model, unless the accuracy is a limit: then every try is tested on them
     try_tasks = list(s.accuracy_tasks) if cfg.requirement.min_accuracy is not None else []
-    tries = RunContext(cfg.with_overrides({**off, "eval.downstream_tasks": try_tasks}), ctx.run_id, ctx.run_dir,
-                       ctx.cache)
+    try_limit = ({"eval.downstream_limit": s.accuracy_try_limit}
+                 if try_tasks and s.accuracy_try_limit is not None else {})
+    tries = RunContext(cfg.with_overrides({**off, "eval.downstream_tasks": try_tasks, **try_limit}), ctx.run_id,
+                       ctx.run_dir, ctx.cache)
     trials: list[dict[str, Any]] = []
     tried = TriedLog(tried_path(ctx), ctx.run_id)
     for name in s.searchers:

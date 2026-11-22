@@ -188,6 +188,8 @@ SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]
 SEARCH_FINALISTS = 3  # MODE "stage_search": chained models built and measured under the limit, best pairs first
 # MODE "search": lm-eval tasks the final model (the best under the limits on SEARCH_OBJECTIVES' first, then the
 # next) is tested on (Mohammad, 2026-10-25: "then that accuracy will be compared with tinyllama accuracy"); [] = none
+SEARCH_ACCURACY_TRY_LIMIT = None  # with MIN_ACCURACY: questions per task in each try (None: DOWNSTREAM_LIMIT); the
+# final model is still tested on DOWNSTREAM_LIMIT questions
 SEARCH_ACCURACY_TASKS = ["arc_easy", "piqa", "hellaswag", "winogrande"]  # full sets; picked as quick and standard
 # MODE "search": one chained try each after the search (the best setting with only its Stage 1 technique changed), for
 # those no search method measured (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"); shown in
@@ -243,6 +245,7 @@ def build_config():
         "search.finalists": SEARCH_FINALISTS,
         "search.extra_stage1": SEARCH_EXTRA_STAGE1,
         "search.accuracy_tasks": SEARCH_ACCURACY_TASKS,
+        "search.accuracy_try_limit": SEARCH_ACCURACY_TRY_LIMIT,
         "search.joint_plan": SEARCH_JOINT_PLAN,
         "search.ranges": SEARCH_RANGES,
         "search.low_threshold_max": SEARCH_LOW_THRESHOLD_MAX,
