@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from sdf.reporting.metrics import NOT_IN_VERDICT, ONE_OFF_COSTS, is_better, is_number, label
-from sdf.requirements import LATENCY, PPL, DeploymentRequirement, with_limit_metrics
+from sdf.requirements import LATENCY, LOWER_BOUNDS, PPL, DeploymentRequirement, with_limit_metrics
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.logging import get_logger
 
@@ -267,7 +267,8 @@ class StageReporter:
             lines.append(text)
         for r in self.rows:
             if r.status == "ok" and r.requirement.get("met") is False:
-                gaps = ", ".join(f"{k} over by {v:.4g}" for k, v in r.requirement["shortfall"].items())
+                gaps = ", ".join(f"{k} {'under' if k in LOWER_BOUNDS else 'over'} by {v:.4g}"
+                                 for k, v in r.requirement["shortfall"].items())
                 lines.append(f"{r.key} misses the deployment requirement: {gaps}.")
         return lines
 

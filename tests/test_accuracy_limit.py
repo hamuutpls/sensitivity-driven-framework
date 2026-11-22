@@ -55,3 +55,20 @@ def test_every_try_runs_the_accuracy_tasks_only_when_accuracy_is_a_limit(cfg, to
     with pytest.raises(Stop):
         search.run_search(run, tokenizer=tokenizer, text_loader=fake_texts)
     assert seen == [want]
+
+
+def test_the_report_lists_the_accuracy_limit_as_a_minimum(cfg):
+    from sdf.reporting.search import _req
+
+    assert _req(cfg.with_overrides({"requirement.target_ppl": None, "requirement.target_latency_ms": None,
+                                    "requirement.target_memory_gb": None})) == "no limits set"
+    text = _req(cfg.with_overrides({"requirement.min_accuracy": 0.6, "requirement.target_ppl": 11.5}))
+    assert "at least 0.6" in text and "at most 11.5" in text
+
+
+def test_the_per_stage_search_refuses_the_accuracy_limit(cfg):
+    from sdf.stage_search import run_stage_search
+
+    with pytest.raises(ValueError, match="min_accuracy"):
+        run_stage_search(start_run(cfg.with_overrides({"requirement.min_accuracy": 0.6,
+                                                       "requirement.target_memory_gb": 1.0})))

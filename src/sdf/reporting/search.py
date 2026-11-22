@@ -140,8 +140,9 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
     # --- report
     # the limits' perplexities too, so a try that misses only the vLLM limit has the number that explains why
     vllm_ppl = "vllm_ppl_val" if cfg.requirement.target_vllm_ppl is not None else None
+    acc_limit = "downstream_acc_mean" if cfg.requirement.min_accuracy is not None else None
     shown = list(dict.fromkeys(m for m in (s.objectives[0], s.memory_metric, *s.objectives[1:], s.ppl_metric, vllm_ppl,
-                                           "ppl_heldout") if m))
+                                           acc_limit, "ppl_heldout") if m))
     tech = [n for n in ("stage1_method", "stage2_method", "prune_ratio_aggressive", "stage3_method") if n in names]
     rest = [n for n in names if n not in tech]
     lines = [
@@ -175,7 +176,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         "was measured but never used to choose, so it shows how well the choice holds on unseen text.", "",
         "## Best trade-off settings", "",
         _md([["#"] + [{"stage3_method": "Stage 3 technique"}.get(n, SETTING_NAMES[n]) for n in tech]
-             + [label(m) + " (lower is better)" for m in shown]]
+             + [label(m) + (" (higher is better)" if m == acc_limit else " (lower is better)") for m in shown]]
             + [[str(i + 1)] + [setting_value(n, t["point"][n]) for n in tech] + [_fmt(t["metrics"].get(m)) for m in shown]
                for i, t in enumerate(front)]),
         "The other settings of each option:", "",
@@ -235,7 +236,9 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             "## Accuracy of the final model", "",
             "**What this shows:** how many test questions the best final model still answers correctly, next to "
             "the uncompressed TinyLlama. **What it means:** a small change says the compression kept the model's "
-            "ability; a large drop says the lower perplexity did not carry over to answering questions.", "",
+            "ability; a large drop says the lower perplexity did not carry over to answering questions."
+            + (f" Here accuracy was also a limit: every try was tested and had to reach a mean of at least "
+               f"{cfg.requirement.min_accuracy}." if cfg.requirement.min_accuracy is not None else ""), "",
             f"{pick[0].upper() + pick[1:]} ({which}) was built again and tested on multiple-choice tasks: the share of questions it "
             "answers correctly (higher is better), next to the uncompressed model's on the same tasks, measured in the "
             "same run.", "",
@@ -253,7 +256,8 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
             "the trade-off line, but one is the final model (Stage 4 above) when it is the best under the "
             f"limit on {label(s.objectives[0]).lower()}.", "",
             _md([["Stage 1 technique", "Our method WxAy (average bits)", "Under the limit"]
-                 + [label(m) + " (lower is better)" for m in shown] + ["Why it failed"]]
+                 + [label(m) + (" (higher is better)" if m == acc_limit else " (lower is better)") for m in shown]
+                 + ["Why it failed"]]
                 + [[setting_value("stage1_method", t["point"]["stage1_method"]), _wxay(t["metrics"]),
                     "yes" if t["met"] else "no"]
                    + [_fmt(t["metrics"].get(m)) for m in shown] + [str(t["error"] or "")] for t in extras])]
@@ -269,6 +273,8 @@ def _req(cfg) -> str:
                                                      ("vllm_ppl_val", r.target_vllm_ppl),
                                                      (cfg.search.latency_metric, r.target_latency_ms),
                                                      ("predicted_kv_memory_gb", r.kv_budget_gb)) if v is not None]
+    if r.min_accuracy is not None:  # the one lower bound: every try is tested on the accuracy tasks
+        parts.append(f"{label('downstream_acc_mean')} at least {r.min_accuracy}")
     return "; ".join(parts) or "no limits set"
 
 
