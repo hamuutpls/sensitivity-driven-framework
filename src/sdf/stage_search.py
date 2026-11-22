@@ -208,6 +208,9 @@ def run_stage_search(ctx: RunContext, model_factory: Callable | None = None, tok
             or req.target_vllm_ppl is not None) and not ctx.cfg.eval.vllm_python:
         raise ValueError("a limit checked on a vLLM metric needs vLLM: set eval.vllm_python (Colab), or no pair can "
                          "meet it")
+    if req.min_accuracy is not None:
+        raise ValueError("requirement.min_accuracy is only checked by MODE 'search' (its tries run the accuracy "
+                         "tasks); the per-stage search measures no accuracy, so no pair could meet it")
     if ctx.cfg.requirement.target_memory_gb is None:
         raise ValueError("set requirement.target_memory_gb: the pairing step keeps the pairs under it")
     root = ctx.run_dir / "stage_search"

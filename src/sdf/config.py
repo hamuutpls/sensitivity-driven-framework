@@ -80,7 +80,7 @@ class EvalConfig:
     trtllm_python: str | None = None
     # Downstream multiple-choice tasks (lm-evaluation-harness task names); empty = not measured.
     downstream_tasks: list[str] = field(default_factory=list)
-    downstream_limit: int | None = None  # questions per task (None = all)
+    downstream_limit: int | dict[str, int] | None = None  # questions per task (None = all), or {task: number}
     downstream_batch_size: int = 8
 
     def __post_init__(self) -> None:
@@ -235,6 +235,9 @@ class SearchConfig:
     ppl_metric: str = "ppl_val"
     mfbo_eta: int = 3  # successive halving: keep the best 1/eta at each rung, with eta times the windows
     finalists: int = 3  # MODE "stage_search": chained models built under the limit from the best Stage 1 + Stage 2 pairs
+    accuracy_try_limit: int | dict[str, int] | None = None  # with requirement.min_accuracy: questions per task in each
+    # try, one number or {task: number} (None: the
+    # same as eval.downstream_limit); the final model is still tested with eval.downstream_limit
     accuracy_tasks: list[str] = field(default_factory=list)  # MODE "search": lm-eval tasks the lowest-perplexity final
     # model under the limit is tested on after the search (none: no accuracy test)
     extra_stage1: list[str] = field(default_factory=list)  # MODE "search": one chained try each after the search,

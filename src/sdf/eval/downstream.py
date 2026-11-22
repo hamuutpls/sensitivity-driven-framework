@@ -28,16 +28,31 @@ def task_metric(task: str) -> str:
     return name
 
 
-def downstream_accuracy(model: nn.Module, tokenizer: Any, tasks: list[str], limit: int | None, batch_size: int,
-                        seed: int) -> dict[str, float]:
+def task_limits(tasks: list[str], limit: int | dict[str, int] | None) -> dict[int | None, list[str]]:
+    """The tasks grouped by their question limit: one number for every task, or {task: number} (a task not named
+    runs all its questions; paper review, 2026-11-22: Mohammad chose 500 HellaSwag questions per search try)."""
+    if not isinstance(limit, dict):
+        return {limit: list(tasks)}
+    if unknown := sorted(set(limit) - set(tasks)):
+        raise ValueError(f"question limits for tasks {unknown} that are not run ({list(tasks)})")
+    groups: dict[int | None, list[str]] = {}
+    for t in tasks:
+        groups.setdefault(limit.get(t), []).append(t)
+    return groups
+
+
+def downstream_accuracy(model: nn.Module, tokenizer: Any, tasks: list[str], limit: int | dict[str, int] | None,
+                        batch_size: int, seed: int) -> dict[str, float]:
     """Accuracy per task (normalised accuracy where the task reports it, as is usual for HellaSwag, ARC and PIQA)
-    and their mean."""
+    and their mean. `limit`: questions per task, for every task or per task ({task: number})."""
     from lm_eval import simple_evaluate
     from lm_eval.models.huggingface import HFLM
 
     lm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=batch_size)
-    res = simple_evaluate(model=lm, tasks=list(tasks), limit=limit, random_seed=seed, numpy_random_seed=seed,
-                          torch_random_seed=seed, fewshot_random_seed=seed)["results"]
+    res = {}
+    for n, group in task_limits(tasks, limit).items():
+        res.update(simple_evaluate(model=lm, tasks=group, limit=n, random_seed=seed, numpy_random_seed=seed,
+                                   torch_random_seed=seed, fewshot_random_seed=seed)["results"])
     out = {}
     for task in tasks:
         r = res[task]

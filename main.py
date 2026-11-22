@@ -155,6 +155,8 @@ SEARCH_LATENCY_METRIC = "vllm_decode_ms_per_token"  # what TARGET_LATENCY_MS is 
 # in every try (needs VLLM_PYTHON); "decode_ms_per_token_mean" = Hugging Face, no backend in the tries
 SEARCH_PPL_METRIC = "ppl_val"  # what TARGET_PPL is checked against: "ppl_val" = Hugging Face; "vllm_ppl_val" = the vLLM
 # file's validation perplexity (runs vLLM in every try, needs VLLM_PYTHON; 2026-10-31)
+MIN_ACCURACY = None  # every try's mean accuracy over SEARCH_ACCURACY_TASKS must be at least this; each try then runs
+# those tests (paper review, 2026-11-22: accuracy as a search limit; None: accuracy tested on the final model only)
 TARGET_VLLM_PPL = None  # the vLLM file's validation perplexity must also be at most this, ON TOP of TARGET_PPL on the
 # Hugging Face model (runs vLLM in every try, needs VLLM_PYTHON; None: no limit). SEARCH_PPL_METRIC replaces the HF check
 SEARCHERS = ["mobo"]  # each gets the same budget and seed (Mohammad, 2026-10-29: "yes from now on mobo only"; was MOBO
@@ -186,6 +188,8 @@ SEARCH_STAGE3 = ["rtn_kv", "quarot_kv", "kvquant", "h2o", "snapkv", "infinigen"]
 SEARCH_FINALISTS = 3  # MODE "stage_search": chained models built and measured under the limit, best pairs first
 # MODE "search": lm-eval tasks the final model (the best under the limits on SEARCH_OBJECTIVES' first, then the
 # next) is tested on (Mohammad, 2026-10-25: "then that accuracy will be compared with tinyllama accuracy"); [] = none
+SEARCH_ACCURACY_TRY_LIMIT = None  # with MIN_ACCURACY: questions per task in each try (None: DOWNSTREAM_LIMIT); the
+# final model is still tested on DOWNSTREAM_LIMIT questions
 SEARCH_ACCURACY_TASKS = ["arc_easy", "piqa", "hellaswag", "winogrande"]  # full sets; picked as quick and standard
 # MODE "search": one chained try each after the search (the best setting with only its Stage 1 technique changed), for
 # those no search method measured (Mohammad, 2026-10-25: "i want to see spqr quip quip# results included"); shown in
@@ -228,6 +232,7 @@ def build_config():
         "requirement.target_ppl": TARGET_PPL,
         "requirement.target_vllm_ppl": TARGET_VLLM_PPL,
         "requirement.target_latency_ms": TARGET_LATENCY_MS,
+        "requirement.min_accuracy": MIN_ACCURACY,
         "search.latency_metric": SEARCH_LATENCY_METRIC,
         "search.ppl_metric": SEARCH_PPL_METRIC,
         "eval.vllm_python": VLLM_PYTHON,
@@ -240,6 +245,7 @@ def build_config():
         "search.finalists": SEARCH_FINALISTS,
         "search.extra_stage1": SEARCH_EXTRA_STAGE1,
         "search.accuracy_tasks": SEARCH_ACCURACY_TASKS,
+        "search.accuracy_try_limit": SEARCH_ACCURACY_TRY_LIMIT,
         "search.joint_plan": SEARCH_JOINT_PLAN,
         "search.ranges": SEARCH_RANGES,
         "search.low_threshold_max": SEARCH_LOW_THRESHOLD_MAX,

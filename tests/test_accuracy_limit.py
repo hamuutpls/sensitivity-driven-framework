@@ -1,0 +1,105 @@
+"""Accuracy as a search limit (paper review, 2026-11-22: Mohammad "add both"): requirement.min_accuracy."""
+
+import sys
+
+import pytest
+
+from sdf import search
+from sdf.requirements import DeploymentRequirement
+from sdf.run import start_run
+
+
+def test_min_accuracy_is_a_lower_bound_with_its_shortfall():
+    req = DeploymentRequirement(min_accuracy=0.6, target_ppl=11.5)
+    ok = req.check({"downstream_acc_mean": 0.62, "ppl_val": 11.0})
+    assert ok.met and ok.checked["min_accuracy"] == "downstream_acc_mean"
+    low = req.check({"downstream_acc_mean": 0.55, "ppl_val": 11.0})
+    assert low.met is False and low.shortfall == {"min_accuracy": pytest.approx(0.05)}
+    assert req.check({"ppl_val": 11.0}).met is None  # accuracy not measured: not met yet, not failed
+    both = req.check({"downstream_acc_mean": 0.5, "ppl_val": 12.0})
+    assert set(both.shortfall) == {"min_accuracy", "target_ppl"}
+    assert DeploymentRequirement(min_accuracy=0.6).check({"downstream_acc_mean": float("nan")}).met is False
+
+
+@pytest.fixture
+def cfg(small_cfg):
+    return small_cfg.with_overrides({"search.objectives": ["ppl_val", "predicted_weight_memory_gb"],
+                                     "search.searchers": ["mobo"], "search.budget": 1,
+                                     "search.stage1_methods": ["rtn_with_rtn_act"],
+                                     "search.stage2_methods": ["unstructured_prune"],
+                                     "search.stage3_methods": ["rtn_kv"]})
+
+
+def test_the_accuracy_limit_needs_the_tasks(cfg):
+    with pytest.raises(ValueError, match="min_accuracy"):
+        search.run_search(start_run(cfg.with_overrides({"requirement.min_accuracy": 0.6})))
+
+
+@pytest.mark.parametrize("limit, want", [(None, ([], None)), (0.6, (["arc_easy", "piqa"], 500))])
+def test_every_try_runs_the_accuracy_tasks_only_when_accuracy_is_a_limit(cfg, tokenizer, monkeypatch, limit, want):
+    monkeypatch.setitem(sys.modules, "lm_eval", object())  # checked before the tries; no test is run here
+    seen = []
+
+    class Stop(Exception):
+        pass
+
+    def recorder(ctx, *a, **k):
+        seen.append((ctx.cfg.eval.downstream_tasks, ctx.cfg.eval.downstream_limit))
+        raise Stop
+
+    monkeypatch.setattr(search, "Recorder", recorder)
+    from conftest import fake_texts
+
+    run = start_run(cfg.with_overrides({"requirement.min_accuracy": limit, "search.accuracy_try_limit": 500,
+                                        "search.accuracy_tasks": ["arc_easy", "piqa"]}))
+    with pytest.raises(Stop):
+        search.run_search(run, tokenizer=tokenizer, text_loader=fake_texts)
+    assert seen == [want]  # the try limit only with the accuracy limit; the run's own limit (None) otherwise
+    assert run.cfg.eval.downstream_limit is None  # the final model keeps eval.downstream_limit
+
+
+def test_the_report_lists_the_accuracy_limit_as_a_minimum(cfg):
+    from sdf.reporting.search import _req
+
+    assert _req(cfg.with_overrides({"requirement.target_ppl": None, "requirement.target_latency_ms": None,
+                                    "requirement.target_memory_gb": None})) == "no limits set"
+    text = _req(cfg.with_overrides({"requirement.min_accuracy": 0.6, "requirement.target_ppl": 11.5}))
+    assert "at least 0.6" in text and "at most 11.5" in text
+
+
+def test_the_per_stage_search_refuses_the_accuracy_limit(cfg):
+    from sdf.stage_search import run_stage_search
+
+    with pytest.raises(ValueError, match="min_accuracy"):
+        run_stage_search(start_run(cfg.with_overrides({"requirement.min_accuracy": 0.6,
+                                                       "requirement.target_memory_gb": 1.0})))
+
+
+def test_a_question_limit_can_be_set_per_task():
+    from sdf.eval.downstream import task_limits
+
+    tasks = ["arc_easy", "piqa", "hellaswag", "winogrande"]
+    assert task_limits(tasks, None) == {None: tasks}
+    assert task_limits(tasks, 500) == {500: tasks}
+    assert task_limits(tasks, {"hellaswag": 500}) == {None: ["arc_easy", "piqa", "winogrande"], 500: ["hellaswag"]}
+    with pytest.raises(ValueError, match="mmlu"):
+        task_limits(tasks, {"mmlu": 100})
+
+
+def test_downstream_accuracy_runs_each_group_with_its_limit(monkeypatch):
+    import types
+
+    from sdf.eval import downstream
+
+    calls = []
+
+    def simple_evaluate(model, tasks, limit, **kw):
+        calls.append((tuple(tasks), limit))
+        return {"results": {t: {"acc,none": 0.5 if t == "hellaswag" else 0.7} for t in tasks}}
+
+    monkeypatch.setitem(sys.modules, "lm_eval", types.SimpleNamespace(simple_evaluate=simple_evaluate))
+    monkeypatch.setitem(sys.modules, "lm_eval.models", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "lm_eval.models.huggingface", types.SimpleNamespace(HFLM=lambda **kw: None))
+    out = downstream.downstream_accuracy(None, None, ["arc_easy", "hellaswag"], {"hellaswag": 500}, 8, 0)
+    assert calls == [(("arc_easy",), None), (("hellaswag",), 500)]
+    assert out["downstream_acc_mean"] == pytest.approx(0.6)

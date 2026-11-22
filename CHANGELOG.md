@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-22: Accuracy can be a search limit
+
+- Mohammad, 2026-11-22: "add both" (the paper review's equal-perplexity comparison, which Run 2 part C already gives,
+  and accuracy as a limit in the search). New `requirement.min_accuracy` (main.py `MIN_ACCURACY`): the mean accuracy over
+  `search.accuracy_tasks` must be at least this. It is the only lower bound; its shortfall is how far below it a try is.
+- With it set, every search try runs those accuracy tests (otherwise only the final model does). The tests' setting is
+  in each try's cache key, so no earlier try without accuracy is reused. Without it nothing changes.
+
 ## 2026-11-22: Experiments for the paper review, and a Stage 1 option that leaves Stage 1 out
 
 - Mohammad chose "Paper fixes and new Colab runs" on the paper review of 22 Nov 2026. Three runs answer it
