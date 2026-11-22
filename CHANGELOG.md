@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-22: Experiments for the paper review, and a Stage 1 option that leaves Stage 1 out
+
+- Mohammad chose "Paper fixes and new Colab runs" on the paper review of 22 Nov 2026. Three runs answer it
+  (`scripts/review_20261122.py`, functions in `src/sdf/review.py`): Run 1, each layer's perplexity rise when it is
+  skipped, rounded to 8 and 4 bits, or 25% pruned (magnitude and Wanda), with the Spearman correlation of every pair;
+  Run 2, the per-layer plan against its inverse, random plans and uniform 4 bits at the same size; Run 3, the stage
+  ablation (Baseline, E1-E6) of the two final models within both limits.
+- New Stage 1 technique `no_quant` (`sdf.search_space.NO_QUANT`): every weight stays at 16 bits, so a search point can
+  leave Stage 1 out as pruning share 0 leaves Stage 2 out and KV `"none"` leaves Stage 3 out. It needs
+  `search.joint_plan = False`. No existing number or cache key changes.
+
 ## 2026-11-01: The final model's backend files are kept
 
 - Each backend exported into a temporary folder that was deleted after measuring, so no run kept its final model.

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 PER_CHANNEL = -1  # GPTQ convention: groupsize -1 means one scale per output channel
+NO_QUANT = "no_quant"  # Stage 1 technique that leaves Stage 1 out (paper review, 2026-11-22: the stage ablation)
 
 
 @dataclass(frozen=True)

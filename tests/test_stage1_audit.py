@@ -10,7 +10,7 @@ from sdf.stage0.sensitivity import find_decoder_layers
 from sdf.stages.methods import METHODS
 
 WEIGHT_METHODS = [m.name for m in METHODS.values() if m.stage == 1 and m.apply is not None
-                  and m.plans == ("quant",)]
+                  and m.plans == ("quant",) and m.name != "no_quant"]  # no_quant leaves Stage 1 out (its own test below)
 
 
 def _plan(bits):
@@ -48,3 +48,12 @@ def test_method_follows_plan_bits_and_removes_nothing(name, tiny_llama, small_cf
     if not m.fixed_bits and name != "aqlm":  # the 8-bit layer is closer to FP than the 4-bit ones: bits come from the plan
         mean = lambda es: sum(es) / len(es)  # noqa: E731
         assert mean(per_layer[1]) < mean(per_layer[0]) and mean(per_layer[1]) < mean(per_layer[2])
+
+
+def test_no_quant_changes_no_weight_whatever_the_plan(tiny_llama, small_cfg):
+    from sdf.stages.methods import MethodCall
+
+    model = copy.deepcopy(tiny_llama)
+    call = MethodCall(model, _plan([4, 8, 4, 16]), {"gptq_groupsize": 16, "calib_samples": 16}, small_cfg, lambda: [])
+    with METHODS["no_quant"].apply(call):
+        assert all(e == 0 for e in _rel_err(model, tiny_llama))

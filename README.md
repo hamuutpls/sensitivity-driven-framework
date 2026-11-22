@@ -220,6 +220,17 @@ first, and copies its results to `D:\Thesis\results\colab\<RUN_ID>\` at the end.
 "SnapKV fix" is main after the merge of PR #93. Runs 1–3 ran before that fix. With the old SnapKV, short prompts
 kept only the most recent words, so an accuracy measured on a SnapKV model from those runs is not valid.
 
+## Paper review runs (2026-11-22)
+
+Three experiments for the paper review; each writes CSV files and `summary.md` into
+`<OUTPUT_ROOT>/<RUN_ID>/review/`. Settings come from `main.py`.
+
+```
+python scripts/review_20261122.py run1   # per-layer damage (skip, 8/4-bit, 25% pruning) and Spearman correlations
+python scripts/review_20261122.py run2   # the per-layer plan vs inverse, random and uniform 4-bit plans (needs run1)
+python scripts/review_20261122.py run3   # stage ablation (Baseline, E1-E6) of the two final models
+```
+
 ## Layout
 
 ```
