@@ -172,6 +172,24 @@ def equal_ppl_size(rows: list[dict[str, Any]], target: float, size: str = "predi
     return min(ok, key=lambda r: r[size], default=None)
 
 
+def equal_ppl_table(rows: list[dict[str, Any]], targets: list[str], size: str = "predicted_weight_memory_gb",
+                    ppl: str = "ppl_val") -> list[dict[str, Any]]:
+    """Part C of Run 2: for each method, each target plan in `targets` (its validation perplexity is the target) and
+    each family of plans (row "family"), the smallest row of that family reaching the target. Rows without `ppl`
+    (failed) are skipped; a family with no row at or below the target gives None."""
+    out = []
+    for method in dict.fromkeys(r["method"] for r in rows):
+        mine = [r for r in rows if r["method"] == method and r.get(ppl) is not None]
+        for target in targets:
+            ref = next((r for r in mine if r["plan"] == target), None)
+            for family in dict.fromkeys(r["family"] for r in mine):
+                best = equal_ppl_size([r for r in mine if r["family"] == family], ref[ppl], size, ppl) if ref else None
+                out.append({"method": method, "target": target, "target_ppl_val": ref and ref[ppl], "family": family,
+                            "smallest_plan": best and best["plan"], "smallest_gb": best and best[size],
+                            "its_ppl_val": best and best[ppl]})
+    return out
+
+
 # ---------------------------------------------------------------------------------------------------------- run 3
 
 ABLATION = (  # row, (quantize, prune, KV): which stages the row keeps
@@ -195,3 +213,22 @@ def ablation_points(point: dict[str, Any], prune_ratio: float) -> list[tuple[str
                           "prune_ratio_aggressive": prune_ratio if p else 0.0,
                           "stage3_method": point["stage3_method"] if kv else "none"}))
     return out
+
+
+VLLM_SAME = {"E3": "Baseline", "E5": "E1", "E6": "E4"}  # the KV step does not run in vLLM: same vLLM model
+
+
+def copy_backend(rows: list[dict[str, Any]], prefix: str = "vllm_") -> list[dict[str, Any]]:
+    """`rows` (one model's ablation rows, "row" = Baseline/E1-E6) with each row of VLLM_SAME given its partner's
+    `prefix` columns (measured once, on the partner) and "vllm_from" naming the partner."""
+    by = {r["row"]: r for r in rows}
+    out = []
+    for r in rows:
+        src = by.get(VLLM_SAME.get(r["row"], ""))
+        if src is None:
+            out.append(r)
+            continue
+        out.append({**{k: v for k, v in r.items() if not k.startswith(prefix)},
+                    **{k: v for k, v in src.items() if k.startswith(prefix)}, "vllm_from": src["row"]})
+    return out
+

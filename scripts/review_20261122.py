@@ -65,15 +65,17 @@ def _commit() -> str:
         return "unknown"
 
 
-def _common(cfg):
+def _common(cfg, inject: dict[str, Any] | None = None):
     from sdf.data import eval_windows
     from sdf.run import start_run
     from sdf.search_space import SEARCH_SPACE
     from sdf.stage0.run import calib_batches, setup
 
     ctx = start_run(cfg)
-    device, handle, text_loader = setup(ctx)
-    candidate = SEARCH_SPACE.make({p.name: cfg.hyperparams[p.name] for p in SEARCH_SPACE.params})
+    inject = inject or {}  # tests: model_factory, tokenizer, text_loader instead of the Hugging Face downloads
+    model = inject["model_factory"]() if "model_factory" in inject else None
+    device, handle, text_loader = setup(ctx, model, inject.get("tokenizer"), inject.get("text_loader"))
+    candidate = SEARCH_SPACE.make({p.name: cfg.hyperparams[p.name] for p in SEARCH_SPACE.params if p.name in cfg.hyperparams})
     calib = calib_batches(ctx, candidate, handle, text_loader, candidate["calib_samples"])
     val, held = eval_windows(text_loader(cfg.eval.dataset, "test"), handle.tokenizer, cfg.eval.seq_len,
                              cfg.eval.max_windows)
@@ -82,15 +84,16 @@ def _common(cfg):
     return ctx, device, handle, candidate, calib, val, held, out
 
 
-def run1(run_id: str | None = None) -> Path:
+def run1(run_id: str | None = None, inject: dict[str, Any] | None = None) -> Path:
     from sdf.review import DAMAGE, layer_damage, spearman_table
+    from sdf.stage0.sensitivity import int_zero
 
     cfg = _cfg("run1", run_id, **{"hyperparams.calib_dataset": "wikitext2", "hyperparams.calib_samples": 64})
-    ctx, device, handle, candidate, calib, val, held, out = _common(cfg)
-    model = handle.model(cfg.model.dtype)
+    ctx, device, handle, candidate, calib, val, held, out = _common(cfg, inject)
+    model = handle.model(cfg.stage0.profile_dtype)  # the dtype Stage 0 scores layers in (float32), as in the paper
     t0 = time.time()
     rows = layer_damage(model, {"calib": calib, "val": list(val.split(1))}, calib, group_size=128,
-                        prune_ratio=0.25, device=device)
+                        prune_ratio=0.25, int_zero=int_zero(cfg.stage0), device=device)
     _write_csv(out / "layer_damage.csv", rows)
     corr = []
     for text in ("calib", "val"):
@@ -99,7 +102,8 @@ def run1(run_id: str | None = None) -> Path:
     _write_csv(out / "spearman.csv", corr)
     _summary(out, "Run 1: does the layer-skipping score predict compression damage?", cfg, [
         f"{len(rows)} decoder layers; each changed alone. Calibration text: {candidate['calib_dataset']} train, "
-        f"{len(calib)} batches of {cfg.calibration.seq_len} tokens (the text the score uses); validation: "
+        f"{len(calib)} batches of {cfg.calibration.seq_len} tokens (the text the score uses); model in "
+        f"{cfg.stage0.profile_dtype} (as Stage 0 scores layers); validation: "
         f"{len(val)} windows of {cfg.eval.seq_len} tokens. Rounding: round-to-nearest, group 128, integer zero point. "
         "Pruning: 25% of each Linear's weights per output row, by magnitude and by Wanda (calibration inputs).",
         f"Wall clock {time.time() - t0:.0f} s.", "", "| text | a | b | Spearman | layers |", "|---|---|---|---|---|",
@@ -107,11 +111,11 @@ def run1(run_id: str | None = None) -> Path:
     return out
 
 
-def run2(run_id: str | None = None, run1_csv: str | None = None) -> Path:
+def run2(run_id: str | None = None, run1_csv: str | None = None, inject: dict[str, Any] | None = None) -> Path:
     import torch
 
     from sdf.eval.metrics import perplexity
-    from sdf.review import average_bits, bit_plans, bits_plan, equal_ppl_size, plan_row, ranked
+    from sdf.review import average_bits, bit_plans, bits_plan, equal_ppl_table, plan_row, ranked
     from sdf.stage0.planner import plan_compression, uniform_plan
     from sdf.stage0.run import weight_cost
     from sdf.stage0.sensitivity import SensitivityProfile, layer_shapes, normalize
@@ -119,7 +123,7 @@ def run2(run_id: str | None = None, run1_csv: str | None = None) -> Path:
 
     cfg = _cfg("run2", run_id, **{"hyperparams.calib_dataset": "wikitext2", "hyperparams.calib_samples": 64,
                                   "hyperparams.gptq_groupsize": 128})
-    ctx, device, handle, candidate, calib, val, held, out = _common(cfg)
+    ctx, device, handle, candidate, calib, val, held, out = _common(cfg, inject)
     path = Path(run1_csv or os.environ.get("RUN1_CSV") or
                 Path(cfg.run.output_root) / RUN_IDS["run1"] / "review" / "layer_damage.csv")
     with path.open(encoding="utf-8") as f:
@@ -134,11 +138,21 @@ def run2(run_id: str | None = None, run1_csv: str | None = None) -> Path:
     ks = [len(plan_compression(scores, thr, 0.0, 8, 4).protected_layers) for thr in (0.5, 0.8)]  # 11, 5 on TinyLlama
     for k in ks:
         for name, p in bit_plans(template, k).items():
-            plans[f"A_k{k}_{name}"] = (p, "A", k)
+            plans[f"A_k{k}_{name}"] = (p, "A", k, name.split("_")[0])  # family: sensitivity, inverse, random
     order = ranked(template)
     for k in (5, 4):
-        plans[f"B_top{k}_8_rest_3"] = (bits_plan(template, order[:k], 8, 3, f"top{k}_8_rest_3"), "B", k)
-    plans["B_uniform_4"] = (uniform_plan(scores, 4, 0.0), "B", 0)
+        plans[f"B_top{k}_8_rest_3"] = (bits_plan(template, order[:k], 8, 3, f"top{k}_8_rest_3"), "B", k,
+                                       "top_k_8_rest_3")
+    plans["B_uniform_4"] = (uniform_plan(scores, 4, 0.0), "B", 0, "uniform_4")
+    # C: the threshold sweep (bits only, 8/4) measured again here under the same settings as the rows above; the
+    # 2026-10-04 sweep used older code with pruning and guards, so its numbers are not comparable
+    seen = set(ks)
+    for thr in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9):
+        p = plan_compression(scores, thr, 0.0, 8, 4)
+        if (k := len(p.protected_layers)) not in seen:
+            seen.add(k)
+            plans[f"C_sweep_thr{thr}"] = (bits_plan(template, p.protected_layers, 8, 4, f"sweep_thr{thr}"), "C", k,
+                                          "sensitivity")
     cpu = {k: v.detach().to("cpu", copy=True) for k, v in model0.state_dict().items()}
 
     def fresh():
@@ -152,9 +166,9 @@ def run2(run_id: str | None = None, run1_csv: str | None = None) -> Path:
     for mname in METHODS_RUN2:
         m = METHODS[mname]
         cost = weight_cost(profile, 128, cfg.stage0, None, overhead=m.overhead)
-        for pname, (plan, part, k) in plans.items():
+        for pname, (plan, part, k, family) in plans.items():
             t0 = time.time()
-            row = {"method": mname, "plan": pname, "part": part, "layers_at_8": k,
+            row = {"method": mname, "plan": pname, "part": part, "family": family, "layers_at_8": k,
                    "layers_8bit": " ".join(str(lp.layer) for lp in plan.layers if lp.bit_width == 8),
                    "avg_bits_plan": average_bits(plan, numel),
                    "avg_bits_per_weight": cost(plan).avg_bits_per_weight,
@@ -170,30 +184,25 @@ def run2(run_id: str | None = None, run1_csv: str | None = None) -> Path:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
     # C: the smallest row reaching the validation perplexity of uniform 4 bits and of the plan, per method
-    equal = []
-    for mname in METHODS_RUN2:
-        mine = [r for r in results if r["method"] == mname and "error" not in r]
-        for target in ("B_uniform_4", f"A_k{ks[0]}_sensitivity"):
-            ref = next((r for r in mine if r["plan"] == target), None)
-            best = equal_ppl_size(mine, ref["ppl_val"]) if ref else None
-            equal.append({"method": mname, "target": target, "target_ppl_val": ref and ref["ppl_val"],
-                          "smallest_plan": best and best["plan"],
-                          "smallest_gb": best and best["predicted_weight_memory_gb"]})
+    equal = equal_ppl_table(results, ["B_uniform_4", *[f"A_k{k}_sensitivity" for k in ks]])
     _write_csv(out / "equal_ppl.csv", equal)
     _summary(out, "Run 2: the per-layer plan against other plans at equal size", cfg, [
         f"{n} layers; scores from {path} (skip rise on the calibration text, rank-normalised). Weights only, "
-        "group 128, Hugging Face perplexity (simulated rounding); size is the predicted weight memory (no llama.cpp "
+        "group 128 for round-to-nearest, GPTQ and OmniQuant (SqueezeLLM has no groups: one lookup table per output "
+        "channel), Hugging Face perplexity (simulated rounding); size is the predicted weight memory (no llama.cpp "
         "file). A: k layers at 8 bits, the rest at 4: the plan (k most sensitive), the inverse (k least) and 5 random "
-        "choices. B: the 5 or 4 most sensitive at 8 bits, the rest at 3, against 4 bits everywhere.", "",
+        "choices. B: the 5 or 4 most sensitive at 8 bits, the rest at 3, against 4 bits everywhere. C: the threshold "
+        "sweep 0.1-0.9 (8/4 bits) measured again here; equal_ppl.csv gives, per method, target and family of plans, "
+        "the smallest row reaching the target's validation perplexity (a target reaches itself).", "",
         "| method | plan | avg bits | GB | ppl val | ppl held-out |", "|---|---|---|---|---|---|",
         *[f"| {r['method']} | {r['plan']} | {r['avg_bits_per_weight']:.3f} | {r['predicted_weight_memory_gb']:.3f} | "
           f"{_f(r.get('ppl_val'))} | {_f(r.get('ppl_heldout'))} |" for r in results]])
     return out
 
 
-def run3(run_id: str | None = None, finals: list[str] | None = None) -> Path:
-    from sdf.review import ablation_points
-    from sdf.run import start_run
+def run3(run_id: str | None = None, finals: list[str] | None = None, inject: dict[str, Any] | None = None) -> Path:
+    from sdf.review import VLLM_SAME, ablation_points, copy_backend
+    from sdf.run import RunContext, start_run
     from sdf.search import evaluate, technique_space
     from sdf.search_space import NO_QUANT
 
@@ -208,26 +217,32 @@ def run3(run_id: str | None = None, finals: list[str] | None = None) -> Path:
             "requirement.target_vllm_ppl": None, "requirement.target_latency_ms": None,
             "eval.downstream_tasks": TASKS, "eval.llamacpp_dir": None, "eval.trtllm_python": None})
         ctx = start_run(cfg)
+        # E3, E5 and E6 run vLLM on the same model as Baseline, E1 and E4 (no KV step in vLLM): measured once there
+        no_vllm = RunContext(cfg.with_overrides({"eval.vllm_python": None}), ctx.run_id, ctx.run_dir, ctx.cache)
         out_dir = ctx.run_dir / "review"
         out_dir.mkdir(parents=True, exist_ok=True)
         base = technique_space(cfg).make({k: v for k, v in f.items()})
+        mine = []
         for row, point in ablation_points(base, ABLATION_PRUNE):
             t0 = time.time()
-            r = evaluate(ctx, point)
+            r = evaluate(no_vllm if row in VLLM_SAME else ctx, point, **(inject or {}))
             m = r.get("metrics", {})
-            rows.append({"model": name, "row": row, "stage1": point["stage1_method"],
+            mine.append({"model": name, "row": row, "stage1": point["stage1_method"],
                          "prune_share": point["prune_ratio_aggressive"], "stage3": point["stage3_method"],
                          **({"error": r["error"]} if "error" in r else {}),
                          **{k: (r.get("errors") or {}).get(k) for k in (r.get("errors") or {})},
                          **{k: v for k, v in m.items()}, "dir": r.get("dir"), "wall_clock_s": time.time() - t0})
-            _write_csv(out_dir / "ablation.csv", rows)
+            _write_csv(out_dir / "ablation.csv", rows + copy_backend(mine))
+        rows += copy_backend(mine)
     cols = ["ppl_val", "ppl_heldout", *[f"acc_{t}" for t in TASKS], "downstream_acc_mean", "vllm_size_gb",
             "vllm_peak_memory_gb", "vllm_decode_ms_per_token", "vllm_ppl_val", "predicted_kv_memory_gb"]
     _summary(out_dir, "Run 3: ablation of the three stages", cfg, [
         "Each final model's settings with stages left out: no quantization (16-bit weights), pruning share 0, no KV "
-        f"method. Pruning rows use unstructured pruning at {ABLATION_PRUNE}. vLLM runs the model before the KV step "
-        "(it cannot run it), so in the vLLM columns E3 equals Baseline, E5 equals E1 and E6 equals E4 by construction; "
-        "they were measured in each row anyway.", "",
+        f"method. Pruning rows use unstructured pruning (Wanda) at {ABLATION_PRUNE} on the layers below each model's own "
+        "threshold (so the RTN model, threshold 0.800, prunes a different set of layers than the OmniQuant model, "
+        "0.857). vLLM runs the model before the KV step "
+        "(it cannot run it), so vLLM was measured once, on Baseline, E1 and E4, and those numbers are repeated for "
+        "E3, E5 and E6 (column vllm_from names the row they come from).", "",
         "| model | row | " + " | ".join(cols) + " |", "|---|---|" + "---|" * len(cols),
         *[f"| {r['model']} | {r['row']} | " + " | ".join(_f(r.get(c)) for c in cols) + " |" for r in rows]])
     return out_dir

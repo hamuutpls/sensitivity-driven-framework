@@ -138,6 +138,49 @@ def test_ablation_points_leave_out_exactly_the_stages_each_row_drops():
     assert all(v["x"] == 1 for v in rows.values()) and point["stage1_method"] == "rtn"  # input untouched
 
 
+def test_equal_ppl_table_gives_the_smallest_row_of_each_family_per_target():
+    rows = [{"method": "rtn", "plan": "u4", "family": "uniform", "ppl_val": 11.0, "predicted_weight_memory_gb": 0.6},
+            {"method": "rtn", "plan": "s1", "family": "sens", "ppl_val": 11.5, "predicted_weight_memory_gb": 0.5},
+            {"method": "rtn", "plan": "s2", "family": "sens", "ppl_val": 10.9, "predicted_weight_memory_gb": 0.65},
+            {"method": "rtn", "plan": "s3", "family": "sens", "ppl_val": 10.8, "predicted_weight_memory_gb": 0.7},
+            {"method": "rtn", "plan": "i1", "family": "inv", "ppl_val": 12.0, "predicted_weight_memory_gb": 0.65},
+            {"method": "gptq", "plan": "u4", "family": "uniform", "ppl_val": None, "predicted_weight_memory_gb": 0.6}]
+    t = {(r["method"], r["target"], r["family"]): r for r in review.equal_ppl_table(rows, ["u4"])}
+    assert t[("rtn", "u4", "sens")]["smallest_plan"] == "s2" and t[("rtn", "u4", "sens")]["smallest_gb"] == 0.65
+    assert t[("rtn", "u4", "uniform")]["smallest_plan"] == "u4"  # the target reaches itself
+    assert t[("rtn", "u4", "inv")]["smallest_plan"] is None
+    assert not any(k[0] == "gptq" for k in t)  # a failed row is no target and no candidate
+
+
+def test_copy_backend_repeats_the_vllm_numbers_of_the_row_with_the_same_vllm_model():
+    rows = [{"row": r, "ppl_val": i, **({"vllm_ppl_val": 10 + i} if r in ("Baseline", "E1", "E4") else {})}
+            for i, r in enumerate(["Baseline", "E1", "E2", "E3", "E4", "E5", "E6"])]
+    out = {r["row"]: r for r in review.copy_backend(rows)}
+    assert out["E3"]["vllm_ppl_val"] == 10 and out["E5"]["vllm_ppl_val"] == 11 and out["E6"]["vllm_ppl_val"] == 14
+    assert out["E3"]["ppl_val"] == 3 and out["E3"]["vllm_from"] == "Baseline"  # its own Hugging Face numbers kept
+    assert "vllm_from" not in out["E1"] and "vllm_ppl_val" not in out["E2"]
+
+
+def test_plan_row_applies_a_stage1_method_with_the_plan_and_measures_it(tiny_llama, small_cfg):
+    from sdf.stages.methods import MethodCall
+
+    t = _template(4)
+    plan = review.bits_plan(t, review.ranked(t)[:1], 8, 4, "x")
+    before = copy.deepcopy(tiny_llama.state_dict())
+    seen = {}
+
+    def measure(model):
+        w = find_decoder_layers(model)[0].self_attn.q_proj.weight
+        seen["changed"] = not torch.equal(w, before["model.layers.0.self_attn.q_proj.weight"])
+        return {"x": 1.0}
+
+    call = lambda m, p: MethodCall(m, p, {"gptq_groupsize": 16, "calib_samples": 16}, small_cfg, lambda: _batches())  # noqa: E731
+    assert review.plan_row(METHODS["rtn"], plan, tiny_llama, call, measure) == {"x": 1.0}
+    assert seen["changed"]  # measured while the rounding is applied
+    with pytest.raises(ValueError, match="Stage 1"):
+        review.plan_row(METHODS["unstructured_prune"], plan, tiny_llama, call, measure)
+
+
 # ------------------------------------------------------------------------------------------ leaving Stage 1 out
 
 
@@ -187,3 +230,40 @@ def test_leaving_stage1_out_keeps_16_bit_weights_and_still_prunes(cfg, tiny_llam
     ppl = {x["variant"]: x["metrics"]["ppl_val"] for x in rows}
     assert ppl["framework"] == ppl["fp16"] == fp["metrics"]["ppl_val"]
     assert q["metrics"]["ppl_val"] != ppl["fp16"]  # the quantized row does change the model
+
+
+def test_the_three_run_drivers_write_their_tables(small_cfg, tiny_llama, tokenizer, monkeypatch):
+    """scripts/review_20261122.py end to end on the toy model: the wiring between the runs and their CSV columns."""
+    import csv
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("review_20261122", Path(__file__).parents[1] / "scripts" /
+                                                  "review_20261122.py")
+    R = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(R)
+    monkeypatch.setattr(R, "_cfg", lambda run, run_id, **over: small_cfg.with_overrides(
+        {"run.run_id": run_id or R.RUN_IDS[run], **over}))
+    monkeypatch.setattr(R, "METHODS_RUN2", ["rtn"])
+    monkeypatch.setattr(R, "TASKS", [])  # no lm-eval in the tests
+    monkeypatch.setattr(R, "FINALS", {"toy": {"sensitive_threshold": 0.5, "gptq_groupsize": 32, "calib_dataset": "c4",
+                                              "calib_samples": 16, "stage1_method": "rtn",
+                                              "stage2_method": "unstructured_prune", "stage3_method": "rtn_kv"}})
+    inject = dict(model_factory=lambda: copy.deepcopy(tiny_llama), tokenizer=tokenizer, text_loader=fake_texts)
+    read = lambda p: list(csv.DictReader(p.open(encoding="utf-8")))  # noqa: E731
+
+    out1 = R.run1(inject=inject)
+    assert len(read(out1 / "layer_damage.csv")) == 4
+    assert {r["text"] for r in read(out1 / "spearman.csv")} == {"calib", "val"}
+    out2 = R.run2(inject=inject, run1_csv=str(out1 / "layer_damage.csv"))
+    rows = read(out2 / "equal_size.csv")
+    assert not [r for r in rows if r.get("error")], rows
+    assert {r["part"] for r in rows} >= {"A", "B"} and "B_uniform_4" in {r["plan"] for r in rows}
+    assert {r["family"] for r in rows} >= {"sensitivity", "inverse", "random", "uniform_4", "top_k_8_rest_3"}
+    assert read(out2 / "equal_ppl.csv") and (out2 / "summary.md").exists()
+    out3 = R.run3(inject=inject)
+    ab = read(out3 / "ablation.csv")
+    assert [r["row"] for r in ab] == ["Baseline", "E1", "E2", "E3", "E4", "E5", "E6"]
+    assert not [r for r in ab if r.get("error")], ab
+    assert ab[0]["avg_bits_per_weight"] == "16.0" and float(ab[1]["avg_bits_per_weight"]) < 16
+    assert float(ab[2]["decoder_weights_removed"]) > 0 and float(ab[0]["decoder_weights_removed"]) == 0
+    assert (out3 / "summary.md").exists()
