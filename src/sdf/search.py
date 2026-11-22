@@ -31,7 +31,7 @@ from sdf.config import FrameworkConfig, config_hash
 from sdf.eval.keep import keep_models, keeping
 from sdf.requirements import RequirementCheck, with_limit_metrics
 from sdf.run import RunContext
-from sdf.search_space import SEARCH_SPACE, Param, SearchSpace
+from sdf.search_space import NO_QUANT, SEARCH_SPACE, Param, SearchSpace
 from sdf.utils.cache import atomic_write_text
 from sdf.utils.logging import get_logger
 
@@ -57,6 +57,8 @@ def technique_space(cfg: FrameworkConfig) -> SearchSpace:
         if bnb := [m for m in s.stage1_methods if m.startswith("bitsandbytes")]:
             raise ValueError(f"search.low_threshold_max: {bnb} cannot store 3-bit layers; leave them out")
         params.append(Param("low_threshold", 0, 0.0, low=0.0, high=s.low_threshold_max))
+    if NO_QUANT in s.stage1_methods and s.joint_plan:  # the joint plan has no 16-bit-only row to leave Stage 1 out
+        raise ValueError(f"search.stage1_methods {NO_QUANT!r} (no quantization) needs search.joint_plan False")
     return SearchSpace(params + [
         Param("stage1_method", 1, s.stage1_methods[0], choices=tuple(s.stage1_methods)),
         Param("stage2_method", 2, s.stage2_methods[0], choices=tuple(s.stage2_methods)),
@@ -145,6 +147,7 @@ def _version(name: str, methods: dict) -> int:
 def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, tokenizer, text_loader) -> dict:
     import torch
 
+    from sdf.stage0.planner import pruning_only
     from sdf.stage0.pruning_levels import layer_caps
     from sdf.stage0.run import run_stage0, setup
     from sdf.stages.methods import METHODS, series
@@ -177,6 +180,8 @@ def _build_and_measure(ctx: RunContext, point: dict[str, Any], model_factory, to
             _free_memory()
 
     plan, _ = _capped(m, framework_plan(m, plans, "prune"), caps, plans.profile.layer_numel)
+    if point["stage1_method"] == NO_QUANT:  # Stage 1 left out: every layer at 16 bits, the pruning kept
+        plan = pruning_only(plan, cfg.stage0.baseline_bits)
     size = plan_metrics(plan, plans, cfg, candidate, m.storage, m.overhead)
     if check_requirement(cfg, size).met is False:  # the size follows from the plan: not worth building
         return {"metrics": size, "errors": {}, "not_built": "over the limit, so not built"}

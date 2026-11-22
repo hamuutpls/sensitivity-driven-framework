@@ -42,6 +42,7 @@ from sdf.stages.weights import awq_, gptq_
 from sdf.stages.weights_a import WEIGHT_METHODS_A
 from sdf.stages import weights_b
 from sdf.stages.weights_b import WEIGHT_METHODS_B
+from sdf.search_space import NO_QUANT  # noqa: F401 - search.stage1_methods: skip Stage 1
 
 
 @dataclass
@@ -196,6 +197,11 @@ def _no_kv(call: MethodCall) -> Iterator[dict[str, Any]]:
     yield {}
 
 
+@contextmanager
+def _no_quant(call: MethodCall) -> Iterator[dict[str, Any]]:
+    yield {}
+
+
 _KV_NOTE = ("Simulated: keys and values are rounded in place and forgotten words are masked out of attention for "
             "each word, so accuracy is real but memory is the plan's prediction, speed is not a smaller cache's, and peak "
             "memory includes the simulation's masks.")
@@ -297,6 +303,10 @@ METHODS: dict[str, Method] = {m.name: m for m in [
     Method("rtn_act", 1, "Round-to-nearest activations", ("activations",), _rtn_activations,
            library="in repo (torch)"),  # baseline; same rounding as the Stage 0 activation measurement
     # Stage 2: pruning (plans carry pruning ratios; weights stay FP16 unless run after Stage 1)
+    # no quantization (paper review 2026-11-22, stage ablation): the weights stay at 16 bits. The search builds it on
+    # the plan with every layer at stage0.baseline_bits (search._build_and_measure), so sizes and backends are FP16's
+    Method(NO_QUANT, 1, "No quantization (16-bit weights)", _WEIGHT_PLANS, _no_quant, simulated=False, library="none",
+           note="No quantization: every weight stays at 16 bits; only the other stages change the model."),
     Method("unstructured_prune", 2, "Unstructured pruning (Wanda)", _PRUNE_PLANS, _calibrated(wanda_),
            calibrated=True, library="in repo (torch)", version=3),  # |w| x input norm per output row; 3: prunes only
     # removes whole feed-forward channels; real speed and size gains once a backend cuts them out
