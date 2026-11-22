@@ -62,32 +62,9 @@ Section~\ref{sec:related} reviews related work. Section~\ref{sec:framework} desc
 
 \textbf{KV-cache compression.} H2O keeps the heavy-hitter tokens and drops the rest \cite{zhang2023h2o}, SnapKV selects the positions that an observation window attends to \cite{li2024snapkv}, KVQuant quantizes the cache below 4 bits \cite{hooper2024kvquant}, and InfiniGen predicts which tokens to fetch from an offloaded cache \cite{lee2024infinigen}.
 
-\textbf{Evaluation metrics and tools.} Compressed LLMs are judged mainly by perplexity, and a comprehensive evaluation of quantized LLMs has been called essential for choosing a method \cite{li2024evaluating}. For deployment, Hugging Face Transformers provides the reference implementation of the models \cite{wolf2020transformers}; llama.cpp is a C/C++ engine without dependencies, with integer quantization from 1.5 to 8 bits and its own GGUF file format \cite{ggml2025llamacpp,ggml2025gguf}; and vLLM is a serving system that stores the KV cache in small blocks that do not have to sit next to each other in memory, which removes almost all wasted cache memory \cite{kwon2023vllm}. Each engine converts the weights into its own quantization types, so the quality and speed measured in an engine can differ from the simulated values.
+\textbf{Evaluation metrics and tools.} Compressed LLMs are judged mainly by perplexity, and a comprehensive evaluation of quantized LLMs has been called essential for choosing a method \cite{li2024evaluating}. For deployment, Hugging Face Transformers provides the reference implementation of the models \cite{wolf2020transformers}; llama.cpp is a C/C++ engine with its own GGUF file format \cite{ggml2025llamacpp,ggml2025gguf}; and vLLM is a serving system with paged KV-cache memory \cite{kwon2023vllm}. Each engine converts the weights into its own quantization types, so the quality and speed measured in an engine can differ from the simulated values.
 
-Table~\ref{tab:related} compares representative studies. It shows three gaps. There is no clear rule for choosing between quantization only, pruning only and a combination. The reported gains depend on particular kernels or hardware, and the same model is seldom measured in the engine that serves it. And the compression settings are rarely chosen for each layer from a stated requirement on latency, memory or quality. The framework of the next section addresses these three gaps on one model.
-
-\begin{table}[tp]
-\caption{Representative compression studies. Results are those reported by the cited papers.}
-\label{tab:related}
-\scriptsize
-\renewcommand{\arraystretch}{1.15}
-\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{2.6cm}>{\raggedright\arraybackslash}p{2.9cm}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{3.3cm}}
-\hline
-\textbf{Reference, year} & \textbf{Technique} & \textbf{Reported result} & \textbf{Deployment dependency or limitation} \\
-\hline
-GPTQ \cite{frantar2023gptq}, 2023 & One-shot weight quantization & 3 to 4 bits; about 3.25$\times$ speedup on an A100 & Low-bit kernels \\
-AWQ \cite{lin2024awq}, 2024 & Activation-aware weight scaling & 3- and 4-bit weights with accuracy preserved & Low-bit kernels \\
-QuaRot \cite{ashkboos2024quarot}, 2024 & Hadamard rotation & 4-bit weights, activations and KV cache; about 99\% zero-shot retention & Rotated kernels \\
-SparseGPT \cite{frantar2023sparsegpt}, 2023 & One-shot unstructured pruning & At least 50\% sparsity on models of 175 billion parameters & Sparse kernels needed for speedup \\
-Wanda \cite{sun2024wanda}, 2024 & Magnitude-times-activation pruning & Effective pruning without weight updates & Sparse kernels needed for speedup \\
-DayPQ \cite{xu2026daypq}, 2026 & Layer-wise pruning and quantization & Up to 3.44$\times$ speedup; under 1\% accuracy loss & Custom accelerator \\
-MiniLLM \cite{gu2024minillm}, 2024 & Distillation for generative models & Students of 120 million to 13 billion parameters & Needs teacher and training \\
-H2O \cite{zhang2023h2o}, 2023 & Heavy-hitter KV eviction & About 20\% of tokens kept; up to 29$\times$ throughput & Accuracy risk when attention shifts \\
-KVQuant \cite{hooper2024kvquant}, 2024 & Sub-4-bit KV quantization & Under 0.1 perplexity loss at 3 bits & Custom CUDA kernels \\
-InfiniGen \cite{lee2024infinigen}, 2024 & Speculative KV prefetch & Up to 3.0$\times$ over earlier KV-cache methods & Offloading architecture \\
-\hline
-\end{tabularx}
-\end{table}
+The studies above leave three gaps. There is no clear rule for choosing between quantization only, pruning only and a combination. The reported gains depend on particular kernels or hardware, and the same model is seldom measured in the engine that serves it. And the compression settings are rarely chosen for each layer from a stated requirement on latency, memory or quality. The framework of the next section addresses these three gaps on one model.
 
 \section{Proposed Framework}
 \label{sec:framework}
@@ -100,7 +77,7 @@ Figure~\ref{fig:arch} shows the five stages. Stage~0 takes the 16-bit floating-p
 
 \begin{figure}[tp]
 \centering
-\includegraphics[width=0.75\textwidth]{Figures/ch4-framework-overview.pdf}
+\includegraphics[width=0.62\textwidth]{Figures/ch4-framework-overview.pdf}
 \caption{The framework. Stage~0 measures the model and writes per-layer plans; Stages~1 to 3 compress the model following the plans; Stage~4 evaluates the result. The search proposes the techniques and the plan settings and receives the measurements.}
 \label{fig:arch}
 \end{figure}
@@ -167,14 +144,7 @@ which is zero for a configuration that meets both limits. Among the configuratio
 
 \subsection{Framework Execution Workflow}
 
-Figure~\ref{fig:workflow} shows one search run. For each proposed configuration, Stage~0 makes the plans from the cached measurements, one model is built through Stages~1, 2 and 3 in sequence, and the model is measured in Hugging Face and in vLLM. Both are needed: Hugging Face is where the compression is applied, so it gives the perplexity of the model as it was built, while vLLM is the engine that serves the model, so it gives the real file size and decode latency, which the simulated model does not show. The objective values and the distance from the limits are returned to the optimizer. A combination that was already built in an earlier run is not built again; its logged measurements are reused. After the last try, the configuration that meets every limit and is best on the first objective is built again as the final model and evaluated in full, including task accuracy.
-
-\begin{figure}[tp]
-\centering
-\includegraphics[width=0.5\textwidth]{Figures/ch4-search-loop.pdf}
-\caption{Execution workflow of one search run. Each try builds one model through Stages~1, 2 and 3 in sequence and measures it; the final model is selected after the last try.}
-\label{fig:workflow}
-\end{figure}
+A search run works as follows. For each proposed configuration, Stage~0 makes the plans from the cached measurements, one model is built through Stages~1, 2 and 3 in sequence, and the model is measured in Hugging Face and in vLLM. Both are needed: Hugging Face is where the compression is applied, so it gives the perplexity of the model as it was built, while vLLM is the engine that serves the model, so it gives the real file size and decode latency, which the simulated model does not show. The objective values and the distance from the limits are returned to the optimizer. A combination that was already built in an earlier run is not built again; its logged measurements are reused. After the last try, the configuration that meets every limit and is best on the first objective is built again as the final model and evaluated in full, including task accuracy.
 
 \section{Implementation and Experimental Methodology}
 \label{sec:method}
@@ -191,7 +161,7 @@ All experiments use TinyLlama-1.1B-Chat-v1.0, a decoder-only model with 22 layer
 
 \subsubsection{Baseline Compression Methods}
 
-There are four references for comparison. The first is the uncompressed FP16 model, with which every final model is compared. The second is for the search: successive halving, run with the same search space and budget, is compared with the Bayesian optimizer in two searches. The third is a set of other bit plans with which the per-layer plan is compared: 4 bits in every layer, the inverse plan (8 bits in the least sensitive layers) and random plans of the same size. The fourth is published work on TinyLlama: the change against the uncompressed model is compared with the change reported by studies measured in the same backend.
+There are three references for comparison. The first is the uncompressed FP16 model, with which every final model is compared. The second is a set of other bit plans with which the per-layer plan is compared: 4 bits in every layer, the inverse plan (8 bits in the least sensitive layers) and random plans of the same size. The third is published work on TinyLlama: the change against the uncompressed model is compared with the change reported by studies measured in the same backend.
 
 \subsubsection{Evaluation Metrics}
 
@@ -210,11 +180,11 @@ The evaluation asks four questions: how much the joint pipeline compresses the m
 
 Table~\ref{tab:finals} gives the final models of the four searches, and Figure~\ref{fig:finals} compares each of them with the FP16 model in vLLM. Under the two limits, the search for the lowest perplexity chose OmniQuant on the weights only (threshold 0.857, per-channel groups, 32 calibration windows of C4), unstructured pruning with a ratio of 0.082 and InfiniGen. When only weight-only quantization was allowed, the search chose round-to-nearest (threshold 0.800, which protects five layers; groups of 64; 128 windows of C4), no pruning and SnapKV. The two searches for the smallest model chose GPTQ with round-to-nearest activations, no pruning and InfiniGen, and SqueezeLLM with SmoothQuant, unstructured pruning with a ratio of 0.262 and InfiniGen. The round-to-nearest model is the main result: it is the only final model that is within both limits when the perplexity is also measured in vLLM.
 
-All four final models are 2.4 to 2.6 times smaller than the FP16 model: their vLLM files are 0.838 to 0.898~GB against 2.200~GB. In Hugging Face their validation perplexity is 11.12 to 11.50 against 10.18, a rise of 9 to 13 percent, and their held-out perplexity is 11.52 to 11.91 against 10.62. Their mean accuracy on the four tasks is 0.495 to 0.556 against 0.625, which is 11 to 21 percent lower. The loss is not the same on every task: ARC-Easy loses the most in all four models (19 to 41 percent), and the round-to-nearest model, which has the lowest perplexity, loses 15 to 41 percent on each task. The stage ablation of Section~\ref{sec:ablation} shows that this loss comes from the KV-cache step and not from quantization.
+All four final models are 2.4 to 2.6 times smaller than the FP16 model: their vLLM files are 0.838 to 0.898~GB against 2.200~GB. In Hugging Face their validation perplexity is 11.12 to 11.50 against 10.18, a rise of 9 to 13 percent, and their held-out perplexity is 11.52 to 11.91 against 10.62. Their mean accuracy on the four tasks is 0.495 to 0.556 against 0.625, which is 11 to 21 percent lower. ARC-Easy loses the most in all four models (19 to 41 percent). The stage ablation of Section~\ref{sec:ablation} shows that this loss comes from the KV-cache step and not from quantization.
 
 \begin{figure}[tp]
 \centering
-\includegraphics[width=0.95\textwidth]{Figures/ch5-finals-dumbbell.pdf}
+\includegraphics[width=0.8\textwidth]{Figures/ch5-finals-dumbbell.pdf}
 \caption{The full framework: each final model (square) against the FP16 model (circle), measured in vLLM. Each row names the search and the quantization, pruning and KV-cache settings of its final model; the KV-cache step runs only in Hugging Face. Further left is better in all three panels.}
 \label{fig:finals}
 \end{figure}
@@ -248,18 +218,9 @@ Mean accuracy & 0.625 & 0.556 & 0.495 & 0.538 & 0.539 \\
 
 \subsection{Comparative Evaluation}
 
-\textbf{Final models.} Figure~\ref{fig:finals-size} shows the trade of quality against size. The four models are almost equally small, but they differ in speed and in quality. The two models found under both limits use weight-only quantization and are about 20 percent faster than FP16 in vLLM. The two models found with the perplexity limit only also round the activations. They are just as small but 13.5 and 16.7 times slower than FP16 in vLLM, because vLLM runs models with rounded activations on slower kernels. A size objective alone therefore gave small but slow models, and the latency limit moved the search to weight-only quantization. In vLLM the round-to-nearest model has the lowest perplexity of the four (11.10) and the OmniQuant model the highest (13.00). The round-to-nearest model is the only one of the four that is within both limits when the perplexity is also measured in vLLM. In the two models found under both limits the pruning ratio chosen by the search is zero or small (0 and 0.082): the search itself turns pruning nearly off, and the ablation shows that a ratio of 0.082 has no effect after 4-bit rounding.
+\textbf{Final models.} The four models are almost equally small, but they differ in speed and in quality. The two models found under both limits use weight-only quantization and are about 20 percent faster than FP16 in vLLM. The two models found with the perplexity limit only also round the activations and are 13.5 and 16.7 times slower than FP16 in vLLM, which runs such models on slower kernels; the latency limit moved the search to weight-only quantization. In vLLM the round-to-nearest model has the lowest perplexity of the four (11.10) and the OmniQuant model the highest (13.00). The round-to-nearest model is the only one of the four that is within both limits when the perplexity is also measured in vLLM. In the two models found under both limits the pruning ratio chosen by the search is zero or small (0 and 0.082): the search itself turns pruning nearly off, and the ablation shows that a ratio of 0.082 has no effect after 4-bit rounding.
 
-\begin{figure}[tp]
-\centering
-\includegraphics[width=0.6\textwidth]{Figures/ch5-finals-size.pdf}
-\caption{Quality against size for the full framework. Each line joins the FP16 model (circle) to one final model (square). Lower is better for perplexity and smaller is better for size.}
-\label{fig:finals-size}
-\end{figure}
-
-\textbf{Optimizers.} In the two searches for the smallest model, the Bayesian optimizer and successive halving were run with the same search space and budget. The budget is counted in full evaluations: 30 models measured on all validation windows. Successive halving spends it on more models, because it first measures random configurations on one ninth of the windows and then keeps the best third on one third of the windows and on all of them. The Bayesian optimizer built 30 models in 245 and about 190 minutes. It found a smaller acceptable model than successive halving in the first search (a predicted size of 0.924 against 0.939~GB) and eight acceptable models against none in the second. Successive halving built 129 and 130 models in 495 and about 500 minutes.
-
-\textbf{Published work.} The final models are compared with published studies that compress the same model, TinyLlama, and only results measured in the same backend are compared. Table~\ref{tab:published} covers Hugging Face, where two pruning studies report perplexity and accuracy. The two final models found under both limits raise the Hugging Face perplexity by 9.2 and 13.0 percent while the vLLM file becomes 59 and 62 percent smaller; pruning half of the weights raises it by 38.6 to 44.4 percent, and pruning 30 percent by 6.9 percent. The pruning studies lose less accuracy than the two final models, on a different set of tasks, and their uncompressed perplexity (7.77 and 7.97 against 10.18) shows that the evaluation settings differ. For the other backends there is no result on both sides. In llama.cpp, Das et al.\ prune 7 percent of TinyLlama, recover with LoRA and quantize to 4-bit GGUF; the FP16 file becomes 4.9 percent smaller and the SQuAD F1 score falls by 52 percent \cite{das2026largemodels}; the final models of this paper were not measured in llama.cpp. On a phone processor, MobileQuant quantizes weights and activations to 8 bits with 4.7 percent higher perplexity and 15 percent lower decode time than with 16-bit activations \cite{tan2024mobilequant}. EdgeProfiler estimates with an analytical model that 4-bit TinyLlama is 71 percent smaller and 2.45 times faster \cite{pinnock2025edgeprofiler}, and Belhaouari and Kraidia report 45 percent compression and a 1.68 times speedup from pruning with retraining \cite{belhaouari2025smartpruning}. No published study was found that measures a compressed TinyLlama in vLLM, or that combines quantization, pruning and KV-cache compression on it.
+\textbf{Published work.} Table~\ref{tab:published} compares the final models with published studies that compress TinyLlama and are measured in the same backend, Hugging Face. The two final models found under both limits raise the Hugging Face perplexity by 9.2 and 13.0 percent while the vLLM file becomes 59 and 62 percent smaller; pruning half of the weights raises it by 38.6 to 44.4 percent, and pruning 30 percent by 6.9 percent. The pruning studies lose less accuracy, on a different set of tasks, and their uncompressed perplexity shows that the evaluation settings differ. For the other backends there is no result on both sides: Das et al.\ prune, tune with LoRA and quantize TinyLlama in llama.cpp \cite{das2026largemodels}, MobileQuant measures 8-bit weights and activations on a phone processor \cite{tan2024mobilequant}, EdgeProfiler gives estimates from an analytical model \cite{pinnock2025edgeprofiler}, and Belhaouari and Kraidia prune with retraining \cite{belhaouari2025smartpruning}. No published study was found that measures a compressed TinyLlama in vLLM, or that combines quantization, pruning and KV-cache compression on it.
 
 \begin{table}[tp]
 \caption{Hugging Face results on TinyLlama: change against each study's own uncompressed model. Values for other studies are calculated from the numbers reported in the cited papers (perplexity on WikiText-2). The perplexity of this work is the Hugging Face value on the validation set. Lower is better for the change in perplexity; a smaller loss of accuracy is better.}
@@ -291,11 +252,11 @@ Thanos \cite{ilin2025thanos}, 50\% pruned & Unstructured pruning & 7.97 & $+38.6
 \subsection{Ablation and Sensitivity Analysis}
 \label{sec:ablation}
 
-\textbf{Layer sensitivity.} Figure~\ref{fig:sens} shows the score of Equation~\ref{eq:score}. The calibration perplexity of the unchanged model is 14.12. Skipping layer~0 raises it by 1{,}176 and skipping layer~2 by 368; layers 7, 21 and 1 follow with 36.5, 23.6 and 11.6, and the other 17 layers are between 1.4 and 5.7. Most of the sensitivity lies in the first three layers, one middle layer and the last layer. The final models use thresholds of 0.76 to 0.88, so fewer layers keep 8 bits than at the default threshold of the figure.
+\textbf{Layer sensitivity.} Figure~\ref{fig:sens} shows the score of Equation~\ref{eq:score}. The calibration perplexity of the unchanged model is 14.12. Skipping layer~0 raises it by 1{,}176 and skipping layer~2 by 368; layers 7, 21 and 1 follow with 36.5, 23.6 and 11.6, and the other 17 layers are between 1.4 and 5.7. The final models use thresholds of 0.76 to 0.88, so fewer layers keep 8 bits than at the default threshold of the figure.
 
 \begin{figure}[tp]
 \centering
-\includegraphics[width=0.68\textwidth]{Figures/ch5-sensitivity.pdf}
+\includegraphics[width=0.55\textwidth]{Figures/ch5-sensitivity.pdf}
 \caption{Sensitivity score of each decoder layer (log scale; a higher bar is a more sensitive layer) and the weight plan at the default threshold $\tau = 0.5$.}
 \label{fig:sens}
 \end{figure}
@@ -309,20 +270,20 @@ Thanos \cite{ilin2025thanos}, 50\% pruned & Unstructured pruning & 7.97 & $+38.6
 \label{tab:equal}
 \scriptsize
 \renewcommand{\arraystretch}{1.15}
-\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{1.2cm}>{\raggedright\arraybackslash}p{1.5cm}>{\raggedright\arraybackslash}p{0.8cm}>{\raggedright\arraybackslash}p{0.9cm}>{\raggedright\arraybackslash}p{1.9cm}>{\raggedright\arraybackslash}p{0.8cm}>{\raggedright\arraybackslash}p{0.9cm}>{\raggedright\arraybackslash}p{1.9cm}}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{1.9cm}>{\raggedright\arraybackslash}p{1.1cm}>{\raggedright\arraybackslash}p{1.5cm}>{\raggedright\arraybackslash}p{0.7cm}>{\raggedright\arraybackslash}p{0.9cm}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{0.7cm}>{\raggedright\arraybackslash}p{0.9cm}>{\raggedright\arraybackslash}X}
 \hline
  & \textbf{4 bits in every layer} & \textbf{8 bits in 5 layers, 3 bits in the rest} & \multicolumn{3}{l}{\textbf{8 bits in 5 layers, 4 in the rest (0.89~GB)}} & \multicolumn{3}{l}{\textbf{8 bits in 11 layers, 4 in the rest (1.02~GB)}} \\
 \textbf{Technique} & (0.78~GB) & (0.79~GB) & Plan & Inverse & Random & Plan & Inverse & Random \\
 \hline
-Round-to-nearest & 10.97 & 12.55 & 10.61 & 10.84 & 10.68 to 10.80 & 10.41 & 10.71 & 10.49 to 10.63 \\
-GPTQ & 10.63 & 11.66 & 10.49 & 10.58 & 10.46 to 10.57 & 10.32 & 10.51 & 10.36 to 10.41 \\
-OmniQuant & 10.89 & 12.37 & 10.56 & 10.79 & 10.62 to 10.75 & 10.39 & 10.66 & 10.45 to 10.58 \\
-SqueezeLLM & 10.60 & 11.29 & 10.49 & 10.52 & 10.47 to 10.51 & 10.33 & 10.43 & 10.36 to 10.45 \\
+Round-to-nearest & 10.97 & 12.55 & 10.61 & 10.84 & \mbox{10.68--10.80} & 10.41 & 10.71 & \mbox{10.49--10.63} \\
+GPTQ & 10.63 & 11.66 & 10.49 & 10.58 & \mbox{10.46--10.57} & 10.32 & 10.51 & \mbox{10.36--10.41} \\
+OmniQuant & 10.89 & 12.37 & 10.56 & 10.79 & \mbox{10.62--10.75} & 10.39 & 10.66 & \mbox{10.45--10.58} \\
+SqueezeLLM & 10.60 & 11.29 & 10.49 & 10.52 & \mbox{10.47--10.51} & 10.33 & 10.43 & \mbox{10.36--10.45} \\
 \hline
 \end{tabularx}
 \end{table}
 
-\textbf{Contribution of each stage.} Table~\ref{tab:ablation} repeats the two final models found under both limits with stages left out. Quantization gives all of the gain in size, memory and speed: for round-to-nearest the vLLM file falls from 2.200 to 0.898~GB, the peak memory from 3.77 to 2.45~GB and the decode latency from 2.80 to 1.98~ms per token, for a Hugging Face perplexity of 10.44 and an unchanged mean accuracy (0.624 against 0.625). Pruning 8.2 percent of the weights alone leaves perplexity, file size and latency unchanged, and after 4-bit rounding it changes nothing at all: rows E4 and E6 equal rows E1 and E5 in every quality number. A likely cause, checked on random weights only, is that 4-bit rounding already sets more than 8.2 percent of the weights to zero, and these are the weights that Wanda removes first. The KV-cache step causes the loss of accuracy: SnapKV alone raises the perplexity to 10.82 and lowers the mean accuracy from 0.625 to 0.497, and InfiniGen alone gives 10.36 and 0.562. The loss of 11 to 21 percent in Table~\ref{tab:finals} therefore comes from the KV-cache technique and not from quantization. Because that step does not run in vLLM, the model that vLLM serves is row E1.
+\textbf{Contribution of each stage.} Table~\ref{tab:ablation} repeats the two final models found under both limits with stages left out. Quantization gives all of the gain in size, memory and speed: for round-to-nearest the vLLM file falls from 2.200 to 0.898~GB, the peak memory from 3.77 to 2.45~GB and the decode latency from 2.80 to 1.98~ms per token, for a Hugging Face perplexity of 10.44 and an unchanged mean accuracy (0.624 against 0.625). Pruning 8.2 percent of the weights alone leaves perplexity, file size and latency unchanged, and after 4-bit rounding it changes nothing at all: rows E4 and E6 equal rows E1 and E5 in every quality number. The KV-cache step causes the loss of accuracy: SnapKV alone raises the perplexity to 10.82 and lowers the mean accuracy from 0.625 to 0.497, and InfiniGen alone gives 10.36 and 0.562. The loss of 11 to 21 percent in Table~\ref{tab:finals} therefore comes from the KV-cache technique and not from quantization. Because that step does not run in vLLM, the model that vLLM serves is row E1.
 
 \begin{table}[tp]
 \caption{Stage ablation with the settings of the two final models found under both limits (Q: quantization; P: unstructured pruning at 0.082; KV: KV-cache technique). Perplexity on the validation set; accuracy is the mean of the four tasks, measured in Hugging Face. vLLM was measured on an A100 40~GB on the model before the KV-cache step, so rows that differ only in KV share their vLLM values. Lower is better except for accuracy.}
@@ -345,20 +306,11 @@ E6 & Q + P + KV & 11.12 & 0.495 & 0.898 & 2.03 & 11.47 & 0.553 & 0.838 & 2.09 \\
 \end{tabularx}
 \end{table}
 
-\textbf{Limits and settings of the search.} Under the two limits, two of the 30 tries of the lowest-perplexity search and 17 of the 30 tries of the weight-only search met both limits. Lowering the perplexity limit to 11.0 left none, and lowering the latency limit to 2.0~ms left one, in effect the same model. With structured pruning as the only pruning technique, the closest try pruned nothing and reached 11.52.
-
-\textbf{Where perplexity is judged.} Because the perplexity of an exported model can differ from its simulated perplexity, two further searches of 40 tries each checked the perplexity limit on the model as loaded in vLLM (Figure~\ref{fig:tries}). In each search, the 30 weight-only tries, all of which used OmniQuant, need 1.97 to 2.14~ms per token and have a vLLM perplexity of 12.97 or higher; the 10 tries with rounded activations need 33 to 43~ms, and one reaches 10.98. No try is within both limits. The round-to-nearest model of Table~\ref{tab:finals}, which was not proposed in these tries, is within both limits in vLLM (11.10 at 2.00~ms).
-
-\begin{figure}[tp]
-\centering
-\includegraphics[width=0.68\textwidth]{Figures/ch5-search-tries.pdf}
-\caption{All 40 tries of the two searches that judge perplexity in vLLM. Lower and further left is better. The dashed lines are the two limits; a try within both limits would lie in the lower left corner.}
-\label{fig:tries}
-\end{figure}
+\textbf{Limits of the search.} Under the two limits, two of the 30 tries of the lowest-perplexity search and 17 of the 30 tries of the weight-only search met both limits. Lowering the perplexity limit to 11.0 left none, and lowering the latency limit to 2.0~ms left one, in effect the same model. Two further searches of 40 tries each checked the perplexity limit on the model as loaded in vLLM. Their 30 weight-only tries, all with OmniQuant, need 1.97 to 2.14~ms per token and have a vLLM perplexity of 12.97 or higher; the 10 tries with rounded activations need 33 to 43~ms. No try is within both limits; the round-to-nearest model of Table~\ref{tab:finals}, which was not proposed in these tries, is (11.10 at 2.00~ms).
 
 \subsection{Discussion and Limitations}
 
-Four points stand out. First, in the engine studied only weight-only quantization improved both size and latency: the models with low-bit activations are just as small but much slower in vLLM, and the search chose little or no pruning. The search was free to combine all three kinds of compression, and under a latency limit it chose weight quantization with little or no pruning, so the gains in size and speed in vLLM come from quantization; the joint pipeline is what allowed the combinations to be tested. Second, a simulated result does not always hold in the engine: the export changed the perplexity of two of the four final models, so a limit should be checked on the model as it is served. Third, perplexity did not show the cost of the KV-cache step in task accuracy: SnapKV alone raises the perplexity by 6 percent and lowers the mean accuracy by 20 percent, while round-to-nearest quantization raises the perplexity by 2.5 percent and leaves the accuracy unchanged. A requirement that is meant to protect accuracy needs an accuracy measurement among its limits. Fourth, the skipping score is a weak predictor of the damage to a single layer, yet the plan built from it is better than inverse and random plans of the same size; it is a way to choose which layers get more bits, and not a way to make the model smaller than uniform 4 bits.
+Four points stand out. First, in the engine studied only weight-only quantization improved both size and latency: the models with low-bit activations are just as small but much slower in vLLM, and the search chose little or no pruning. The search was free to combine all three kinds of compression, and under a latency limit it chose weight quantization with little or no pruning, so the gains in size and speed in vLLM come from quantization; the joint pipeline is what allowed the combinations to be tested. Second, a simulated result does not always hold in the engine: the export raised the perplexity of both models that were compared without the KV-cache step, so a limit should be checked on the model as it is served. Third, perplexity did not show the cost of the KV-cache step in task accuracy: SnapKV alone raises the perplexity by 6 percent and lowers the mean accuracy by 20 percent, while round-to-nearest quantization raises the perplexity by 2.5 percent and leaves the accuracy unchanged. A requirement that is meant to protect accuracy needs an accuracy measurement among its limits. Fourth, the skipping score is a weak predictor of the damage to a single layer, yet the plan built from it is better than inverse and random plans of the same size; it is a way to choose which layers get more bits, and not a way to make the model smaller than uniform 4 bits.
 
 The evidence has limits. The results are for one model of 1.1 billion parameters and one seed, on one GPU and not on an edge device, so they may not carry over unchanged to other architectures, sizes or hardware. The comparison with published work is limited to Hugging Face, because no published TinyLlama result exists in vLLM, and it uses relative changes under different evaluation settings and accuracy tasks. Most techniques are simplified re-implementations, and their numbers are not those of the original methods. The KV-cache techniques run only in the Hugging Face model, and they could not be exported, so the pipeline is joint only in simulation and its measured gains in the engine are those of quantization. Accuracy was measured in Hugging Face and not on the exported model. The pruning ratio chosen by the search had no effect after 4-bit rounding, so the results say nothing about larger ratios in the joint pipeline. Finally, the number of tries of a search is small compared with the search space, and a search that found no acceptable configuration does not show that none exists.
 
