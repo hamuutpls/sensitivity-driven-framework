@@ -73,3 +73,33 @@ def test_the_per_stage_search_refuses_the_accuracy_limit(cfg):
     with pytest.raises(ValueError, match="min_accuracy"):
         run_stage_search(start_run(cfg.with_overrides({"requirement.min_accuracy": 0.6,
                                                        "requirement.target_memory_gb": 1.0})))
+
+
+def test_a_question_limit_can_be_set_per_task():
+    from sdf.eval.downstream import task_limits
+
+    tasks = ["arc_easy", "piqa", "hellaswag", "winogrande"]
+    assert task_limits(tasks, None) == {None: tasks}
+    assert task_limits(tasks, 500) == {500: tasks}
+    assert task_limits(tasks, {"hellaswag": 500}) == {None: ["arc_easy", "piqa", "winogrande"], 500: ["hellaswag"]}
+    with pytest.raises(ValueError, match="mmlu"):
+        task_limits(tasks, {"mmlu": 100})
+
+
+def test_downstream_accuracy_runs_each_group_with_its_limit(monkeypatch):
+    import types
+
+    from sdf.eval import downstream
+
+    calls = []
+
+    def simple_evaluate(model, tasks, limit, **kw):
+        calls.append((tuple(tasks), limit))
+        return {"results": {t: {"acc,none": 0.5 if t == "hellaswag" else 0.7} for t in tasks}}
+
+    monkeypatch.setitem(sys.modules, "lm_eval", types.SimpleNamespace(simple_evaluate=simple_evaluate))
+    monkeypatch.setitem(sys.modules, "lm_eval.models", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "lm_eval.models.huggingface", types.SimpleNamespace(HFLM=lambda **kw: None))
+    out = downstream.downstream_accuracy(None, None, ["arc_easy", "hellaswag"], {"hellaswag": 500}, 8, 0)
+    assert calls == [(("arc_easy",), None), (("hellaswag",), 500)]
+    assert out["downstream_acc_mean"] == pytest.approx(0.6)
