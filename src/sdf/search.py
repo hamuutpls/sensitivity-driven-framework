@@ -605,6 +605,8 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
                          "eval.vllm_python set (llama.cpp and TensorRT-LLM test only the final model, in Stage 4)")
     if missing := [m for m in s.extra_stage1 if m not in s.stage1_methods]:
         raise ValueError(f"search.extra_stage1 {missing} must be in search.stage1_methods")
+    if cfg.requirement.min_accuracy is not None and not s.accuracy_tasks:
+        raise ValueError("requirement.min_accuracy is checked on the mean accuracy over search.accuracy_tasks: set them")
     if s.accuracy_tasks:
         try:
             import lm_eval  # noqa: F401 - checked now, not after hours of tries
@@ -616,8 +618,10 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     full = len(val) + len(held)
     kw = dict(model_factory=model_factory, tokenizer=tokenizer, text_loader=text_loader)
     off = {k: v for k, v in NO_BACKENDS.items() if not (needs_vllm and k == "eval.vllm_python")}
-    tries = RunContext(cfg.with_overrides({**off, "eval.downstream_tasks": []}), ctx.run_id, ctx.run_dir,
-                       ctx.cache)  # accuracy tasks also only on the final model
+    # accuracy tasks only on the final model, unless the accuracy is a limit: then every try is tested on them
+    try_tasks = list(s.accuracy_tasks) if cfg.requirement.min_accuracy is not None else []
+    tries = RunContext(cfg.with_overrides({**off, "eval.downstream_tasks": try_tasks}), ctx.run_id, ctx.run_dir,
+                       ctx.cache)
     trials: list[dict[str, Any]] = []
     tried = TriedLog(tried_path(ctx), ctx.run_id)
     for name in s.searchers:

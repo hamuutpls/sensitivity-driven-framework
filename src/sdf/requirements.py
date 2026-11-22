@@ -9,14 +9,17 @@ from typing import Any, Mapping
 from sdf.reporting.metrics import is_number
 
 # requirement field -> metric names it is checked against, in order of preference.
-# All targets are upper bounds (lower is better for every one of these metrics).
+# All targets but LOWER_BOUNDS are upper bounds (lower is better for those metrics).
 _CHECKS: dict[str, tuple[str, ...]] = {
     "target_latency_ms": ("decode_ms_per_token_mean",),
     "target_memory_gb": ("model_size_gb", "predicted_weight_memory_gb"),
     "target_ppl": ("ppl_val",),
     "target_vllm_ppl": ("vllm_ppl_val",),
     "kv_budget_gb": ("kv_cache_gb", "predicted_kv_memory_gb"),
+    # the one lower bound (higher is better): mean accuracy over eval.downstream_tasks (paper review, 2026-11-22)
+    "min_accuracy": ("downstream_acc_mean",),
 }
+LOWER_BOUNDS = frozenset({"min_accuracy"})  # targets the metric must reach; every other target is an upper bound
 
 
 LATENCY = _CHECKS["target_latency_ms"][0]  # the Hugging Face decode latency the limit is checked on by default
@@ -56,6 +59,7 @@ class DeploymentRequirement:
     # the same on the file vLLM runs, on top of target_ppl: both must hold; without the number it is unmeasured
     target_vllm_ppl: float | None = None
     kv_budget_gb: float | None = None
+    min_accuracy: float | None = None  # mean accuracy over eval.downstream_tasks must be at least this
     hardware_profile: str = "unspecified"  # e.g. "RTX-5070-Ti", "A100-40GB"
 
     def check(self, metrics: Mapping[str, Any]) -> RequirementCheck:
@@ -79,6 +83,8 @@ class DeploymentRequirement:
                 continue
             result.checked[target_name] = metric
             over = float(metrics[metric]) - float(target)
+            if target_name in LOWER_BOUNDS:
+                over = -over  # below the minimum by this much
             if over > 0:
                 result.shortfall[target_name] = over
         if result.shortfall:
