@@ -40,9 +40,9 @@ def test_point_key_is_unchanged_at_the_defaults(small_cfg):
     assert point_key(ctx, fp8, point, [])["eval"] == {**old, "vllm_kv_cache_dtype": "fp8"}
 
 
-def test_llamacpp_passes_the_cache_type_and_reads_the_cache_size(monkeypatch):
+def test_llamacpp_passes_the_cache_type_and_reads_the_cache_size(monkeypatch, tmp_path):
     assert llamacpp.kv_args(EvalConfig()) == []
-    assert llamacpp.kv_args(EvalConfig(llamacpp_kv_cache_type="q4_0")) == ["-ctk", "q4_0", "-ctv", "q4_0"]
+    assert llamacpp.kv_args(EvalConfig(llamacpp_kv_cache_type="q4_0")) == ["-ctk", "q4_0", "-ctv", "q4_0", "-fa", "on"]
     line = ("llama_kv_cache: size =   11.00 MiB (  2048 cells,  22 layers,  4/4 seqs), K (q4_0):    5.50 MiB, "
             "V (q4_0):    5.50 MiB")
     assert llamacpp.kv_cache_gb("x\n" + line + "\n") == pytest.approx(11 * 2**20 / 1e9)
@@ -54,6 +54,25 @@ def test_llamacpp_passes_the_cache_type_and_reads_the_cache_size(monkeypatch):
     monkeypatch.setattr(llamacpp, "_exe", lambda cfg, name: name)
     llamacpp._bench(EvalConfig(llamacpp_kv_cache_type="q8_0"), "m.gguf")
     assert seen[0][seen[0].index("-ctk") + 1] == "q8_0" and seen[0][seen[0].index("-ctv") + 1] == "q8_0"
+    monkeypatch.setattr(llamacpp, "_run", lambda cmd: seen.append([str(c) for c in cmd])
+                        or "Final estimate: PPL = 9.5\n" + line)
+    ppl, gb = llamacpp._perplexity(EvalConfig(llamacpp_kv_cache_type="q4_0"), "m.gguf", "text", 2,
+                                   Path(tmp_path) / "t.txt")
+    assert (ppl, gb) == (9.5, pytest.approx(11 * 2**20 / 1e9)) and "-ctk" in seen[-1] and "-fa" in seen[-1]
+
+
+def test_fp16_key_is_unchanged_at_the_defaults(small_cfg):
+    """The FP16 and stage-row cache keys hold no KV-cache setting: the engine keys (lc_key, the serving keys)
+    carry it, so earlier entries stay valid and a compressed-cache run still measures the engines again."""
+    import torch
+
+    from sdf.run import start_run
+    from sdf.stage0.run import fp16_key
+
+    key = fp16_key(start_run(small_cfg), torch.device("cpu"))
+    assert not set(key["eval"]) & set(KV_ENGINE_FIELDS)
+    fp8 = small_cfg.with_overrides({"eval.vllm_kv_cache_dtype": "fp8", "eval.llamacpp_kv_cache_type": "q4_0"})
+    assert fp16_key(start_run(fp8), torch.device("cpu")) == key
 
 
 @pytest.mark.parametrize("dtype", ["auto", "fp8"])

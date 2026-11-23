@@ -127,9 +127,9 @@ def _exe(cfg: EvalConfig, name: str) -> Path:
 
 def kv_args(cfg: EvalConfig) -> list[str]:
     """llama.cpp options for eval's KV-cache storage; [] at the default, so every earlier run's commands are
-    unchanged."""
+    unchanged. Flash attention on: a quantized value cache fails without it (older llama-bench defaults it off)."""
     t = cfg.llamacpp_kv_cache_type
-    return [] if t == "f16" else ["-ctk", t, "-ctv", t]
+    return [] if t == "f16" else ["-ctk", t, "-ctv", t, "-fa", "on"]
 
 
 def kv_cache_gb(log_text: str) -> float | None:
