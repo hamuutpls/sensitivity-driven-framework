@@ -231,6 +231,20 @@ python scripts/review_20261122.py run2   # the per-layer plan vs inverse, random
 python scripts/review_20261122.py run3   # stage ablation (Baseline, E1-E6) of the two final models
 ```
 
+## Engine KV-cache methods (2026-11-23)
+
+SnapKV and InfiniGen run only in Hugging Face (simulated: forgotten words are masked, the cache never shrinks), so
+vLLM and llama.cpp cannot run them. Two settings use each engine's own KV-cache storage instead:
+`eval.vllm_kv_cache_dtype` (`"auto"` = 16 bits, or `"fp8"`, `"fp8_e4m3"`, `"fp8_e5m2"`) and
+`eval.llamacpp_kv_cache_type` (`"f16"`, or `"q8_0"`, `"q4_0"` and the other llama.cpp cache types; a quantized value
+cache needs flash attention, which llama.cpp's default turns on). At their defaults nothing changes, including
+cache keys. New columns: `vllm_kv_cache_tokens` (tokens the fixed 1 GB cache holds) and `llamacpp_kv_cache_gb` (cache
+llama-perplexity allocated).
+
+```
+python scripts/kv_engines_20261123.py   # FP16 and the two final models (no Stage 3), 16-bit vs compressed cache
+```
+
 ## Layout
 
 ```

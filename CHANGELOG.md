@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-23: The engines' own KV-cache methods
+
+- Mohammad, 2026-11-23: SnapKV and InfiniGen are methods and can be replaced, "do both": measure vLLM's 8-bit (FP8)
+  KV cache and llama.cpp's 4-bit (q4_0) KV cache for real (advisor point C3). New `eval.vllm_kv_cache_dtype` and
+  `eval.llamacpp_kv_cache_type`, passed to vLLM (`kv_cache_dtype`) and to llama-bench / llama-perplexity
+  (`-ctk`/`-ctv`). Each non-default value enters the backend and search cache keys; the defaults leave every
+  command and key as before.
+- New columns `vllm_kv_cache_tokens` and `llamacpp_kv_cache_gb`; new `scripts/kv_engines_20261123.py`.
+
 ## 2026-11-22: Accuracy can be a search limit
 
 - Mohammad, 2026-11-22: "add both" (the paper review's equal-perplexity comparison, which Run 2 part C already gives,

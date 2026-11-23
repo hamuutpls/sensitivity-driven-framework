@@ -26,6 +26,7 @@ from typing import Any, Callable
 import torch
 from torch import nn
 
+from sdf.config import kv_engine_key
 from sdf.data import eval_data_label, eval_windows
 from sdf.eval import downstream, llamacpp, trtllm_backend, vllm_backend
 from sdf.eval.ct_export import has_online_rotation
@@ -342,11 +343,13 @@ def run_stage(
 
     # weight, WxAy, pruning rows; in Stage 3 only the uncompressed row (see _KV_NOT_ON_BACKENDS)
     use_llamacpp = cfg.eval.llamacpp_dir is not None
-    lc_key = [cfg.eval.llamacpp_dir, cfg.eval.llamacpp_convert, llamacpp.VERSION] if use_llamacpp else None
+    lc_key = ([cfg.eval.llamacpp_dir, cfg.eval.llamacpp_convert, llamacpp.VERSION]
+              + ([kv] if (kv := kv_engine_key(cfg.eval, "llamacpp")) else []) if use_llamacpp else None)
     # Serving backends run in a Python of their own (Linux only) on the model saved at the plan's bits; weight and
     # WxAy rows of Stage 1, pruning rows of Stage 2 (see be_on). name -> (module, its error for a plan it cannot
     # load, cache key part)
-    serving = {name: (mod, err, [py, mod.VERSION]) for name, mod, err, py in (
+    serving = {name: (mod, err, [py, mod.VERSION] + ([kv] if (kv := kv_engine_key(cfg.eval, name)) else []))
+               for name, mod, err, py in (
         ("vllm", vllm_backend, vllm_backend.VLLMError, cfg.eval.vllm_python),
         ("trtllm", trtllm_backend, trtllm_backend.TRTLLMError, cfg.eval.trtllm_python)) if py}
     calib = (f"{candidate['calib_dataset']}, {candidate['calib_samples']} x {cfg.calibration.seq_len} tokens")

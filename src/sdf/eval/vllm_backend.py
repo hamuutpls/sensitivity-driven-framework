@@ -48,6 +48,9 @@ METRICS.update({
     "vllm_kv_cache_reserved_gb": MetricSpec("vLLM KV cache reserved", "GB", "lower", "space reserved for the text so far",
                                             "Memory vLLM sets aside up front for remembering the text so far; the same "
                                             "for every row, and included in the peak." + _NOTE),
+    "vllm_kv_cache_tokens": MetricSpec("vLLM KV cache capacity", "tokens", "higher", "words the reserved space holds",
+                                       "How many word-pieces fit in the reserved space for the text so far; storing "
+                                       "them with fewer bits fits more." + _NOTE),
     "vllm_prefill_ms": MetricSpec("vLLM prefill time", "ms", "lower", "time to read the prompt (vLLM)",
                                   "Time to read a prompt and write one word-piece." + _NOTE),
     "vllm_prefill_ms_std": MetricSpec("vLLM prefill time (std)", "ms", None,
@@ -100,7 +103,7 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
         args = {"model_dir": str(d / "model"), "seq_len": cfg.seq_len, "val": val.tolist(), "heldout": held.tolist(),
                 "warmup": cfg.latency_warmup, "repeats": cfg.latency_repeats, "prompt_len": cfg.latency_prompt_len,
                 "decode_tokens": cfg.latency_decode_tokens, "linear_backend": backend,
-                "gpu_memory_utilization": cfg.vllm_gpu_memory_utilization,
+                "gpu_memory_utilization": cfg.vllm_gpu_memory_utilization, "kv_cache_dtype": cfg.vllm_kv_cache_dtype,
                 "act_layers": [] if acts is None else [lp.layer for lp, w in zip(acts.layers, plan.layers)
                                                        if lp.act_bits < baseline_bits and w.bit_width < baseline_bits]}
         out = {"vllm_size_gb": size, **run_worker(cfg.vllm_python, "vllm_worker.py", args, d, VLLMError)}

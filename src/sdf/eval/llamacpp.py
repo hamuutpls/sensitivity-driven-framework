@@ -61,6 +61,10 @@ METRICS.update({
     "llamacpp_decode_tokens_per_s_std": MetricSpec(
         "llama.cpp decode throughput (std)", "tok/s", None, "spread of writing speeds (llama.cpp)",
         "How much the writing speed varied between repeated runs."),
+    "llamacpp_kv_cache_gb": MetricSpec(
+        "llama.cpp KV cache", "GB", "lower", "memory for the text so far (llama.cpp)",
+        "Memory llama.cpp set aside for remembering the text so far while measuring perplexity (all windows it "
+        "reads at once), at its KV-cache storage type." + _NOTE),
     "llamacpp_ppl_val": MetricSpec(
         "llama.cpp perplexity of the re-rounded file (validation half)", "", "lower", "prediction error of the re-rounded llama.cpp file (validation half)",
         "Prediction error of the llama.cpp file on the validation half of the test text (lower is better). "
@@ -121,10 +125,23 @@ def _exe(cfg: EvalConfig, name: str) -> Path:
     return next((p for p in (d / f"{name}.exe", d / name) if p.exists()), d / name)
 
 
+def kv_args(cfg: EvalConfig) -> list[str]:
+    """llama.cpp options for eval's KV-cache storage; [] at the default, so every earlier run's commands are
+    unchanged. Flash attention on: a quantized value cache fails without it (older llama-bench defaults it off)."""
+    t = cfg.llamacpp_kv_cache_type
+    return [] if t == "f16" else ["-ctk", t, "-ctv", t, "-fa", "on"]
+
+
+def kv_cache_gb(log_text: str) -> float | None:
+    """The KV cache llama.cpp allocated, from its "llama_kv_cache: size = X MiB" log line (None if absent)."""
+    m = re.search(r"llama_kv_cache: size =\s*([0-9.]+) MiB", log_text)
+    return float(m.group(1)) * 2**20 / 1e9 if m else None
+
+
 def _bench(cfg: EvalConfig, gguf: Path) -> dict[str, float]:
     """llama-bench (one warm-up run of its own, then `latency_repeats` timed runs)."""
     out = _run([_exe(cfg, "llama-bench"), "-m", gguf, "-p", cfg.latency_prompt_len, "-n", cfg.latency_decode_tokens,
-                "-r", cfg.latency_repeats, "-ngl", 99, "-o", "json"])
+                "-r", cfg.latency_repeats, "-ngl", 99, *kv_args(cfg), "-o", "json"])
     rows, _ = json.JSONDecoder().raw_decode(out[out.index("["):])  # stderr follows stdout in `out`: stop at the JSON's end
     pre = next(r for r in rows if r["n_gen"] == 0)
     dec = next(r for r in rows if r["n_prompt"] == 0)
@@ -132,14 +149,15 @@ def _bench(cfg: EvalConfig, gguf: Path) -> dict[str, float]:
             "llamacpp_decode_tokens_per_s_std": dec["stddev_ts"]}
 
 
-def _perplexity(cfg: EvalConfig, gguf: Path, text: str, n_windows: int, path: Path) -> float:
+def _perplexity(cfg: EvalConfig, gguf: Path, text: str, n_windows: int, path: Path) -> tuple[float, float | None]:
+    """(perplexity, GB of KV cache llama-perplexity allocated)."""
     path.write_text(text, encoding="utf-8")
     out = _run([_exe(cfg, "llama-perplexity"), "-m", gguf, "-f", path, "-c", cfg.seq_len, "--chunks", n_windows,
-                "-ngl", 99])
+                "-ngl", 99, *kv_args(cfg)])
     m = re.search(r"Final estimate: PPL = ([0-9.]+)", out)
     if m is None:
         raise RuntimeError(f"no perplexity in llama-perplexity output: {out[-1000:]}")
-    return float(m.group(1))
+    return float(m.group(1)), kv_cache_gb(out)
 
 
 def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val: torch.Tensor, held: torch.Tensor,
@@ -159,8 +177,10 @@ def measure(model: nn.Module, tokenizer: Any, plan: CompressionPlan | None, val:
             gguf = d / "q.gguf"
         out = {"llamacpp_size_gb": gguf.stat().st_size / 1e9, **_bench(cfg, gguf)}
         for name, w in (("val", val), ("heldout", held)):
-            out[f"llamacpp_ppl_{name}"] = _perplexity(cfg, gguf, tokenizer.decode(w.flatten()), len(w),
-                                                      d / f"{name}.txt")
+            out[f"llamacpp_ppl_{name}"], kv_gb = _perplexity(cfg, gguf, tokenizer.decode(w.flatten()), len(w),
+                                                             d / f"{name}.txt")
+            if kv_gb is not None:
+                out["llamacpp_kv_cache_gb"] = kv_gb
         if plan is not None:
             keep("llamacpp", gguf)
     log.info("llama.cpp: %s", ", ".join(f"{k}={v:.4g}" for k, v in out.items()))

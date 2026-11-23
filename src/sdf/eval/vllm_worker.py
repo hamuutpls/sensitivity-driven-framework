@@ -40,6 +40,8 @@ def main(args: dict) -> dict:
     # 4-bit activation rounding fails inside Humming (RecursionError in humming/device.py, vLLM 0.31). So these
     # rows' speed is not comparable with the compiled weight-only rows; their perplexity is.
     extra = {"linear_backend": args["linear_backend"], "enforce_eager": True} if args.get("linear_backend") else {}
+    if args.get("kv_cache_dtype", "auto") != "auto":  # vLLM's own KV-cache storage (eval.vllm_kv_cache_dtype)
+        extra["kv_cache_dtype"] = args["kv_cache_dtype"]
     share = args.get("gpu_memory_utilization")
     share = memory_share(*torch.cuda.mem_get_info()) if share is None else share
     # long enough for the perplexity windows and the latency prompt + new tokens; prefix caching off, or every timed
@@ -48,7 +50,12 @@ def main(args: dict) -> dict:
     llm = LLM(model=args["model_dir"], dtype="float16", max_model_len=n, seed=0, enable_prefix_caching=False,
               kv_cache_memory_bytes=kv_bytes, gpu_memory_utilization=share, **extra)
     out: dict = {}
-    if extra:  # a layer whose activations should be rounded must run on a kernel that does it, or the row is wrong
+    try:  # how many words the fixed-size cache holds: fewer bits per word, more words in the same bytes
+        cc = llm.llm_engine.vllm_config.cache_config
+        out["vllm_kv_cache_tokens"] = float(cc.num_gpu_blocks * cc.block_size)
+    except Exception as e:  # noqa: BLE001 - engine internals differ between vLLM versions
+        out["vllm_kv_cache_tokens_error"] = repr(e)
+    if extra.get("linear_backend"):  # a layer whose activations should be rounded must run on a kernel that does it, or the row is wrong
         def rounding(m):
             return sorted((n, type(getattr(mod.scheme, "kernel", None)).__name__) for n, mod in m.named_modules()
                           if hasattr(mod, "_humming_input_quant_config"))

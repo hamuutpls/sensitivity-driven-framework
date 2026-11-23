@@ -203,6 +203,8 @@ def profile_key(ctx: RunContext, cand: dict[str, Any], score: str | None = None)
 
 
 def fp16_key(ctx: RunContext, device: torch.device) -> dict[str, Any]:
+    from sdf.config import KV_ENGINE_FIELDS
+
     cfg = ctx.cfg
     hw = torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu"
     # Downstream and serving-backend settings do not change the FP16 perplexity and latency; their results are cached
@@ -210,7 +212,7 @@ def fp16_key(ctx: RunContext, device: torch.device) -> dict[str, Any]:
     # their defaults, so entries made with the defaults stay valid.
     default = type(cfg.eval)()
     ev = {k: getattr(default, k) if k.startswith(("vllm", "trtllm")) else v for k, v in asdict(cfg.eval).items()
-          if not k.startswith(("downstream", "llamacpp"))}
+          if not k.startswith(("downstream", "llamacpp")) and k not in KV_ENGINE_FIELDS}  # engine keys carry those
     return {"model": cfg.model.name, "dtype": cfg.model.dtype, "eval": ev, "hardware": hw,
             "backend": "hf-transformers", "seed": cfg.run.seed,
             "latency": 2, **source_key(cfg, cfg.eval.dataset)}  # latency 2: timed with deterministic algorithms off (2026-10-06)
