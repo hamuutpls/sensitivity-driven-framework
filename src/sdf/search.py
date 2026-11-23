@@ -91,7 +91,10 @@ def point_key(ctx: RunContext, cfg: FrameworkConfig, point: dict[str, Any], name
     stage0 = asdict(cfg.stage0)
     if not stage0["low_threshold"]:  # no 3-bit layers: the key of every point measured before they existed
         del stage0["low_threshold"], stage0["low_bits"]
-    return {"point": point, "model": asdict(cfg.model), "eval": asdict(cfg.eval), "calibration": asdict(cfg.calibration),
+    from sdf.config import KV_ENGINE_FIELDS, kv_engine_key
+
+    ev = {k: v for k, v in asdict(cfg.eval).items() if k not in KV_ENGINE_FIELDS} | kv_engine_key(cfg.eval)
+    return {"point": point, "model": asdict(cfg.model), "eval": ev, "calibration": asdict(cfg.calibration),
             "stage0": stage0, "seed": cfg.run.seed, "data": asdict(cfg.data),
             "hardware": fp16_key(ctx, setup(ctx)[0])["hardware"], "vllm": vllm_backend.VERSION, "search": VERSION,
             "versions": [_version(n, METHODS) for n in names]}

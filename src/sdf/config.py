@@ -69,12 +69,19 @@ class EvalConfig:
     # (llama-quantize, llama-bench, llama-perplexity) and the path of its convert_hf_to_gguf.py. None = not measured.
     llamacpp_dir: str | None = None
     llamacpp_convert: str | None = None
+    # llama.cpp's own key/value cache storage (--cache-type-k/-v, both the same; Mohammad, 2026-11-23: measure the
+    # engines' own KV-cache methods for real). A quantized value cache needs flash attention, which llama.cpp's
+    # default (auto) turns on. Default = every earlier run; it then stays out of every cache key.
+    llamacpp_kv_cache_type: str = "f16"
     # vLLM backend (Stage 1 and Stage 2 rows; sdf/eval/vllm_backend.py): the Python that has vLLM installed (Linux
     # only). None = not measured.
     vllm_python: str | None = None
     # Share of the GPU vLLM may claim at start-up (vLLM refuses to start when less is free). None = what is free
     # when it starts, minus 2%, at most 0.92 (vllm_worker.memory_share). Changes no measured number.
     vllm_gpu_memory_utilization: float | None = None
+    # vLLM's own key/value cache storage (kv_cache_dtype: "auto" = the model's 16 bits, or "fp8"/"fp8_e4m3"/
+    # "fp8_e5m2"). Default = every earlier run; it then stays out of every cache key.
+    vllm_kv_cache_dtype: str = "auto"
     # TensorRT-LLM backend (Stage 1 and Stage 2 rows; sdf/eval/trtllm_backend.py): the Python that has
     # TensorRT-LLM (Linux only).
     trtllm_python: str | None = None
@@ -90,6 +97,25 @@ class EvalConfig:
         for name in ("latency_repeats", "latency_decode_tokens"):
             if getattr(self, name) < 1:
                 raise ValueError(f"eval.{name} must be at least 1, got {getattr(self, name)}")
+        if self.llamacpp_kv_cache_type not in LLAMACPP_KV_TYPES:
+            raise ValueError(f"eval.llamacpp_kv_cache_type must be one of {LLAMACPP_KV_TYPES}, "
+                             f"got {self.llamacpp_kv_cache_type!r}")
+        if self.vllm_kv_cache_dtype not in VLLM_KV_DTYPES:
+            raise ValueError(f"eval.vllm_kv_cache_dtype must be one of {VLLM_KV_DTYPES}, got {self.vllm_kv_cache_dtype!r}")
+
+
+# The engines' own KV-cache storage types (llama.cpp common/arg.cpp kv_cache_types; vLLM docs, quantized KV cache)
+LLAMACPP_KV_TYPES = ("f32", "f16", "bf16", "f8_e4m3", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1")
+VLLM_KV_DTYPES = ("auto", "fp8", "fp8_e4m3", "fp8_e5m2")
+KV_ENGINE_FIELDS = ("llamacpp_kv_cache_type", "vllm_kv_cache_dtype")
+
+
+def kv_engine_key(ev: EvalConfig, prefix: str = "") -> dict[str, Any]:
+    """The engine KV-cache settings (starting with `prefix`) that differ from the defaults: {} for every earlier
+    run, so their cache keys stay valid."""
+    default = EvalConfig()
+    return {k: getattr(ev, k) for k in KV_ENGINE_FIELDS
+            if k.startswith(prefix) and getattr(ev, k) != getattr(default, k)}
 
 
 @dataclass
