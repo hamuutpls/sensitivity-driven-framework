@@ -59,6 +59,7 @@ def test_llamacpp_passes_the_cache_type_and_reads_the_cache_size(monkeypatch, tm
     ppl, gb = llamacpp._perplexity(EvalConfig(llamacpp_kv_cache_type="q4_0"), "m.gguf", "text", 2,
                                    Path(tmp_path) / "t.txt")
     assert (ppl, gb) == (9.5, pytest.approx(11 * 2**20 / 1e9)) and "-ctk" in seen[-1] and "-fa" in seen[-1]
+    assert seen[-1][seen[-1].index("-lv") + 1] == "4"  # llama.cpp c212d25 hides the size line below info level 4
 
 
 def test_fp16_key_is_unchanged_at_the_defaults(small_cfg):

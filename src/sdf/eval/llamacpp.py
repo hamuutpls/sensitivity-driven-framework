@@ -153,7 +153,7 @@ def _perplexity(cfg: EvalConfig, gguf: Path, text: str, n_windows: int, path: Pa
     """(perplexity, GB of KV cache llama-perplexity allocated)."""
     path.write_text(text, encoding="utf-8")
     out = _run([_exe(cfg, "llama-perplexity"), "-m", gguf, "-f", path, "-c", cfg.seq_len, "--chunks", n_windows,
-                "-ngl", 99, *kv_args(cfg)])
+                "-ngl", 99, "-lv", 4, *kv_args(cfg)])  # -lv 4: newer builds print the KV-cache size line only then
     m = re.search(r"Final estimate: PPL = ([0-9.]+)", out)
     if m is None:
         raise RuntimeError(f"no perplexity in llama-perplexity output: {out[-1000:]}")
