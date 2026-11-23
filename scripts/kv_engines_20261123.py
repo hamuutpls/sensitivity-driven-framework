@@ -8,7 +8,9 @@ the only difference between a pair of rows is the KV cache. Writes kv_engines.cs
 
     python scripts/kv_engines_20261123.py [RUN_ID]
 
-Settings come from main.py's build_config() (a Colab wrapper sets VLLM_PYTHON and LLAMACPP_DIR etc. on main).
+Settings come from main.py's build_config() (a Colab wrapper sets main.VLLM_PYTHON); llama.cpp's program folder
+and converter come from the environment (LLAMACPP_DIR, LLAMACPP_CONVERT; main.py has no llama.cpp settings). The run
+refuses to start without both engines.
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT), str(ROOT / "scripts")]
+
+import os  # noqa: E402
 
 from review_20261122 import FINALS, _cfg, _f, _summary, _write_csv  # noqa: E402
 
@@ -60,7 +64,12 @@ def run(run_id: str | None = None, inject: dict[str, Any] | None = None) -> Path
                 "requirement.target_memory_gb": None, "requirement.target_ppl": None,
                 "requirement.target_vllm_ppl": None, "requirement.target_latency_ms": None,
                 "eval.downstream_tasks": [], "eval.trtllm_python": None,
-                "eval.vllm_kv_cache_dtype": vllm_kv, "eval.llamacpp_kv_cache_type": lc_kv})
+                "eval.vllm_kv_cache_dtype": vllm_kv, "eval.llamacpp_kv_cache_type": lc_kv,
+                **{f"eval.llamacpp_{k.lower()}": os.environ[f"LLAMACPP_{k}"] for k in ("DIR", "CONVERT")
+                   if os.environ.get(f"LLAMACPP_{k}")}})
+            if not (cfg.eval.vllm_python and cfg.eval.llamacpp_dir and cfg.eval.llamacpp_convert):
+                raise SystemExit("needs both engines: main.VLLM_PYTHON and the LLAMACPP_DIR / LLAMACPP_CONVERT "
+                                 "environment variables")
             ctx = start_run(cfg)
             out_dir = ctx.run_dir / "review"
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -78,7 +87,8 @@ def run(run_id: str | None = None, inject: dict[str, Any] | None = None) -> Path
         "values), against each engine's 16-bit cache. Every model is built without its Stage 3 step; the two rows "
         "of a model differ only in the KV cache. vLLM reserves a fixed 1 GB for the cache, so its peak memory "
         "does not change; vllm_kv_cache_tokens is how many tokens that space holds. llamacpp_kv_cache_gb is the "
-        "cache llama-perplexity allocated (all windows it reads at once).", "",
+        "cache llama-perplexity allocated (all windows it reads at once). config.json holds the last row's settings; "
+        "each row's KV settings are in its CSV columns.", "",
         "| model | KV cache | " + " | ".join(COLS) + " | error |", "|---|---|" + "---|" * (len(COLS) + 1),
         *[f"| {r['model']} | {r['kv_cache']} | " + " | ".join(_f(r.get(c)) for c in COLS) + " | "
           + "; ".join(str(v) for k, v in r.items() if k.endswith("error")) + " |" for r in rows]])

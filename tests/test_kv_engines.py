@@ -122,7 +122,9 @@ def test_kv_engines_script_measures_each_model_with_both_caches(small_cfg, tiny_
     K = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(K)
     monkeypatch.setattr(K, "_cfg", lambda run, run_id, **over: small_cfg.with_overrides(
-        {"run.run_id": run_id, "eval.vllm_python": "stand-in", "eval.llamacpp_dir": "stand-in", **over}))
+        {"run.run_id": run_id, "eval.vllm_python": "stand-in", **over}))
+    monkeypatch.setenv("LLAMACPP_DIR", "stand-in")
+    monkeypatch.setenv("LLAMACPP_CONVERT", "stand-in.py")
     monkeypatch.setattr(K, "FINALS", {"toy": {"sensitive_threshold": 0.5, "gptq_groupsize": 32,
                                               "calib_dataset": "c4", "calib_samples": 16, "stage1_method": "rtn",
                                               "stage2_method": "unstructured_prune", "stage3_method": "snapkv"}})
@@ -144,3 +146,16 @@ def test_kv_engines_script_measures_each_model_with_both_caches(small_cfg, tiny_
     assert rows[0]["ppl_val"] == rows[1]["ppl_val"]  # same model: only the engines' cache differs
     assert rows[0]["stage1"] == "no_quant" and rows[2]["stage1"] == "rtn" and float(rows[2]["prune_share"]) == 0.1
     assert (out / "summary.md").exists()
+
+
+def test_kv_engines_script_refuses_without_both_engines(small_cfg, monkeypatch):
+    root = Path(__file__).parents[1] / "scripts"
+    monkeypatch.syspath_prepend(str(root))
+    spec = importlib.util.spec_from_file_location("kv_engines_20261123", root / "kv_engines_20261123.py")
+    K = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(K)
+    monkeypatch.setattr(K, "_cfg", lambda run, run_id, **over: small_cfg.with_overrides(
+        {"run.run_id": run_id, "eval.vllm_python": "stand-in", **over}))
+    monkeypatch.delenv("LLAMACPP_DIR", raising=False)
+    with pytest.raises(SystemExit, match="both engines"):
+        K.run()
