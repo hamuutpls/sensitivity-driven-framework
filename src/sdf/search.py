@@ -659,8 +659,9 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     try:  # neither step may cost the report of hours of tries, nor the other step
         # the base point: the best searcher try, this run's or an earlier run's, never an extra try (an extra base
         # would keep the extras on it after the searchers find a better point)
-        extras = extra_tries(tries, trials, s.extra_stage1, full, tried=tried,
-                             best_from=trials + [t for t in earlier if t["searcher"] != "extra"], **kw)
+        # only the last level's tries count as measured: a technique a level before it tried is still tried here
+        extras = extra_tries(tries, mine, s.extra_stage1, full, tried=tried,
+                             best_from=mine + [t for t in earlier if t["searcher"] != "extra"], **kw)
     except Exception:  # noqa: BLE001
         log.exception("the extra Stage 1 tries failed; the report is written without them")
     try:
@@ -671,7 +672,7 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
         log.exception("the final model's Stage 4 test failed; the report is written without it")
     from sdf.reporting.search import write_search_report
 
-    return write_search_report(ctx, trials, space, extras=extras, accuracy=final)
+    return write_search_report(ctx, trials, space, extras=extras, accuracy=final, logged=earlier)
 
 
 def kv_level_configs(cfg: FrameworkConfig) -> list[tuple[str, FrameworkConfig]]:

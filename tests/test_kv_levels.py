@@ -114,3 +114,49 @@ def test_a_search_for_the_smallest_model_alone_writes_its_report(cfg, tokenizer,
     trials = json.loads(out["search_trials"].read_text())
     assert {t["kv_level"] for t in trials} == {"light", "medium"} and all(len(t["values"]) == 1 for t in trials)
     assert "## KV-cache levels" in out["search_report"].read_text()
+
+
+def test_a_budget_of_the_most_bits_puts_every_tensor_at_them():
+    # the review of PR #101: allocate_bits left a tensor whose measured rise is already 0 at 2 bits
+    from sdf.stage0.kv_cache import KVProfile, plan_kv_bits
+
+    prof = KVProfile.__new__(KVProfile)
+    object.__setattr__(prof, "bits_options", [2, 4, 8])
+    object.__setattr__(prof, "key_dims", [64, 64])
+    object.__setattr__(prof, "value_dims", [64, 64])
+    object.__setattr__(prof, "key_rise", [[0.5, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    object.__setattr__(prof, "value_rise", [[0.3, -0.01, 0.0], [0.0, 0.0, 0.0]])
+    assert set(plan_kv_bits(prof, 8).values()) == {8}
+    assert set(plan_kv_bits(prof, 4).values()) != {8}  # below it, the measured plan as before
+
+
+def test_the_extra_tries_run_at_the_level_the_search_ends_on(cfg, tokenizer, monkeypatch):  # noqa: F811
+    c = _search(cfg, budget=1, **{"search.stage1_methods": ["rtn_with_rtn_act", "awq_with_rtn_act"],
+                                  "search.extra_stage1": ["awq_with_rtn_act"]})
+    seen = []
+    monkeypatch.setattr(search, "evaluate", _fake(seen, lambda c: c.stage0.kv_avg_bits == 4))
+    asked = []
+    real = search.extra_tries
+    monkeypatch.setattr(search, "extra_tries", lambda ctx, trials, *a, **k: asked.append(
+        (ctx.cfg.stage0.kv_avg_bits, [t["kv_level"] for t in trials])) or real(ctx, trials, *a, **k))
+    _run(tokenizer, start_run(c))
+    assert asked == [(4, ["medium"])]
+
+
+def test_the_final_model_is_built_at_the_level_the_search_ends_on(cfg, tokenizer, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(search, "evaluate", _fake([], lambda c: c.stage0.kv_avg_bits == 4))
+    asked = []
+    monkeypatch.setattr(search, "final_model", lambda ctx, trials, *a, **k: asked.append(
+        (ctx.cfg.stage0.kv_avg_bits, ctx.cfg.stage0.kv_attention_coverage)))
+    _run(tokenizer, start_run(_search(cfg)))
+    assert asked == [(4, 0.98)]  # medium's settings, not light's or the run's own
+
+
+def test_the_levels_table_counts_earlier_runs_tries_that_met_the_limits(cfg):  # noqa: F811
+    from sdf.reporting.search import _kv_levels_section
+
+    c = _search(cfg)
+    mine = [{"kv_level": "light", "full": True, "met": False}]
+    logged = [{"kv_level": "light", "full": True, "met": True, "from_log": True}]
+    text = "\n".join(_kv_levels_section(c, mine, logged))
+    assert "| light | average KV bits 8; attention kept 0.99 | 1 | 0 (and 1 from earlier runs) |" in text

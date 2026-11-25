@@ -99,7 +99,7 @@ def _backend_rows(backends: dict[str, Any]) -> list[list[str]]:
 
 def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: SearchSpace,
                         intro: str | None = None, extras: list[dict[str, Any]] = (),
-                        accuracy: dict[str, Any] | None = None) -> dict[str, Path]:
+                        accuracy: dict[str, Any] | None = None, logged: list[dict[str, Any]] = ()) -> dict[str, Path]:
     """`intro`: the report's opening paragraph when the search is not the chained one (a per-stage search).
     `extras`: tries made apart from the searchers (sdf.search.extra_tries), in a section of their own. `accuracy`:
     the Stage 4 test of the final model best on the first objective, backends and task accuracy (sdf.search.final_model)."""
@@ -182,7 +182,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         "The other settings of each option:", "",
         _md([["#"] + [SETTING_NAMES.get(n, n) for n in rest]]
             + [[str(i + 1)] + [setting_value(n, t["point"][n]) for n in rest] for i, t in enumerate(front)]),
-        *_kv_levels_section(cfg, trials),
+        *_kv_levels_section(cfg, trials, logged),
         "## Search methods compared", "",
         _md([list(comparison[0]) if comparison else ["Search method"]]
             + [[_fmt(v) for v in c.values()] for c in comparison]),
@@ -267,8 +267,9 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
     return outputs
 
 
-def _kv_levels_section(cfg, trials: list[dict[str, Any]]) -> list[str]:
-    """The KV-cache levels in the order they were searched, and how many tries of each met the limits (none: no
+def _kv_levels_section(cfg, trials: list[dict[str, Any]], logged: list[dict[str, Any]] = ()) -> list[str]:
+    """The KV-cache levels in the order they were searched, and how many tries of each met the limits, this run's
+    and (`logged`) earlier runs' it did not propose again, which also end the search at their level (none: no
     section)."""
     if not cfg.search.kv_levels:
         return []
@@ -279,8 +280,10 @@ def _kv_levels_section(cfg, trials: list[dict[str, Any]]) -> list[str]:
         mine = [t for t in trials if t.get("kv_level") == lv["name"]]
         settings = "; ".join(f"{names[k]} {', '.join(map(str, v)) if isinstance(v, list) else v}"
                              for k, v in lv.items() if k != "name") or "the run's own"
+        met = sum(1 for t in mine if t["full"] and t["met"])
+        old = sum(1 for t in logged if t.get("kv_level") == lv["name"] and t["full"] and t["met"])
         rows.append([lv["name"], settings, str(len(mine)) if mine else "not searched",
-                     str(sum(1 for t in mine if t["full"] and t["met"])) if mine else "-"])
+                     (f"{met}" + (f" (and {old} from earlier runs)" if old else "")) if mine else "-"])
     return ["## KV-cache levels", "",
             "The levels were searched in this order, each with the same budget; the next level was searched only "
             "when no try of the one before met the limits.", "", _md(rows)]
