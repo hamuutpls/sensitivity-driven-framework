@@ -190,7 +190,7 @@ All four final models are 2.4 to 2.6 times smaller than the FP16 model: their vL
 \end{figure}
 
 \begin{table}[tp]
-\caption{Final models of four searches over the joint pipeline, measured in vLLM on the A100 with the same settings for every column. The file is the exported checkpoint on disk; the peak memory is the most GPU memory allocated during the latency test and includes a KV cache of 1~GiB that vLLM reserves for every model. The KV-cache technique of a column acts only on the Hugging Face perplexity and accuracy. Perplexity is given on the validation set and on the held-out set. Lower is better for size, perplexity, latency and memory; higher is better for accuracy. HF: Hugging Face.}
+\caption{Final models of four searches over the joint pipeline, measured in vLLM with the same settings for every column. The file is the exported checkpoint on disk; the peak memory is the most GPU memory allocated during the latency test and includes a KV cache of 1~GiB that vLLM reserves for every model. The KV-cache technique of a column acts only on the Hugging Face perplexity and accuracy. Perplexity is given on the validation set and on the held-out set. Lower is better for size, perplexity, latency and memory; higher is better for accuracy. HF: Hugging Face.}
 \label{tab:finals}
 \scriptsize
 \renewcommand{\arraystretch}{1.15}
@@ -243,14 +243,14 @@ Thanos \cite{ilin2025thanos}, 50\% pruned & Unstructured pruning & 7.97 & $+38.6
 \subsection{Resource Utilization and Inference Efficiency}
 \label{sec:resource}
 
-\textbf{Latency and memory.} In vLLM on the A100, the two weight-only models need 1.98 and 2.00~ms per token against 2.54~ms for FP16, and the two models with rounded activations need 34.42 and 42.45~ms. The peak GPU memory of the four models is 2.40 to 2.46~GB against 3.77~GB, which is about 35 percent lower (Table~\ref{tab:finals}).
+\textbf{Latency and memory.} In vLLM, the two weight-only models need 1.98 and 2.00~ms per token against 2.54~ms for FP16, and the two models with rounded activations need 34.42 and 42.45~ms. The peak GPU memory of the four models is 2.40 to 2.46~GB against 3.77~GB, which is about 35 percent lower (Table~\ref{tab:finals}).
 
 \textbf{Simulation against the engine.} The perplexity can change when the export to vLLM rounds the weights again. The KV-cache step runs only in the Hugging Face model, so the vLLM measurements are of the model after quantization and pruning, and the two engines must be compared without that step. For the quantized model alone (row E1 of Table~\ref{tab:ablation}) the perplexity is 10.44 in Hugging Face and 11.10 in vLLM for round-to-nearest, and 11.25 and 12.96 for OmniQuant: the export raises it in both cases. The Hugging Face values of Table~\ref{tab:finals} include the KV-cache step, so the agreement of 11.12 and 11.10 for the round-to-nearest model is a coincidence of two different effects. For the two models with rounded activations (11.23 against 12.09 and 11.44 against 11.46) no measurement without the KV-cache step was made.
 
 \subsection{Ablation and Sensitivity Analysis}
 \label{sec:ablation}
 
-\textbf{Layer sensitivity.} The score of Equation~\ref{eq:score} is very uneven. The calibration perplexity of the unchanged model is 14.12. Skipping layer~0 raises it by 1{,}176 and skipping layer~2 by 368; layers 7, 21 and 1 follow with 36.5, 23.6 and 11.6, and the other 17 layers are between 1.4 and 5.7. The final models use thresholds of 0.76 to 0.88. The profile took 121~s on the A100 and is reused by every later run.
+\textbf{Layer sensitivity.} The score of Equation~\ref{eq:score} is very uneven. The calibration perplexity of the unchanged model is 14.12. Skipping layer~0 raises it by 1{,}176 and skipping layer~2 by 368; layers 7, 21 and 1 follow with 36.5, 23.6 and 11.6, and the other 17 layers are between 1.4 and 5.7. The final models use thresholds of 0.76 to 0.88. The profile took 121~s and is reused by every later run.
 
 \textbf{Does the score predict compression damage?} Each of the 22 layers was changed alone in four ways: its weights were rounded to 8 bits and to 4 bits (round-to-nearest, groups of 128), and 25 percent of its weights were pruned by magnitude and by Wanda. The rise in perplexity was compared with the rise when the layer is skipped, by Spearman rank correlation. On the calibration text, which the score uses, the correlation with skipping is 0.04 for 8 bits, 0.18 for 4 bits, 0.15 for magnitude pruning and 0.41 for Wanda; on the validation set it is 0.46, 0.51, 0.54 and 0.42. Rounding one layer to 8 bits changes the perplexity by less than 0.002 in every layer, and the largest rise from 4 bits in one layer is 0.13. Layer~0, by far the most sensitive to skipping, is hardly affected by 4-bit rounding alone (0.004 on the validation set). The skipping score is therefore only a weak to moderate predictor of the damage of compressing a single layer.
 
