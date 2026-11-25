@@ -274,29 +274,38 @@ SqueezeLLM & 10.60 & 11.29 & 10.49 & 10.52 & \mbox{10.47--10.51} & 10.33 & 10.43
 \end{tabularx}
 \end{table}
 
-\textbf{Contribution of each stage.} Table~\ref{tab:ablation} repeats the two final models found under both limits with stages left out. Quantization gives all of the gain in size, memory and speed: for round-to-nearest the vLLM file falls from 2.200 to 0.898~GB, the peak memory from 3.77 to 2.45~GB and the decode latency from 2.80 to 1.98~ms per token, for a Hugging Face perplexity of 10.44 and an unchanged mean accuracy (0.624 against 0.625). Pruning 8.2 percent of the weights alone leaves perplexity, file size and latency unchanged, and after 4-bit rounding it changes nothing at all: rows E4 and E6 equal rows E1 and E5 in every quality number. The KV-cache step causes the loss of accuracy: SnapKV alone raises the perplexity to 10.82 and lowers the mean accuracy from 0.625 to 0.497, and InfiniGen alone gives 10.36 and 0.562. The loss of 11 to 21 percent in Table~\ref{tab:finals} therefore comes from the KV-cache technique and not from quantization. Because that step does not run in vLLM, the model that vLLM serves is row E1.
+\textbf{Contribution of each stage.} Table~\ref{tab:ablation} repeats the two final models found under both limits with stages left out. Quantization gives all of the gain in size, memory and speed: for round-to-nearest the vLLM file falls from 2.200 to 0.898~GB, the peak memory from 3.77 to 2.45~GB and the decode latency from 2.80 to 1.98~ms per token, for a Hugging Face perplexity of 10.44 and an unchanged mean accuracy (0.624 against 0.625). Pruning 8.2 percent of the weights alone leaves perplexity, file size and latency unchanged, and after 4-bit rounding it changes nothing at all: rows E4 and E6 equal rows E1 and E5 in every quality number. The KV-cache step causes the loss of accuracy: SnapKV alone raises the perplexity to 10.82 and lowers the mean accuracy from 0.625 to 0.497, and InfiniGen alone gives 10.36 and 0.562. ARC-Easy loses the most: SnapKV alone lowers it from 0.548 to 0.332 and the other three tasks by 0.08 to 0.11, and InfiniGen alone lowers it to 0.464. The loss of 11 to 21 percent in Table~\ref{tab:finals} therefore comes from the KV-cache technique and not from quantization. Because that step does not run in vLLM, the model that vLLM serves is row E1.
 
 \textbf{KV-cache compression in the engines.} To measure a compressed cache in a real engine, the KV-cache technique of the pipeline was replaced by the method that each engine provides: an 8-bit cache in vLLM and a 4-bit cache in llama.cpp. The two final models, built without their KV-cache step, were measured with the 16-bit and with the compressed cache. In vLLM the 8-bit cache holds twice as many tokens in the same 1~GiB (95{,}312 against 47{,}648). For the round-to-nearest model the perplexity rises from 11.10 to 11.14 and the decode latency from 1.97 to 2.50~ms per token, and the peak memory from 2.45 to 3.17~GB; for the OmniQuant model the values are 12.96 to 13.02 and 2.01 to 2.48~ms,. In llama.cpp the 4-bit cache is 3.6 times smaller (0.013 against 0.046~GB); the perplexity of the round-to-nearest model rises from 8.40 to 8.53 and its decode speed falls from 507 to 463 tokens per second. At a batch of one and short texts a compressed cache saves little memory and costs time; its gain, more text in the same memory, was not measured with longer contexts or larger batches.
 
 \textbf{Accuracy as a limit.} A further search added a third limit, a mean accuracy of at least 0.60, to a vLLM perplexity of at most 11.5 and a decode latency of at most 2.5~ms per token. In 105 tries no configuration met all three limits: 83 met the latency limit, 13 met the perplexity and latency limits, and the accuracy ranged from 0.426 to 0.558. The closest tries use OmniQuant on the weights, pruning and InfiniGen (vLLM perplexity 11.46, 2.0~ms per token, accuracy 0.558, 0.88~GB). Every try contained a KV-cache technique, and the stage ablation shows that this step alone lowers the accuracy to 0.497 and 0.562, so the accuracy limit could not be met while the KV-cache step was part of every configuration.
 
 \begin{table}[tp]
-\caption{Stage ablation with the settings of the two final models found under both limits (Q: quantization; P: unstructured pruning at 0.082; KV: KV-cache technique). Perplexity on the validation set; accuracy is the mean of the four tasks, measured in Hugging Face. vLLM was measured on the model before the KV-cache step, so rows that differ only in KV share their vLLM values. Lower is better except for accuracy.}
+\caption{Stage ablation with the settings of the two final models found under both limits (Q: quantization; P: unstructured pruning at 0.082; KV: KV-cache technique). Perplexity on the validation set; accuracy measured in Hugging Face. vLLM was measured on the model before the KV-cache step, so rows that differ only in KV share their vLLM values. Lower is better except for accuracy.}
 \label{tab:ablation}
 \scriptsize
-\renewcommand{\arraystretch}{1.1}
-\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{1.1cm}>{\raggedright\arraybackslash}p{1.6cm}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X}
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{1.0cm}>{\raggedright\arraybackslash}p{1.5cm}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X}
 \hline
- & & \multicolumn{4}{l}{\textbf{Round-to-nearest ($\tau$ 0.800), SnapKV}} & \multicolumn{4}{l}{\textbf{OmniQuant ($\tau$ 0.857), InfiniGen}} \\
-\textbf{Row} & \textbf{Stages} & HF perplexity & Mean accuracy & vLLM file (GB) & Decode (ms/token) & HF perplexity & Mean accuracy & vLLM file (GB) & Decode (ms/token) \\
+\textbf{Row} & \textbf{Stages} & HF perplexity & ARC-Easy & PIQA & Hella\-Swag & Wino\-Grande & Mean accuracy & vLLM file (GB) & Peak memory (GB) & Decode (ms/token) \\
 \hline
-Baseline & none & 10.18 & 0.625 & 2.200 & 2.80 & 10.18 & 0.625 & 2.200 & 2.81 \\
-E1 & Q & 10.44 & 0.624 & 0.898 & 1.98 & 11.25 & 0.613 & 0.838 & 2.03 \\
-E2 & P & 10.18 & 0.626 & 2.200 & 2.82 & 10.18 & 0.626 & 2.200 & 2.81 \\
-E3 & KV & 10.82 & 0.497 & 2.200 & 2.80 & 10.36 & 0.562 & 2.200 & 2.81 \\
-E4 & Q + P & 10.44 & 0.624 & 0.898 & 2.03 & 11.25 & 0.613 & 0.838 & 2.09 \\
-E5 & Q + KV & 11.12 & 0.495 & 0.898 & 1.98 & 11.47 & 0.553 & 0.838 & 2.03 \\
-E6 & Q + P + KV & 11.12 & 0.495 & 0.898 & 2.03 & 11.47 & 0.553 & 0.838 & 2.09 \\
+\multicolumn{11}{l}{\textbf{Round-to-nearest ($\tau$ 0.800), SnapKV}} \\
+Baseline & none & 10.18 & 0.548 & 0.745 & 0.604 & 0.603 & 0.625 & 2.200 & 3.77 & 2.80 \\
+E1 & Q & 10.44 & 0.548 & 0.739 & 0.598 & 0.609 & 0.624 & 0.898 & 2.45 & 1.98 \\
+E2 & P & 10.18 & 0.548 & 0.746 & 0.606 & 0.605 & 0.626 & 2.200 & 3.77 & 2.82 \\
+E3 & KV & 10.82 & 0.332 & 0.632 & 0.521 & 0.504 & 0.497 & 2.200 & 3.77 & 2.80 \\
+E4 & Q + P & 10.44 & 0.548 & 0.739 & 0.598 & 0.609 & 0.624 & 0.898 & 2.45 & 2.03 \\
+E5 & Q + KV & 11.11 & 0.325 & 0.630 & 0.516 & 0.510 & 0.495 & 0.898 & 2.45 & 1.98 \\
+E6 & Q + P + KV & 11.11 & 0.325 & 0.630 & 0.516 & 0.510 & 0.495 & 0.898 & 2.45 & 2.03 \\
+\hline
+\multicolumn{11}{l}{\textbf{OmniQuant ($\tau$ 0.857), InfiniGen}} \\
+Baseline & none & 10.18 & 0.548 & 0.745 & 0.604 & 0.603 & 0.625 & 2.200 & 3.77 & 2.81 \\
+E1 & Q & 11.25 & 0.529 & 0.742 & 0.586 & 0.594 & 0.613 & 0.838 & 2.40 & 2.03 \\
+E2 & P & 10.18 & 0.548 & 0.745 & 0.606 & 0.605 & 0.626 & 2.200 & 3.77 & 2.81 \\
+E3 & KV & 10.36 & 0.464 & 0.694 & 0.584 & 0.505 & 0.562 & 2.200 & 3.77 & 2.81 \\
+E4 & Q + P & 11.25 & 0.529 & 0.742 & 0.586 & 0.594 & 0.613 & 0.838 & 2.40 & 2.09 \\
+E5 & Q + KV & 11.47 & 0.432 & 0.689 & 0.565 & 0.526 & 0.553 & 0.838 & 2.40 & 2.03 \\
+E6 & Q + P + KV & 11.47 & 0.432 & 0.689 & 0.565 & 0.526 & 0.553 & 0.838 & 2.40 & 2.09 \\
 \hline
 \end{tabularx}
 \end{table}
