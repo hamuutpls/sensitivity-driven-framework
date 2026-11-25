@@ -90,7 +90,7 @@ What to change at the top of `main.py`:
 | 3-4b. Stage 0 | sensitivity score, bits, KV-cache plan, activation plan |
 | 5-6. Sweeps | `SWEEP`, `PRUNE_SWEEP_RATIOS`, `PRUNING_LEVELS`, `THRESHOLD_SWEEP`, `GUARD_SWEEP` |
 | 7. Stages 1-3 | `STAGE0_DIR`, `STAGE1_METHODS`, `STAGE2_METHODS`, `STAGE2_AFTER`, `STAGE3_METHODS` |
-| 8. Search | limits `TARGET_PPL`, `TARGET_MEMORY_GB`, `TARGET_LATENCY_MS` (checked on `SEARCH_LATENCY_METRIC`), with `TARGET_PPL` checked on `SEARCH_PPL_METRIC`, and `TARGET_VLLM_PPL` on the vLLM file; `SEARCHERS`, `SEARCH_BUDGET`, `SEARCH_OBJECTIVES`, `VLLM_PYTHON`; the techniques each stage may pick (`SEARCH_STAGE1`, `SEARCH_STAGE2`, `SEARCH_STAGE3`, `SEARCH_EXTRA_STAGE1`); `SEARCH_JOINT_PLAN`, `SEARCH_RANGES`, `SEARCH_LOW_THRESHOLD_MAX` |
+| 8. Search | limits `TARGET_PPL`, `TARGET_MEMORY_GB`, `TARGET_LATENCY_MS` (checked on `SEARCH_LATENCY_METRIC`), with `TARGET_PPL` checked on `SEARCH_PPL_METRIC`, and `TARGET_VLLM_PPL` on the vLLM file; `SEARCHERS`, `SEARCH_BUDGET`, `SEARCH_OBJECTIVES`, `VLLM_PYTHON`; the techniques each stage may pick (`SEARCH_STAGE1`, `SEARCH_STAGE2`, `SEARCH_STAGE3`, `SEARCH_EXTRA_STAGE1`); `SEARCH_JOINT_PLAN`, `SEARCH_RANGES`, `SEARCH_LOW_THRESHOLD_MAX`; `SEARCH_KV_LEVELS` (KV-cache levels searched in order) |
 
 The modes:
 
@@ -128,6 +128,7 @@ and run its cells top to bottom. `main.py` holds these settings except `MODE`, `
 | `SEARCH_STAGE2`, `SEARCH_STAGE3` | `unstructured_prune`, `structured_prune`; every KV technique |
 | `SEARCH_EXTRA_STAGE1` | `spqr_with_rtn_act`, `quip_with_rtn_act`, `quipsharp_with_rtn_act` |
 | `SEARCH_JOINT_PLAN`, `SEARCH_RANGES`, `SEARCH_LOW_THRESHOLD_MAX` | `False`; threshold [0.8, 0.9] and prune ratio [0.0, 0.3]; `0` (vLLM 0.31 has no 3-bit GPTQ kernel) |
+| `SEARCH_KV_LEVELS` | `[]` (one search). `SEARCH_KV_LEVELS_LIGHT_FIRST` searches light KV compression first (8-bit, 99% of attention kept), then medium (4 bits on average, 98%), then the usual plan, then no KV step, each with `SEARCH_BUDGET` tries; the next level runs only when no try of the one before met the limits |
 | `SEARCH_BUDGET`, `SEED` | `30` (main.py's default is 100), `0` |
 | `VLLM_PYTHON` | `"/content/vllm-venv/bin/python"` |
 | `RUN_ID` | `"20261029-colab-a100-ppl11.5-lat2.5"` |

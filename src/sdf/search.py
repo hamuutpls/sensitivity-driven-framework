@@ -244,8 +244,9 @@ class Recorder:
     its own stage's."""
 
     def __init__(self, ctx: RunContext, searcher: str, full_windows: int, evaluator: Callable | None = None,
-                 tried: TriedLog | None = None, **kw: Any):
+                 tried: TriedLog | None = None, first_n: int = 1, **kw: Any):
         self.ctx, self.searcher, self.full, self.evaluator, self.kw = ctx, searcher, full_windows, evaluator, kw
+        self.first_n = first_n  # the number of its first try (a later KV level goes on from the levels before it)
         self.tried = tried  # combinations tried in earlier runs: their result is reused, never rebuilt
         self.trials: list[dict[str, Any]] = []
         s = ctx.cfg.search
@@ -282,7 +283,7 @@ class Recorder:
         repeat = repeat or bool(r.get("same_model") and any(t.get("plan_model") == r.get("model") and t["built"]
                                                              for t in self.trials))
         ok = "error" not in r and all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
-        t = {"searcher": self.searcher, "n": len(self.trials) + 1, "point": point, "windows": windows,
+        t = {"searcher": self.searcher, "n": len(self.trials) + self.first_n, "point": point, "windows": windows,
              "cost": windows / self.full if built and not repeat else 0.0, "built": built, "model": model,
              "plan_model": r.get("model"),
              "over_limit": "not_built" in r,
@@ -615,7 +616,9 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
             import lm_eval  # noqa: F401 - checked now, not after hours of tries
         except ImportError as e:
             raise ValueError("search.accuracy_tasks needs lm-eval: pip install -e .[downstream]") from e
-    space = technique_space(cfg)
+    levels = kv_level_configs(cfg)
+    for _, lcfg in levels:
+        technique_space(lcfg)  # a level's Stage 3 techniques are checked now, not after the levels before it
     _, handle, loader = setup(ctx, None, tokenizer, text_loader)
     val, held = eval_windows(loader(cfg.eval.dataset, "test"), handle.tokenizer, cfg.eval.seq_len, cfg.eval.max_windows)
     full = len(val) + len(held)
@@ -625,20 +628,34 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     try_tasks = list(s.accuracy_tasks) if cfg.requirement.min_accuracy is not None else []
     try_limit = ({"eval.downstream_limit": s.accuracy_try_limit}
                  if try_tasks and s.accuracy_try_limit is not None else {})
-    tries = RunContext(cfg.with_overrides({**off, "eval.downstream_tasks": try_tasks, **try_limit}), ctx.run_id,
-                       ctx.run_dir, ctx.cache)
     trials: list[dict[str, Any]] = []
     tried = TriedLog(tried_path(ctx), ctx.run_id)
-    for name in s.searchers:
-        rec = Recorder(tries, name, full, tried=tried, **kw)
-        extra = {"eta": s.mfbo_eta} if name == "mfbo" else {}
-        SEARCHERS[name](rec, space, s.budget, cfg.run.seed, **extra)
-        trials += rec.trials
-        atomic_write_text(ctx.run_dir / "search" / "trials.json", json.dumps(trials, indent=2, default=str))
+    for level, lcfg in levels:
+        ctx = RunContext(lcfg, ctx.run_id, ctx.run_dir, ctx.cache)  # from here on, this level's settings
+        space = technique_space(lcfg)
+        tries = RunContext(lcfg.with_overrides({**off, "eval.downstream_tasks": try_tasks, **try_limit}), ctx.run_id,
+                           ctx.run_dir, ctx.cache)
+        mine: list[dict[str, Any]] = []
+        before = len(trials)  # each searcher numbers its tries on from the levels before this one
+        for name in s.searchers:
+            rec = Recorder(tries, name, full, tried=tried, first_n=before + 1, **kw)
+            extra = {"eta": s.mfbo_eta} if name == "mfbo" else {}
+            SEARCHERS[name](rec, space, s.budget, cfg.run.seed, **extra)
+            for t in rec.trials if level else ():
+                t["kv_level"] = level
+            mine += rec.trials
+            trials += rec.trials
+            atomic_write_text(ctx.run_dir / "search" / "trials.json", json.dumps(trials, indent=2, default=str))
+        # earlier runs' tries not proposed again in this one still count for the pick (Mohammad, 2026-10-26: "we add
+        # 10 more tries of DIFFERENT combinations"; the 30 already made are not thrown away)
+        earlier = tried.known(tries, full, s.objectives, exclude=trials)
+        if level:
+            for t in earlier:
+                t["kv_level"] = level
+        if not level or any(t["full"] and t["met"] for t in mine + earlier):
+            break
+        log.info("KV level %r: no try met the limits, so the next level is searched", level)
     extras, final = [], None
-    # earlier runs' tries not proposed again in this one still count for the pick (Mohammad, 2026-10-26: "we add 10
-    # more tries of DIFFERENT combinations"; the 30 already made are not thrown away)
-    earlier = tried.known(tries, full, s.objectives, exclude=trials)
     try:  # neither step may cost the report of hours of tries, nor the other step
         # the base point: the best searcher try, this run's or an earlier run's, never an extra try (an extra base
         # would keep the extras on it after the searchers find a better point)
@@ -655,6 +672,13 @@ def run_search(ctx: RunContext, model_factory: Callable | None = None, tokenizer
     from sdf.reporting.search import write_search_report
 
     return write_search_report(ctx, trials, space, extras=extras, accuracy=final)
+
+
+def kv_level_configs(cfg: FrameworkConfig) -> list[tuple[str, FrameworkConfig]]:
+    """search.kv_levels in order, each as (its name, the run's settings with the level's overrides); [("", cfg)]
+    without levels (one search with the run's own settings)."""
+    return [(lv["name"], cfg.with_overrides({k: v for k, v in lv.items() if k != "name"}))
+            for lv in cfg.search.kv_levels] or [("", cfg)]
 
 
 BACKEND_PREFIXES = ("vllm_", "llamacpp_", "trtllm_")

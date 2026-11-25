@@ -182,6 +182,7 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
         "The other settings of each option:", "",
         _md([["#"] + [SETTING_NAMES.get(n, n) for n in rest]]
             + [[str(i + 1)] + [setting_value(n, t["point"][n]) for n in rest] for i, t in enumerate(front)]),
+        *_kv_levels_section(cfg, trials),
         "## Search methods compared", "",
         _md([list(comparison[0]) if comparison else ["Search method"]]
             + [[_fmt(v) for v in c.values()] for c in comparison]),
@@ -264,6 +265,25 @@ def write_search_report(ctx: RunContext, trials: list[dict[str, Any]], space: Se
     outputs["search_report"] = d / "search_report.md"
     atomic_write_text(outputs["search_report"], "\n".join(lines))
     return outputs
+
+
+def _kv_levels_section(cfg, trials: list[dict[str, Any]]) -> list[str]:
+    """The KV-cache levels in the order they were searched, and how many tries of each met the limits (none: no
+    section)."""
+    if not cfg.search.kv_levels:
+        return []
+    names = {"stage0.kv_avg_bits": "average KV bits", "stage0.kv_attention_coverage": "attention kept",
+             "search.stage3_methods": "Stage 3 techniques"}
+    rows = [["Level", "Settings", "Tries", "Met the limits"]]
+    for lv in cfg.search.kv_levels:
+        mine = [t for t in trials if t.get("kv_level") == lv["name"]]
+        settings = "; ".join(f"{names[k]} {', '.join(map(str, v)) if isinstance(v, list) else v}"
+                             for k, v in lv.items() if k != "name") or "the run's own"
+        rows.append([lv["name"], settings, str(len(mine)) if mine else "not searched",
+                     str(sum(1 for t in mine if t["full"] and t["met"])) if mine else "-"])
+    return ["## KV-cache levels", "",
+            "The levels were searched in this order, each with the same budget; the next level was searched only "
+            "when no try of the one before met the limits.", "", _md(rows)]
 
 
 def _req(cfg) -> str:

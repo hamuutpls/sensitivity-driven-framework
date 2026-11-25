@@ -207,6 +207,19 @@ SEARCH_RANGES = {"sensitive_threshold": [0.8, 0.9], "prune_ratio_aggressive": [0
 SEARCH_LOW_THRESHOLD_MAX = 0
 if SEARCH_LOW_THRESHOLD_MAX:  # bitsandbytes stores only 4 or 8 bits
     SEARCH_STAGE1 = [m for m in SEARCH_STAGE1 if not m.startswith("bitsandbytes")]
+# KV-cache levels, searched in order with SEARCH_BUDGET tries each; the next level runs only when no try of the one
+# before met the limits (Mohammad, 2026-11-24: "start with small kv cache compression options, if the accuracy doesnt
+# reach 0.6 then we do no kv step"). Each level may set "stage0.kv_avg_bits", "stage0.kv_attention_coverage" and
+# "search.stage3_methods". [] = one search with the settings above. SEARCH_KV_LEVELS_LIGHT_FIRST is the order he chose
+# (2026-11-25): light (8-bit, 99% of attention kept), medium (4 bits on average, 98%), the plan as before (4 bits,
+# KV_ATTENTION_COVERAGE), then no KV step.
+SEARCH_KV_LEVELS_LIGHT_FIRST = [
+    {"name": "light", "stage0.kv_avg_bits": 8, "stage0.kv_attention_coverage": 0.99},
+    {"name": "medium", "stage0.kv_avg_bits": 4, "stage0.kv_attention_coverage": 0.98},
+    {"name": "strong", "stage0.kv_avg_bits": KV_AVG_BITS, "stage0.kv_attention_coverage": KV_ATTENTION_COVERAGE},
+    {"name": "no KV step", "search.stage3_methods": ["none"]},
+]
+SEARCH_KV_LEVELS = []
 
 
 # =====================================================================================================
@@ -249,6 +262,7 @@ def build_config():
         "search.joint_plan": SEARCH_JOINT_PLAN,
         "search.ranges": SEARCH_RANGES,
         "search.low_threshold_max": SEARCH_LOW_THRESHOLD_MAX,
+        "search.kv_levels": SEARCH_KV_LEVELS,
         "stage0.score": SENSITIVITY_SCORE,
         "stage0.normalization": NORMALIZATION,
         "stage0.protected_bits": PROTECTED_BITS,
