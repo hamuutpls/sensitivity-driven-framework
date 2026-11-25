@@ -272,6 +272,26 @@ class SearchConfig:
     # (sensitive layers protected_bits, the rest compressed_bits)
     ranges: dict[str, list[float]] = field(default_factory=dict)  # narrower [low, high] for numeric search settings
     low_threshold_max: float = 0.0  # > 0: the search also picks stage0.low_threshold in [0, this] (0: no 3-bit layers)
+    # MODE "search": KV-cache levels tried in order, each a search of `budget` tries (Mohammad, 2026-11-24: "start
+    # with small kv cache compression options, if the accuracy doesnt reach 0.6 then we do no kv step"). Each level
+    # is {"name": ..., plus overrides of KV_LEVEL_KEYS}; the next level runs only when no try of this one met the
+    # limits. Empty: one search with the run's own settings.
+    kv_levels: list[dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        names = []
+        for level in self.kv_levels:
+            if not isinstance(level, dict) or not isinstance(level.get("name"), str) or not level["name"]:
+                raise ValueError(f"search.kv_levels: each level needs a name, got {level!r}")
+            if bad := sorted(set(level) - {"name", *KV_LEVEL_KEYS}):
+                raise ValueError(f"search.kv_levels {level['name']!r}: {bad} cannot be set; only {KV_LEVEL_KEYS}")
+            names.append(level["name"])
+        if len(set(names)) != len(names):
+            raise ValueError(f"search.kv_levels: names must differ, got {names}")
+
+
+# what a search.kv_levels level may change: how strongly Stage 0's KV plan compresses, and the Stage 3 techniques
+KV_LEVEL_KEYS = ("stage0.kv_avg_bits", "stage0.kv_attention_coverage", "search.stage3_methods")
 
 
 @dataclass

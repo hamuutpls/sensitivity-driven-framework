@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-25: KV-cache levels in the search, lightest first
+
+- Mohammad, 2026-11-24/25: with accuracy at least 0.60 as the goal, find the smallest model (decode under 2.5 ms, no
+  perplexity limit), trying light KV-cache compression first and no KV step only last ("start with small kv cache
+  compression options, if the accuracy doesnt reach 0.6 then we do no kv step").
+- New `search.kv_levels` (main.py `SEARCH_KV_LEVELS`): levels searched in order, each a full search of
+  `search.budget` tries with its own `stage0.kv_avg_bits`, `stage0.kv_attention_coverage` or `search.stage3_methods`.
+  The next level runs only when no try of the one before met the limits. Tries are numbered on across the levels and
+  carry `kv_level`; the report has a "KV-cache levels" table. `SEARCH_KV_LEVELS_LIGHT_FIRST` is his order.
+- The default `[]` leaves every run, number and cache key as before. A level's KV settings are in each try's key,
+  so a try at one level is never reused for another.
+
 ## 2026-11-23: The engines' own KV-cache methods
 
 - Mohammad, 2026-11-23: SnapKV and InfiniGen are methods and can be replaced, "do both": measure vLLM's 8-bit (FP8)

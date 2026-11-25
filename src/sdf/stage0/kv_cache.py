@@ -224,6 +224,9 @@ def plan_kv_bits(profile: KVProfile, avg_bits: float) -> dict[tuple[int, str], i
                               ("value", profile.value_dims, profile.value_rise)):
         for layer, (d, r) in enumerate(zip(dims, rises)):
             items[(layer, kind)] = (d, r)
+    if avg_bits >= profile.bits_options[-1]:  # the budget pays for the most bits everywhere: give them (allocate_bits
+        # upgrades only where the measured rise drops, so a tensor whose rise is already 0 would stay at the fewest)
+        return {k: profile.bits_options[-1] for k in items}
     return allocate_bits(items, profile.bits_options, avg_bits)
 
 
