@@ -169,7 +169,7 @@ Quality is the perplexity of Equation~\ref{eq:ppl} on the validation and held-ou
 
 \subsubsection{Experimental Configuration}
 
-All experiments ran on an NVIDIA A100, with vLLM version 0.31.0. The three experiments of Section~\ref{sec:ablation} (score validation, equal-size plans and stage ablation) ran in separate sessions, so their latencies are compared only with each other. The limits are a validation perplexity of at most 11.5 and a vLLM decode latency of at most 2.5~ms per token. Four search set-ups give the final models of Section~\ref{sec:results}: (i) both limits, with the lowest perplexity as the first objective; (ii) the same with weight-only quantization as the only choice in Stage~1; (iii) the perplexity limit only, with the smallest size as the first objective, $\tau$ from 0.1 to 0.9, $\rho$ from 0 to 0.6 and the weight and activation bits planned together; and (iv) the same as (iii) with $\tau$ from 0.8 to 0.9, $\rho$ from 0 to 0.3 and 3-bit layers allowed. Set-ups (i) and (ii) use $\tau$ from 0.8 to 0.9 and $\rho$ from 0 to 0.3. Every configuration was run with seed 0, and each search had a budget of 30 or 40 tries. The other settings of the search space are a calibration set from WikiText-2, C4 and the Pile with 16, 32, 64 or 128 windows, a quantization group size of 32, 64 or 128 weights or one group per output channel, the strength of SmoothQuant in $[0, 1]$ when it is chosen, and one technique of Table~\ref{tab:modules} for each stage. The sampler is the Gaussian-process sampler of Optuna with its default settings and seed 0. In vLLM the model is loaded in FP16 with prefix caching off, and weight-only models run with the compiled kernels of the engine, while models with rounded activations run in eager mode.
+All experiments ran on an NVIDIA A100, with vLLM version 0.31.0, except the single-technique test of Table~\ref{tab:single}, whose perplexities were measured on an RTX~5070~Ti. The three experiments of Section~\ref{sec:ablation} (score validation, equal-size plans and stage ablation) ran in separate sessions, so their latencies are compared only with each other. The limits are a validation perplexity of at most 11.5 and a vLLM decode latency of at most 2.5~ms per token. Four search set-ups give the final models of Section~\ref{sec:results}: (i) both limits, with the lowest perplexity as the first objective; (ii) the same with weight-only quantization as the only choice in Stage~1; (iii) the perplexity limit only, with the smallest size as the first objective, $\tau$ from 0.1 to 0.9, $\rho$ from 0 to 0.6 and the weight and activation bits planned together; and (iv) the same as (iii) with $\tau$ from 0.8 to 0.9, $\rho$ from 0 to 0.3 and 3-bit layers allowed. Set-ups (i) and (ii) use $\tau$ from 0.8 to 0.9 and $\rho$ from 0 to 0.3. Every configuration was run with seed 0, and each search had a budget of 30 or 40 tries. The other settings of the search space are a calibration set from WikiText-2, C4 and the Pile with 16, 32, 64 or 128 windows, a quantization group size of 32, 64 or 128 weights or one group per output channel, the strength of SmoothQuant in $[0, 1]$ when it is chosen, and one technique of Table~\ref{tab:modules} for each stage. The sampler is the Gaussian-process sampler of Optuna with its default settings and seed 0. In vLLM the model is loaded in FP16 with prefix caching off, and weight-only models run with the compiled kernels of the engine, while models with rounded activations run in eager mode.
 
 \section{Experimental Results and Discussion}
 \label{sec:results}
@@ -274,9 +274,80 @@ SqueezeLLM & 10.60 & 11.29 & 10.49 & 10.52 & \mbox{10.47--10.51} & 10.33 & 10.43
 \end{tabularx}
 \end{table}
 
+\textbf{Per-layer plan at equal perplexity.} Table~\ref{tab:equalppl} turns the comparison around: for a target perplexity, it gives the smallest plan of each kind, among the plans of Table~\ref{tab:equal}, that reaches the target. The targets are the perplexities of the two score plans. To reach the perplexity of the score plan with 8 bits in 5 layers (0.89~GB), a random plan needs 11 layers at 8 bits (1.02~GB) for round-to-nearest and OmniQuant, and no inverse plan reaches it; for GPTQ and SqueezeLLM one random plan of the same size reaches it, and for SqueezeLLM the inverse plan needs 11 layers (1.12~GB). No inverse or random plan reaches the perplexity of the score plan with 8 bits in 11 layers, for any of the four techniques. At equal perplexity the plan chosen by the score is therefore as small as or smaller than the other choices of layers.
+
+\begin{table}[tp]
+\caption{Weight-only quantization in Hugging Face at equal perplexity: predicted weight memory in GB of the smallest plan of each kind that reaches the target validation perplexity (smaller is better). The targets are the perplexities of the score plans with 8 bits in 5 and in 11 layers. Inverse and random plans were built with 5 and with 11 layers at 8 bits; none: no such plan reaches the target.}
+\label{tab:equalppl}
+\scriptsize
+\renewcommand{\arraystretch}{1.1}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{1.2cm}>{\raggedright\arraybackslash}p{1.0cm}>{\raggedright\arraybackslash}p{1.2cm}>{\raggedright\arraybackslash}p{1.2cm}>{\raggedright\arraybackslash}p{1.2cm}>{\raggedright\arraybackslash}p{1.0cm}>{\raggedright\arraybackslash}p{1.2cm}>{\raggedright\arraybackslash}p{1.2cm}}
+\hline
+ & \multicolumn{4}{l}{\textbf{Target: score plan, 5 layers at 8 bits}} & \multicolumn{4}{l}{\textbf{Target: score plan, 11 layers at 8 bits}} \\
+\textbf{Technique} & Perplexity & Plan & Inverse & Random & Perplexity & Plan & Inverse & Random \\
+\hline
+Round-to-nearest & 10.61 & 0.89 & none & 1.02 & 10.41 & 1.02 & none & none \\
+GPTQ & 10.49 & 0.89 & none & 0.89 & 10.32 & 1.02 & none & none \\
+OmniQuant & 10.56 & 0.89 & none & 1.02 & 10.39 & 1.02 & none & none \\
+SqueezeLLM & 10.49 & 0.94 & 1.12 & 0.94 & 10.33 & 1.12 & none & none \\
+\hline
+\end{tabularx}
+\end{table}
+
+\textbf{Each weight technique with and without the plan.} Table~\ref{tab:single} applies each of the eleven weight techniques of Stage~1 alone, once with 4 bits in every layer and once with the per-layer plan at a threshold of 0.5, which gives 8 bits to 11 of the 22 layers. The plan lowers the perplexity of all eleven techniques, from 10.27--11.70 to 10.21--10.48, and makes the weights 0.21 to 0.34~GB larger. The two columns therefore do not have the same size; the comparison at equal size is in Table~\ref{tab:equal}.
+
+\begin{table}[tp]
+\caption{Each weight technique of Stage~1 alone in Hugging Face, with 4 bits in every layer and with the per-layer plan (8 bits in the 11 most sensitive layers, 4 bits in the rest): validation perplexity (FP16: 10.18; lower is better) and predicted weight memory (smaller is better). Weights only; no pruning and no KV-cache step. This is a separate run from Table~\ref{tab:equal}, so the values of a technique can differ slightly between the two tables.}
+\label{tab:single}
+\scriptsize
+\renewcommand{\arraystretch}{1.1}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{2.4cm}>{\raggedright\arraybackslash}p{2.4cm}>{\raggedright\arraybackslash}p{2.4cm}>{\raggedright\arraybackslash}p{2.4cm}}
+\hline
+ & \multicolumn{2}{l}{\textbf{4 bits in every layer}} & \multicolumn{2}{l}{\textbf{Per-layer plan}} \\
+\textbf{Technique} & Perplexity & Size (GB) & Perplexity & Size (GB) \\
+\hline
+Round-to-nearest & 10.97 & 0.777 & 10.41 & 1.019 \\
+GPTQ & 10.68 & 0.777 & 10.31 & 1.019 \\
+AWQ & 10.66 & 0.777 & 10.37 & 1.019 \\
+OmniQuant & 10.90 & 0.777 & 10.39 & 1.019 \\
+SqueezeLLM & 10.60 & 0.786 & 10.33 & 1.122 \\
+SpQR & 10.27 & 0.861 & 10.21 & 1.103 \\
+EfficientQAT & 10.51 & 0.777 & 10.25 & 1.019 \\
+QuIP & 10.42 & 0.777 & 10.30 & 1.019 \\
+QuIP\# & 10.37 & 0.747 & 10.27 & 0.989 \\
+PB-LLM & 11.70 & 0.777 & 10.48 & 1.019 \\
+bitsandbytes storage & 10.74 & 0.807 & 10.30 & 1.020 \\
+\hline
+\end{tabularx}
+\end{table}
+
 \textbf{Contribution of each stage.} Table~\ref{tab:ablation} repeats the two final models found under both limits with stages left out. Quantization gives all of the gain in size, memory and speed: for round-to-nearest the vLLM file falls from 2.200 to 0.898~GB, the peak memory from 3.77 to 2.45~GB and the decode latency from 2.80 to 1.98~ms per token, for a Hugging Face perplexity of 10.44 and an unchanged mean accuracy (0.624 against 0.625). Pruning alone at this ratio, which removes 5.6 percent of the weights, leaves perplexity, file size and latency unchanged, and after 4-bit rounding it changes nothing at all: rows E4 and E6 equal rows E1 and E5 in every quality number. The KV-cache step causes the loss of accuracy: SnapKV alone raises the perplexity to 10.82 and lowers the mean accuracy from 0.625 to 0.497, and InfiniGen alone gives 10.36 and 0.562. ARC-Easy loses the most: SnapKV alone lowers it from 0.548 to 0.332 and the other three tasks by 0.08 to 0.11, and InfiniGen alone lowers it to 0.464. The loss of 11 to 21 percent in Table~\ref{tab:finals} therefore comes from the KV-cache technique and not from quantization. Because that step does not run in vLLM, the model that vLLM serves is row E1.
 
-\textbf{Larger pruning ratios.} The ratio of 0.082 is the value chosen by the search, and it is too small to show what pruning does. Two sets of earlier measurements cover larger ratios. In the first, unstructured pruning was applied alone to the FP16 model with a threshold of 0.5, which protects 11 of the 22 layers. A ratio of 0.3 in every layer removes 26 percent of the weights and raises the Hugging Face perplexity from 10.18 to 10.66; a ratio of 0.5 gives 14.12. Pruning only the 11 unprotected layers removes half as many weights and gives 10.37 at 0.3 and 11.51 at 0.5. A plan that removes as many weights as the even version but takes more of them from the less sensitive layers is worse than the even version (11.61 against 10.66 at 0.3). At every ratio the vLLM file stays at 2.200~GB and the decode latency at 2.53 to 2.55~ms per token, so unstructured pruning costs perplexity without a gain in size or speed in the engine. In the second set, 14 tries of the searches combined OmniQuant on the weights only with unstructured pruning at ratios of 0.20 to 0.29 and thresholds of 0.857 to 0.891. Their vLLM perplexity is 13.34 to 13.88, against 12.96 for OmniQuant alone in row E1, with files of 0.815 to 0.838~GB and 1.99 to 2.14~ms per token. These tries also differ from row E1 in the threshold and in the other settings, so the difference cannot be assigned to pruning alone.
+\textbf{Larger pruning ratios.} The ratio of 0.082 is the value chosen by the search, and it is too small to show what pruning does. Two sets of earlier measurements cover larger ratios. In the first, each pruning technique of Stage~2 was applied alone to the FP16 model with a threshold of 0.5, which protects 11 of the 22 layers (Table~\ref{tab:prune}). For unstructured pruning, a ratio of 0.3 in every layer raises the Hugging Face perplexity from 10.18 to 10.66 and a ratio of 0.5 to 14.12. Pruning only the 11 unprotected layers removes half as many weights and gives 10.37 at 0.3 and 11.51 at 0.5. A plan that removes as many weights as the even version but takes more of them from the less sensitive layers is worse than the even version at every ratio (11.60 against 10.66 at 0.3). Structured pruning and low-rank factorization raise the perplexity much more than unstructured pruning at the same ratio. For unstructured pruning the vLLM file stays at 2.200~GB and the decode latency at 2.53 to 2.55~ms per token at every ratio, so it costs perplexity without a gain in size or speed in the engine. In the second set, 14 tries of the searches combined OmniQuant on the weights only with unstructured pruning at ratios of 0.20 to 0.29 and thresholds of 0.857 to 0.891. Their vLLM perplexity is 13.34 to 13.88, against 12.96 for OmniQuant alone in row E1, with files of 0.815 to 0.838~GB and 1.99 to 2.14~ms per token. These tries also differ from row E1 in the threshold and in the other settings, so the difference cannot be assigned to pruning alone.
+
+\begin{table}[tp]
+\caption{Pruning alone on the FP16 model in Hugging Face, with a threshold of 0.5 (11 protected layers): validation perplexity (FP16: 10.18; lower is better). Even: the ratio in every layer. Plan: the ratio in the 11 unprotected layers only, which removes half as many weights. Plan, same number: as many weights removed as in the even version, taken more from the less sensitive layers. A ratio of 0.3 in every layer removes 26 percent of the weights.}
+\label{tab:prune}
+\scriptsize
+\renewcommand{\arraystretch}{1.1}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{1.6cm}>{\raggedright\arraybackslash}p{2.6cm}>{\raggedright\arraybackslash}p{2.6cm}>{\raggedright\arraybackslash}p{2.9cm}}
+\hline
+\textbf{Technique} & \textbf{Ratio} & \textbf{Even} & \textbf{Plan} & \textbf{Plan, same number} \\
+\hline
+Unstructured (Wanda) & 0.3 & 10.66 & 10.37 & 11.60 \\
+ & 0.4 & 11.54 & 10.66 & 22.88 \\
+ & 0.5 & 14.12 & 11.51 & 59.30 \\
+\hline
+Structured & 0.3 & 17.47 & 12.00 & 18.65 \\
+ & 0.4 & 26.54 & 13.64 & 47.04 \\
+ & 0.5 & 48.18 & 17.02 & 791 \\
+\hline
+Low-rank & 0.3 & 163 & 26.84 & 175 \\
+ & 0.4 & 425 & 51.08 & 573 \\
+ & 0.5 & 1{,}168 & 114 & 2{,}009 \\
+\hline
+\end{tabularx}
+\end{table}
 
 \textbf{KV-cache compression in the engines.} To measure a compressed cache in a real engine, the KV-cache technique of the pipeline was replaced by the method that each engine provides: an 8-bit cache in vLLM and a 4-bit cache in llama.cpp. The two final models, built without their KV-cache step, were measured with the 16-bit and with the compressed cache. In vLLM the 8-bit cache holds twice as many tokens in the same 1~GiB (95{,}312 against 47{,}648). For the round-to-nearest model the perplexity rises from 11.10 to 11.14 and the decode latency from 1.97 to 2.50~ms per token, and the peak memory from 2.45 to 3.17~GB; for the OmniQuant model the values are 12.96 to 13.02 2.01 to 2.48~ms and 2.40 to 3.12~GB. In llama.cpp the 4-bit cache is 3.6 times smaller (0.013 against 0.046~GB); the perplexity of the round-to-nearest model rises from 8.40 to 8.53 and its decode speed falls from 507 to 463 tokens per second. At a batch of one and short texts a compressed cache saves little memory and costs time; its gain, more text in the same memory, was not measured with longer contexts or larger batches.
 
