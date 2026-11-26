@@ -746,7 +746,7 @@ Pruning can substantially reduce the number of parameters, but this theoretical 
 
 \subsection{Limited deployment-aware compression across different inference tools}
 
-Although many compression methods are tested on real hardware, particularly GPUs, they are usually evaluated within a narrow setup, such as a single GPU type, one model family, or one inference backend. This makes it difficult to know whether a compressed model that runs efficiently in one framework will achieve comparable speedups in another, since such gains often depend on the availability of optimized low-bit kernels. A useful direction is to evaluate the same compressed model across multiple inference tools, such as Hugging Face Transformers, llama.cpp, vLLM, and TensorRT-LLM, and to compare latency, memory usage, and accuracy across these environments.
+Although many compression methods are tested on real hardware, particularly GPUs, they are usually evaluated within a narrow setup, such as a single GPU type, one model family, or one inference backend. This makes it difficult to know whether a compressed model that runs efficiently in one framework will achieve comparable speedups in another, since such gains often depend on the availability of optimized low-bit kernels. A useful direction is to evaluate the same compressed model across multiple inference tools, such as Hugging Face Transformers, llama.cpp, and vLLM, and to compare latency, memory usage, and accuracy across these environments.
 
 \subsection{Limited adaptive compression based on latency and accuracy needs}
 
@@ -971,11 +971,11 @@ This stage addresses the runtime, algorithm-level bottleneck that weight compres
 
 \subsubsection{Stage 4 --- Deployment-Aware Evaluation and Adaptive Re-Planning}
 
-The compressed artifact is evaluated under one consistent protocol across multiple inference backends---Hugging Face Transformers, llama.cpp, vLLM, and TensorRT-LLM---measuring compression ratio, \emph{real} prefill and decode latency, weight and KV memory, energy per token, and accuracy (perplexity plus a zero-shot task suite). Reporting measured latency across backends, rather than parameter reduction in a single setup, is the framework's response to the survey's central methodological concern about inconsistent, single-setup evaluation. If a metric misses the deployment requirement, the adaptive feedback path returns to Stage 0 and the per-layer plan is revised, realizing the adaptive compression the survey calls for.
+The compressed artifact is evaluated under one consistent protocol across multiple inference backends---Hugging Face Transformers, llama.cpp, and vLLM---measuring compression ratio, \emph{real} prefill and decode latency, weight and KV memory, energy per token, and accuracy (perplexity plus a zero-shot task suite). Reporting measured latency across backends, rather than parameter reduction in a single setup, is the framework's response to the survey's central methodological concern about inconsistent, single-setup evaluation. If a metric misses the deployment requirement, the adaptive feedback path returns to Stage 0 and the per-layer plan is revised, realizing the adaptive compression the survey calls for.
 
 \begin{itemize}
 
-  \item \textbf{Inference backends} --- measure the same artifact across Hugging Face Transformers, llama.cpp, vLLM, and TensorRT-LLM.
+  \item \textbf{Inference backends} --- measure the same artifact across Hugging Face Transformers, llama.cpp, and vLLM.
 
   \item \textbf{Reported metrics} --- compression ratio, measured prefill and decode latency, weight + KV memory, energy per token, accuracy (perplexity + zero-shot suite).
 
@@ -1060,7 +1060,7 @@ A minimal study on one open model (e.g. a 7B-class LLaMA/Mistral) would mirror t
 
   \item \textbf{KV + activations.} Add KV quantization \cite{hooper2024kvquant} and, if needed, activation rotation \cite{ashkboos2024quarot}.
 
-  \item \textbf{Evaluate across backends.} Load the artifact in HF Transformers, llama.cpp, vLLM, and TensorRT-LLM; report the unified metrics and compare. Iterate via the feedback loop until the requirement is met.
+  \item \textbf{Evaluate across backends.} Load the artifact in HF Transformers, llama.cpp, and vLLM; report the unified metrics and compare. Iterate via the feedback loop until the requirement is met.
 
 \end{itemize}
 
