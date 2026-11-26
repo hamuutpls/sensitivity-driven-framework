@@ -1927,12 +1927,12 @@ The results suggest the following for someone who has to deploy a small LLM of t
 Several directions follow from the limitations stated in Section~\ref{sec:ch5-limits}.
 
 \begin{itemize}
-  \item \textbf{Other models and seeds.} Repeating the experiments on larger models of the Llama family and with several seeds would show whether the findings transfer and how large the variation between runs is.
+  \item \textbf{Other models.} Repeating the experiments on larger models of the Llama family and on models of other families would show whether the findings transfer.
   \item \textbf{Comparisons at equal size.} The comparison of bit plans at equal size was made for four weight techniques in Hugging Face. Repeating it in the engines, for the other techniques and with other ways of choosing the layers below 4 bits would show how far it holds.
   \item \textbf{Export-aware quantization.} The Hugging Face and the vLLM perplexity differed for the models whose weights are re-rounded during export. Rounding the weights directly onto the grid of the target engine would avoid the second rounding.
   \item \textbf{Accuracy in the requirement.} Adding a task accuracy as a limit or as an objective of the search would address the loss of accuracy seen in every final model.
   \item \textbf{Engines and sparse formats.} Measurements in TensorRT-LLM, and in an engine that stores pruned weights in a sparse format, would complete the comparison across engines and give pruning a fair test of size and speed.
-  \item \textbf{KV cache in the engines.} Implementing the KV-cache techniques inside an engine, and testing them with longer contexts and larger batches where the cache is a larger share of the memory, would allow their effect on memory and speed to be measured.
+  \item \textbf{KV cache in the engines.} The compressed caches measured in vLLM and llama.cpp are the engines' own methods, at a batch of one and with short texts. Implementing the KV-cache techniques of the pipeline inside an engine, and testing them with longer contexts and larger batches where the cache is a larger share of the memory, would allow their effect on memory and speed to be measured.
   \item \textbf{Other sensitivity scores.} The framework implements six other scores that were not used in the experiments; comparing the plans they produce is a direct extension.
 \end{itemize}
 \clearpage
