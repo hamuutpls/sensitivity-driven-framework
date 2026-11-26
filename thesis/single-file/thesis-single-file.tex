@@ -1928,7 +1928,6 @@ Several directions follow from the limitations stated in Section~\ref{sec:ch5-li
 
 \begin{itemize}
   \item \textbf{Other models.} Repeating the experiments on larger models of the Llama family and on models of other families would show whether the findings transfer.
-  \item \textbf{Comparisons at equal size.} The comparison of bit plans at equal size was made for four weight techniques in Hugging Face. Repeating it in the engines, for the other techniques and with other ways of choosing the layers below 4 bits would show how far it holds.
   \item \textbf{Export-aware quantization.} The Hugging Face and the vLLM perplexity differed for the models whose weights are re-rounded during export. Rounding the weights directly onto the grid of the target engine would avoid the second rounding.
   \item \textbf{Accuracy in the requirement.} Adding a task accuracy as a limit or as an objective of the search would address the loss of accuracy seen in every final model.
   \item \textbf{Engines and sparse formats.} Measurements in TensorRT-LLM, and in an engine that stores pruned weights in a sparse format, would complete the comparison across engines and give pruning a fair test of size and speed.

@@ -14,6 +14,9 @@ CHANGES = [
     ("future work: KV cache in the engines",
      r"\item \textbf{KV cache in the engines.} Implementing the KV-cache techniques inside an engine, and testing them with longer contexts and larger batches where the cache is a larger share of the memory, would allow their effect on memory and speed to be measured.",
      r"\item \textbf{KV cache in the engines.} The compressed caches measured in vLLM and llama.cpp are the engines' own methods, at a batch of one and with short texts. Implementing the KV-cache techniques of the pipeline inside an engine, and testing them with longer contexts and larger batches where the cache is a larger share of the memory, would allow their effect on memory and speed to be measured."),
+    ("future work: remove equal-size item",
+     r"  \item \textbf{Comparisons at equal size.} The comparison of bit plans at equal size was made for four weight techniques in Hugging Face. Repeating it in the engines, for the other techniques and with other ways of choosing the layers below 4 bits would show how far it holds." + "\n",
+     ""),
 ]
 
 
