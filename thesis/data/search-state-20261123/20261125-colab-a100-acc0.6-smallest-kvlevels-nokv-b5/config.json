@@ -1,0 +1,300 @@
+{
+  "run": {
+    "output_root": "/content/thesis_compression/results",
+    "run_id": "20261125-colab-a100-acc0.6-smallest-kvlevels-nokv-b5",
+    "cache_dir": "/content/thesis_compression/cache",
+    "seed": 0,
+    "deterministic": true,
+    "log_level": "INFO"
+  },
+  "model": {
+    "name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    "dtype": "float16",
+    "device": "auto"
+  },
+  "data": {
+    "sources": {
+      "wikitext2": {
+        "path": "Salesforce/wikitext",
+        "name": "wikitext-2-raw-v1",
+        "splits": {
+          "train": "train",
+          "test": "test"
+        }
+      },
+      "c4": {
+        "path": "allenai/c4",
+        "data_files": {
+          "validation": "en/c4-validation.00000-of-00008.json.gz"
+        },
+        "splits": {
+          "train": "validation"
+        }
+      },
+      "pile10k": {
+        "path": "NeelNanda/pile-10k",
+        "splits": {
+          "train": "train"
+        }
+      }
+    }
+  },
+  "calibration": {
+    "seq_len": 512,
+    "batch_size": 1
+  },
+  "eval": {
+    "dataset": "wikitext2",
+    "seq_len": 512,
+    "max_windows": null,
+    "latency_prompt_len": 128,
+    "latency_decode_tokens": 64,
+    "latency_warmup": 3,
+    "latency_repeats": 10,
+    "latency_mode": "cuda_graph",
+    "llamacpp_dir": null,
+    "llamacpp_convert": null,
+    "llamacpp_kv_cache_type": "f16",
+    "vllm_python": "/content/vllm-venv/bin/python",
+    "vllm_gpu_memory_utilization": null,
+    "vllm_kv_cache_dtype": "auto",
+    "trtllm_python": null,
+    "downstream_tasks": [],
+    "downstream_limit": null,
+    "downstream_batch_size": 8
+  },
+  "stage0": {
+    "normalization": "rank",
+    "profile_dtype": "float32",
+    "score": "layer_removal",
+    "taylor_ema_beta": 0.9,
+    "movement_lr": 0.0001,
+    "hessian_eps": 0.001,
+    "hessian_probes": 8,
+    "protected_bits": 8,
+    "compressed_bits": 4,
+    "low_threshold": 0.0,
+    "low_bits": 3,
+    "uniform_bits": 4,
+    "uniform_prune_ratio": 0.0,
+    "group_overhead_bits": 32,
+    "sparse_storage": "bitmask",
+    "weight_zero_point": "int",
+    "guard_top_k": 5,
+    "act_plan": "measured",
+    "act_bits_options": [
+      4,
+      8
+    ],
+    "act_avg_bits": 6.0,
+    "act_uniform_bits": 8,
+    "act_group_size": 128,
+    "act_calib_samples": 64,
+    "joint_plan": true,
+    "joint_w_options": [
+      4,
+      8,
+      16
+    ],
+    "joint_a_options": [
+      4,
+      8,
+      16
+    ],
+    "joint_avg_weight_bits": null,
+    "joint_avg_act_bits": null,
+    "joint_refine_rounds": 0,
+    "baseline_bits": 16,
+    "kv_cache": true,
+    "kv_bits_options": [
+      2,
+      4,
+      8
+    ],
+    "kv_uniform_bits": 4,
+    "kv_standard_keep_ratio": 0.2,
+    "kv_avg_bits": null,
+    "kv_group_size": 64,
+    "kv_calib_samples": 64,
+    "kv_keep_ratios": [
+      0.1,
+      0.2,
+      0.3,
+      0.5,
+      0.75
+    ],
+    "kv_attention_coverage": 0.95,
+    "kv_context_len": 2048,
+    "kv_batch_size": 1,
+    "kv_module_names": [
+      "k_proj",
+      "v_proj"
+    ],
+    "prune_sweep_ratios": [
+      0.1,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9,
+      1.0
+    ],
+    "prune_sweep_quantize": true,
+    "prune_sweep_same_size": true,
+    "pruning_levels": [
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9
+    ],
+    "threshold_sweep": [
+      0.1,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9
+    ],
+    "guard_sweep": [
+      0,
+      3,
+      5,
+      8
+    ]
+  },
+  "stages": {
+    "stage0_dir": null,
+    "stage1_methods": [
+      "rtn",
+      "gptq",
+      "awq",
+      "rtn_act"
+    ],
+    "stage2_methods": [
+      "unstructured_prune",
+      "structured_prune",
+      "low_rank"
+    ],
+    "stage2_after": [],
+    "stage3_methods": [
+      "rtn_kv"
+    ]
+  },
+  "search": {
+    "searchers": [
+      "mobo"
+    ],
+    "budget": 5,
+    "max_tries_per_budget": 20,
+    "stage1_methods": [
+      "rtn_with_rtn_act",
+      "rtn_with_smoothquant",
+      "gptq_with_rtn_act",
+      "gptq_with_smoothquant",
+      "awq_with_rtn_act",
+      "awq_with_smoothquant",
+      "omniquant_with_rtn_act",
+      "omniquant_with_smoothquant",
+      "squeezellm_with_rtn_act",
+      "squeezellm_with_smoothquant",
+      "spqr_with_rtn_act",
+      "spqr_with_smoothquant",
+      "efficientqat_with_rtn_act",
+      "efficientqat_with_smoothquant",
+      "quip_with_rtn_act",
+      "quip_with_smoothquant",
+      "quipsharp_with_rtn_act",
+      "quipsharp_with_smoothquant",
+      "pbllm_with_rtn_act",
+      "pbllm_with_smoothquant",
+      "bitsandbytes_with_rtn_act",
+      "bitsandbytes_with_smoothquant",
+      "rtn",
+      "gptq",
+      "awq",
+      "omniquant",
+      "efficientqat"
+    ],
+    "stage2_methods": [
+      "unstructured_prune",
+      "structured_prune"
+    ],
+    "stage3_methods": [
+      "rtn_kv",
+      "quarot_kv",
+      "kvquant",
+      "h2o",
+      "snapkv",
+      "infinigen"
+    ],
+    "objectives": [
+      "predicted_weight_memory_gb"
+    ],
+    "memory_metric": "predicted_weight_memory_gb",
+    "latency_metric": "vllm_decode_ms_per_token",
+    "ppl_metric": "vllm_ppl_val",
+    "mfbo_eta": 3,
+    "finalists": 3,
+    "accuracy_try_limit": {
+      "hellaswag": 500
+    },
+    "accuracy_tasks": [
+      "arc_easy",
+      "piqa",
+      "hellaswag",
+      "winogrande"
+    ],
+    "extra_stage1": [
+      "spqr_with_rtn_act",
+      "quip_with_rtn_act",
+      "quipsharp_with_rtn_act"
+    ],
+    "joint_plan": false,
+    "ranges": {
+      "sensitive_threshold": [
+        0.8,
+        0.9
+      ],
+      "prune_ratio_aggressive": [
+        0.0,
+        0.3
+      ]
+    },
+    "low_threshold_max": 0.0,
+    "kv_levels": [
+      {
+        "name": "no KV step",
+        "search.stage3_methods": [
+          "none"
+        ]
+      }
+    ]
+  },
+  "requirement": {
+    "target_latency_ms": 2.5,
+    "target_memory_gb": null,
+    "target_ppl": null,
+    "target_vllm_ppl": null,
+    "kv_budget_gb": null,
+    "min_accuracy": 0.6,
+    "hardware_profile": "unspecified"
+  },
+  "hyperparams": {
+    "sensitive_threshold": 0.5,
+    "prune_ratio_aggressive": 0.3,
+    "calib_dataset": "wikitext2",
+    "calib_samples": 64,
+    "gptq_groupsize": 128,
+    "smoothquant_alpha": 0.5,
+    "quarot_k_bits": 4
+  }
+}
