@@ -1290,6 +1290,13 @@ A deployment requirement is a set of upper limits. The framework supports limits
 
 Within the limits the search minimises up to three objectives: validation perplexity, vLLM decode latency and predicted weight memory. The objectives of each search run are given with its results in Chapter~5. The held-out perplexity cannot be selected as an objective or as a limit.
 
+Written as a formula, let $x = (t_1, t_2, t_3, \theta)$ be a point of the search space $\mathcal{X}$ (Section~\ref{sec:ch4-space}), with $t_i$ the technique of Stage~$i$ and $\theta$ the numeric settings, and let $P(x)$ be the validation perplexity, $L(x)$ the vLLM decode latency in ms per token and $S(x)$ the predicted weight memory in GB of the model built from $x$. For the requirement of this thesis the search solves
+\begin{equation}
+  \min_{x \in \mathcal{X}} \; \bigl(f_1(x), \ldots, f_k(x)\bigr) \quad \text{subject to} \quad P(x) \le P_{\max}, \;\; L(x) \le L_{\max},
+  \label{eq:ch4-search}
+\end{equation}
+where the objectives $f_1, \ldots, f_k$ ($k \le 3$) are taken from $P$, $L$ and $S$ in a stated order, $P_{\max} = 11.5$ and $L_{\max} = 2.5$~ms per token.
+
 \subsection{Search Space}
 \label{sec:ch4-space}
 
@@ -1325,7 +1332,12 @@ Two mechanisms prevent the same model from being built twice. Within a run, a mo
 \subsection{Optimiser}
 \label{sec:ch4-optimiser}
 
-The optimiser is multi-objective Bayesian optimisation (Section~\ref{sec:ch2-moo}), for which the framework uses the Gaussian-process sampler of the Optuna library. All objectives are minimised, and the requirement is passed to the sampler as a constraint whose value is the sum of the shortfalls of the point, which is zero for a point that meets every limit. A point that was not built because its plan is over a limit, or that failed while being built or measured, is reported to the sampler with the worst objective values seen so far and a positive constraint value, so that the sampler learns to avoid that region. The run ends when the budget of tries is used. A point that is not built because its plan is over a limit does not use up the budget.
+The optimiser is multi-objective Bayesian optimisation (Section~\ref{sec:ch2-moo}), for which the framework uses the Gaussian-process sampler of the Optuna library. All objectives are minimised, and the requirement is passed to the sampler as a constraint whose value is the sum of the shortfalls of the point. For the two limits of Equation~\ref{eq:ch4-search} it is
+\begin{equation}
+  c(x) = \max\bigl(0, P(x) - P_{\max}\bigr) + \max\bigl(0, L(x) - L_{\max}\bigr),
+  \label{eq:ch4-constraint}
+\end{equation}
+which is zero for a point that meets every limit. A point that was not built because its plan is over a limit, or that failed while being built or measured, is reported to the sampler with the worst objective values seen so far and a positive constraint value, so that the sampler learns to avoid that region. The run ends when the budget of tries is used. A point that is not built because its plan is over a limit does not use up the budget.
 
 Two other optimisers are implemented in the framework: successive halving \cite{bischl2021hpo}, which evaluates many points on a fraction of the evaluation windows and keeps the best third at each of three rounds, and NSGA-III through the pymoo library \cite{blank2020pymoo}. The budget is counted in full evaluations, that is, models measured on all validation windows, and a try on a fraction of the windows uses that fraction of one evaluation. For the same budget, successive halving therefore builds more models than the Bayesian optimiser: it first measures random points on one ninth of the windows, then the best third of them on one third of the windows, and then the best third of those on all windows. The search results in Chapter~5 come from the Bayesian optimiser.
 
