@@ -194,7 +194,7 @@ Large language models are costly to serve because their weights and their key--v
 
 \noindent\textbf{What it means.} For a model of this kind on a single GPU, weight-only quantization with more bits in the few sensitive layers is the most effective step; pruning is not worth its quality cost unless the engine can use sparse weights; a KV-cache technique lowers the cache memory but was the step that cost task accuracy; and a model should be chosen on measurements made in the engine that will serve it, with a task accuracy among the requirements.
 
-\medskip\noindent\textbf{Limits of the work.} The results are for one model and one seed, most techniques are simplified re-implementations, and no TensorRT-LLM measurement is reported. Chapter~\ref{Chapter6} lists the future work that follows from these limits.
+\medskip\noindent\textbf{Limits of the work.} The results are for one model, most techniques are simplified re-implementations, and no TensorRT-LLM measurement is reported. Chapter~\ref{Chapter6} lists the future work that follows from these limits.
 
 \cleardoublepage
 
@@ -253,7 +253,7 @@ The aim of this thesis is to determine whether sensitivity-driven, per-layer com
 
 \begin{enumerate}
   \item \textbf{RQ1.} How unevenly is sensitivity to compression distributed across the layers of a decoder-only LLM, and does a cheap measured score, namely the rise in perplexity when a layer is bypassed, rounded to fewer bits, or has its KV cache reduced, predict the damage done by compressing that layer?
-  \item \textbf{RQ2.} Under identical calibration data, seed, evaluation data, hardware and software, does a sensitivity-driven per-layer plan that assigns 8 bits to sensitive layers and 4 bits to the rest improve the quality, size and latency trade-off of published techniques of each of the three kinds, quantization of weights and activations, pruning, and KV-cache compression, compared with their usual uniform settings?
+  \item \textbf{RQ2.} Under identical calibration data, evaluation data, hardware and software, does a sensitivity-driven per-layer plan that assigns 8 bits to sensitive layers and 4 bits to the rest improve the quality, size and latency trade-off of published techniques of each of the three kinds, quantization of weights and activations, pruning, and KV-cache compression, compared with their usual uniform settings?
   \item \textbf{RQ3.} What does each of the three techniques, quantization, pruning and KV-cache compression, contribute to quality, size and latency, and when is quantization-only, pruning-only or a combined pipeline preferable, given that pruned weights are stored as zeros and therefore bring no size or latency gain in the inference engines studied here?
   \item \textbf{RQ4.} How do simulated compression results obtained in Hugging Face Transformers carry over to real file size, memory and decode latency in llama.cpp and vLLM?
   \item \textbf{RQ5.} Can a constrained multi-objective search over techniques and their settings find configurations that satisfy a deployment requirement on perplexity and decode latency while minimising perplexity, latency and model size?
@@ -264,7 +264,7 @@ To answer these questions the following objectives were set.
 \begin{enumerate}
   \item \textbf{O1.} Build a per-layer sensitivity profiler and planner that measures the effect of bypassing, rounding and KV-cache reduction for each decoder layer, and that produces weight, activation, joint weight--activation, pruning and KV-cache plans together with a prediction of the memory each plan would need.
   \item \textbf{O2.} Implement or adapt published techniques of three kinds, each as its own stage: quantization of weights and activations, pruning (including low-rank factorisation), and KV-cache compression, so that each can be run with and without the plan on identical code.
-  \item \textbf{O3.} Define one comparison protocol, consisting of the FP16 model, each technique at its usual uniform setting, and each technique following the plan, with the same calibration data, seed, evaluation data, hardware and software throughout.
+  \item \textbf{O3.} Define one comparison protocol, consisting of the FP16 model, each technique at its usual uniform setting, and each technique following the plan, with the same calibration data, evaluation data, hardware and software throughout.
   \item \textbf{O4.} Export the compressed models to llama.cpp and vLLM and measure its real file size, memory use and latency in each engine.
   \item \textbf{O5.} Implement a constrained multi-objective search that selects the technique and settings for each compression stage under a deployment requirement, and report its outcomes.
   \item \textbf{O6.} Analyse the results against the five gaps and derive guidance on precision levels, pipeline choice, pruning, KV-cache compression, engine behaviour and adaptive planning for practitioners.
@@ -281,7 +281,7 @@ The thesis considers post-training compression only. No full retraining, quantiz
 
 A single model is used throughout: TinyLlama, a 1.1-billion-parameter model that follows the architecture and tokenizer of Llama~2 \cite{zhang2024tinyllama}. It was chosen because it is small enough to be compressed, exported and measured many hundreds of times on the available hardware while still being a genuine decoder-only LLM of the Llama family. Findings may not transfer unchanged to other models, in particular to much larger ones.
 
-Each configuration is run with one seed, so the variation between runs with different seeds is not measured. Quality is measured by perplexity on WikiText-2 and, for selected final models, by zero-shot accuracy on four common-sense benchmarks. Deployment metrics are measured in three engines: Hugging Face Transformers \cite{wolf2020transformers}, which evaluates the quality of the simulated compression, and llama.cpp \cite{ggml2025llamacpp} and vLLM \cite{kwon2023vllm}, which give real file size, memory and speed after re-rounding the weights onto their own grids. The framework can also export a model to TensorRT-LLM \cite{nvidia2025tensorrtllm}, but no TensorRT-LLM measurement is reported in this thesis. Perplexity measured in an engine can differ from perplexity measured in Hugging Face (for one quantized model in this work, 11.25 in Hugging Face and 12.96 in vLLM), so the last two searches judge perplexity in vLLM. The hardware is an NVIDIA A100 GPU on Google Colab and the host PC with an NVIDIA RTX~5070~Ti 16~GB GPU. Speed is measured on these two GPUs only, and the ranking of methods by speed may differ on other hardware.
+Each configuration is run once, so the variation between repeated runs is not measured. Quality is measured by perplexity on WikiText-2 and, for selected final models, by zero-shot accuracy on four common-sense benchmarks. Deployment metrics are measured in three engines: Hugging Face Transformers \cite{wolf2020transformers}, which evaluates the quality of the simulated compression, and llama.cpp \cite{ggml2025llamacpp} and vLLM \cite{kwon2023vllm}, which give real file size, memory and speed after re-rounding the weights onto their own grids. The framework can also export a model to TensorRT-LLM \cite{nvidia2025tensorrtllm}, but no TensorRT-LLM measurement is reported in this thesis. Perplexity measured in an engine can differ from perplexity measured in Hugging Face (for one quantized model in this work, 11.25 in Hugging Face and 12.96 in vLLM), so the last two searches judge perplexity in vLLM. The hardware is an NVIDIA A100 GPU on Google Colab and the host PC with an NVIDIA RTX~5070~Ti 16~GB GPU. Speed is measured on these two GPUs only, and the ranking of methods by speed may differ on other hardware.
 
 Several techniques were attempted and dropped because they could not be made to run reliably in the framework, namely AQLM \cite{egiazarian2024aqlm}, QTIP \cite{tseng2024qtip} and ABQ-LLM \cite{zeng2025abqllm}. BiLLM \cite{huang2024billm} is included without a planned variant, and the planned variant of RPTQ \cite{yuan2023rptq} was dropped. Pruned weights are stored as zeros rather than in a sparse format, so the pruning experiments measure quality only; they cannot show size or latency gains in the engines, and the thesis does not claim any. Finally, the multi-objective search is reported as a set of outcomes rather than as a pass or fail, since there is no single correct answer to a constrained trade-off.
 
@@ -1107,12 +1107,12 @@ The stages have been tested in two ways, listed in Table~\ref{tab:ch4-paths}. In
 \section{Stage 0: Sensitivity Profiling and Planning}
 \label{sec:ch4-stage0}
 
-Stage~0 takes the FP16 model and a sample of calibration text and produces four things: a sensitivity score for each decoder layer, a weight plan, an activation plan and a KV-cache plan, each with a prediction of the memory it will need. The measurements depend only on the model and the calibration data, so they are stored in a cache on disk and reused by every later run that has the same model, data and seed.
+Stage~0 takes the FP16 model and a sample of calibration text and produces four things: a sensitivity score for each decoder layer, a weight plan, an activation plan and a KV-cache plan, each with a prediction of the memory it will need. The measurements depend only on the model and the calibration data, so they are stored in a cache on disk and reused by every later run that has the same model and data.
 
 \subsection{Calibration and Evaluation Data}
 \label{sec:ch4-data}
 
-The calibration data are 64 windows of 512 tokens, drawn at random positions from the shuffled documents of the training split of WikiText-2 with a fixed seed. The evaluation data are the test split of WikiText-2, joined into one text and cut into windows of 512 tokens that do not overlap. The first half of the windows is the validation set and the second half is the held-out set. Every decision in the framework, including every decision of the search, uses the validation set only. The held-out perplexity is measured and reported next to it, but it is never used to choose anything.
+The calibration data are 64 windows of 512 tokens, drawn at random positions from the shuffled documents of the training split of WikiText-2. The evaluation data are the test split of WikiText-2, joined into one text and cut into windows of 512 tokens that do not overlap. The first half of the windows is the validation set and the second half is the held-out set. Every decision in the framework, including every decision of the search, uses the validation set only. The held-out perplexity is measured and reported next to it, but it is never used to choose anything.
 
 \subsection{Sensitivity Score}
 \label{sec:ch4-score}
@@ -1269,7 +1269,7 @@ Every experiment in the single-stage paths reports three kinds of row for each t
   \item \textbf{Our method}: the same technique but with Stage~0's plan output.
 \end{itemize}
 
-The three rows are produced under identical conditions: the same calibration windows, the same seed, the same evaluation windows, the same GPU and the same engine versions. Every row starts from a fresh copy of the FP16 model, so that no row is affected by an earlier one. Results that are expensive to compute, such as the FP16 measurements and the sensitivity measurements, are stored in a cache whose key contains every setting that determines them, so that a result is reused only when all of those settings are equal. A row that fails is kept in the results with its error message; it is not removed.
+The three rows are produced under identical conditions: the same calibration windows, the same evaluation windows, the same GPU and the same engine versions. Every row starts from a fresh copy of the FP16 model, so that no row is affected by an earlier one. Results that are expensive to compute, such as the FP16 measurements and the sensitivity measurements, are stored in a cache whose key contains every setting that determines them, so that a result is reused only when all of those settings are equal. A row that fails is kept in the results with its error message; it is not removed.
 
 \section{Constrained Multi-objective Search}
 \label{sec:ch4-search}
@@ -1349,7 +1349,7 @@ After the last try, the final model is selected among all tries, of this run and
 \section{Experimental Setup}
 \label{sec:ch4-setup}
 
-All experiments use TinyLlama-1.1B-Chat-v1.0 (Section~\ref{sec:ch2-tinyllama}) and the Stage~0 settings given in Section~\ref{sec:ch4-stage0}. Table~\ref{tab:ch4-setup} lists the hardware and software. The seed fixes the random number generators of Python, NumPy and PyTorch, and the deterministic mode of PyTorch is switched on where a deterministic implementation exists. Each configuration is run with this one seed (Section~\ref{sec:ch1-scope}).
+All experiments use TinyLlama-1.1B-Chat-v1.0 (Section~\ref{sec:ch2-tinyllama}) and the Stage~0 settings given in Section~\ref{sec:ch4-stage0}. Table~\ref{tab:ch4-setup} lists the hardware and software. The random number generators of Python, NumPy and PyTorch are fixed, and the deterministic mode of PyTorch is switched on where a deterministic implementation exists. Each configuration is run once (Section~\ref{sec:ch1-scope}).
 
 \begin{table}[htbp]
 \centering
@@ -1387,7 +1387,7 @@ This chapter reports what was measured with the framework of Chapter~\ref{Chapte
 \section{Experiments and the FP16 Reference}
 \label{sec:ch5-experiments}
 
-Table~\ref{tab:ch5-experiments} lists the experiments. All of them use TinyLlama, the seed 0 and the data of Section~\ref{sec:ch4-data}. The single-stage experiments use the default Stage~0 settings, a sensitivity threshold $\tau = 0.5$ and, for quantization, a group size of 128 weights.
+Table~\ref{tab:ch5-experiments} lists the experiments. All of them use TinyLlama and the data of Section~\ref{sec:ch4-data}. The single-stage experiments use the default Stage~0 settings, a sensitivity threshold $\tau = 0.5$ and, for quantization, a group size of 128 weights.
 
 \begin{table}[htbp]
 \centering
@@ -1715,7 +1715,7 @@ Mean accuracy & 0.625 & 0.556 & 0.495 & 0.538 & 0.539 \\
 
 Before the latency limit was introduced, searches were run with the perplexity limit only (Hugging Face perplexity at most 11.5) and with the predicted weight memory as the first objective. The first of the two final models in Table~\ref{tab:ch5-finals} comes from a search over the full ranges of Table~\ref{tab:ch4-space} and uses GPTQ with round-to-nearest activations; the second comes from a search over the narrower ranges, in which a layer could also be given 3 bits, and uses SqueezeLLM with SmoothQuant; no layer of this final model has 3 bits. Both are small, 0.894 and 0.873~GB in vLLM, and both are within the perplexity limit in Hugging Face. Both keep the activations at low bit widths, and in vLLM they decode in 34.4 and 42.5~ms per token, 13.5 and 16.7 times slower than FP16. A small file is therefore not a fast model, and this is what led to the latency limit.
 
-These two searches were also run with successive halving on the same search space and seed and with the same budget of 30 full evaluations (Section~\ref{sec:ch4-optimiser}), which gives the comparison of Table~\ref{tab:ch5-optimisers}. In both, the Bayesian optimiser found a smaller model within the limit, with fewer models built and in less time.
+These two searches were also run with successive halving on the same search space and with the same budget of 30 full evaluations (Section~\ref{sec:ch4-optimiser}), which gives the comparison of Table~\ref{tab:ch5-optimisers}. In both, the Bayesian optimiser found a smaller model within the limit, with fewer models built and in less time.
 
 \begin{table}[htbp]
 \centering
@@ -1883,7 +1883,7 @@ This section answers the five research questions of Chapter~1 with the evidence 
 \section{Limitations of the Evidence}
 \label{sec:ch5-limits}
 
-The results hold for one model, TinyLlama, and one seed; the variation between seeds was not measured, so small differences between rows should not be over-read. Most techniques are simplified re-implementations (Section~\ref{sec:ch1-scope}), and their numbers are not the numbers of the original methods. Standard and Our method differ in size in the quantization and pruning experiments; the comparisons at equal size are the same-size pruning plan and, for four weight techniques in Hugging Face, the plans of Table~\ref{tab:ch5-equal}. The cache memory of the KV-cache techniques is computed from the plan and not measured in an engine, and the KV-cache techniques could not be exported. Latency was measured at a batch of one with a prompt of 128 tokens and 64 generated tokens, on two GPUs. Accuracy was measured for the final models and for the stage ablation only. No TensorRT-LLM measurement is reported. In the searches, the number of tries is small compared with the size of the search space, and a search that found no try within the limits does not show that no such configuration exists.
+The results hold for one model, TinyLlama, and each configuration was run once, so small differences between rows should not be over-read. Most techniques are simplified re-implementations (Section~\ref{sec:ch1-scope}), and their numbers are not the numbers of the original methods. Standard and Our method differ in size in the quantization and pruning experiments; the comparisons at equal size are the same-size pruning plan and, for four weight techniques in Hugging Face, the plans of Table~\ref{tab:ch5-equal}. The cache memory of the KV-cache techniques is computed from the plan and not measured in an engine, and the KV-cache techniques could not be exported. Latency was measured at a batch of one with a prompt of 128 tokens and 64 generated tokens, on two GPUs. Accuracy was measured for the final models and for the stage ablation only. No TensorRT-LLM measurement is reported. In the searches, the number of tries is small compared with the size of the search space, and a search that found no try within the limits does not show that no such configuration exists.
 \clearpage
 \chapter{Conclusions and Future Work}
 \label{Chapter6}
