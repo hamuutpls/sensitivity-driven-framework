@@ -135,7 +135,7 @@ A configuration of the joint pipeline consists of one technique for each of Stag
   \min_{x \in \mathcal{X}} \; \bigl(f_1(x), \ldots, f_k(x)\bigr) \quad \text{subject to} \quad P(x) \le P_{\max}, \;\; L(x) \le L_{\max},
   \label{eq:search}
 \end{equation}
-where $\mathcal{X}$ is the search space, the objectives $f_1, \ldots, f_k$ ($k \le 3$) are taken from $P$, $L$ and $S$ in a stated order, and the limits are $P_{\max} = 11.5$ and $L_{\max} = 2.5$~ms per token. The optimizer is multi-objective Bayesian optimization with a Gaussian-process model. It receives the limits as one constraint value,
+where $\mathcal{X}$ is the search space, the objectives $f_1, \ldots, f_k$ ($k \le 3$) are taken from $P$, $L$ and $S$ in a stated order. The optimizer is multi-objective Bayesian optimization with a Gaussian-process model. It receives the limits as one constraint value,
 \begin{equation}
   c(x) = \max\bigl(0, P(x) - P_{\max}\bigr) + \max\bigl(0, L(x) - L_{\max}\bigr),
   \label{eq:constraint}
@@ -165,7 +165,7 @@ There are three references for comparison. The first is the uncompressed FP16 mo
 
 \subsubsection{Evaluation Metrics}
 
-Quality is the perplexity of Equation~\ref{eq:ppl} on the validation and held-out sets and, for the final models, the zero-shot accuracy on ARC-Easy, PIQA \cite{bisk2020piqa}, HellaSwag and WinoGrande \cite{sakaguchi2020winogrande}. Size is the file size of the exported model on disk; memory is the peak GPU memory allocated in vLLM during the latency test, with the KV cache of the engine fixed at 1~GiB for every model, so that the memory of different models can be compared. The memory saved by a KV-cache technique is computed from its plan and is not measured in an engine, so it is not reported with the vLLM measurements. Speed is the decode latency per token at a batch size of one, measured with a prompt of 128 tokens and 64 generated tokens after 3 warm-up runs and averaged over 10 repeats.
+Quality is the perplexity of Equation~\ref{eq:ppl} on the validation and held-out sets and, for the final models, the zero-shot accuracy on ARC-Easy, PIQA \cite{bisk2020piqa}, HellaSwag and WinoGrande \cite{sakaguchi2020winogrande}. Size is the file size of the exported model on disk; memory is the peak GPU memory allocated in vLLM during the latency test, with the KV cache of the engine fixed at 1~GB for every model, so that the memory of different models can be compared. The memory saved by a KV-cache technique is computed from its plan and is not measured in an engine, so it is not reported with the vLLM measurements. Speed is the decode latency per token at a batch size of one, measured with a prompt of 128 tokens and 64 generated tokens after 3 warm-up runs and averaged over 10 repeats.
 
 \subsubsection{Experimental Configuration}
 
@@ -281,7 +281,7 @@ SqueezeLLM & 10.60 & 11.29 & 10.49 & 10.52 & \mbox{10.47--10.51} & 10.33 & 10.43
 \textbf{KV-cache compression in the engines.} To measure a compressed cache in a real engine, the KV-cache technique of the pipeline was replaced by the method that each engine provides: an 8-bit cache in vLLM and a 4-bit cache in llama.cpp. The two final models, built without their KV-cache step, were measured with the 16-bit and with the compressed cache. In vLLM the 8-bit cache holds twice as many tokens in the same 1~GiB (95{,}312 against 47{,}648). For the round-to-nearest model the perplexity rises from 11.10 to 11.14 and the decode latency from 1.97 to 2.50~ms per token, and the peak memory from 2.45 to 3.17~GB; for the OmniQuant model the values are 12.96 to 13.02 2.01 to 2.48~ms and 2.40 to 3.12~GB. In llama.cpp the 4-bit cache is 3.6 times smaller (0.013 against 0.046~GB); the perplexity of the round-to-nearest model rises from 8.40 to 8.53 and its decode speed falls from 507 to 463 tokens per second. At a batch of one and short texts a compressed cache saves little memory and costs time; its gain, more text in the same memory, was not measured with longer contexts or larger batches.
 
 \begin{table}[tp]
-\caption{Stage ablation with the settings of the two final models found under both limits (Q: quantization; P: unstructured pruning at 0.082; KV: KV-cache technique). Perplexity on the validation set; accuracy measured in Hugging Face. vLLM was measured on the model before the KV-cache step, so rows that differ only in KV share their vLLM values. Lower is better except for accuracy.}
+\caption{Stage ablation with the settings of the two final models found under both requirements of perplexity being less than 11.5 and 2 ms per token. Perplexity on the validation set; accuracy measured in Hugging Face. vLLM was measured on the model before the KV-cache step, so rows that differ only in KV share their vLLM values. Lower is better except for accuracy.}
 \label{tab:ablation}
 \scriptsize
 \renewcommand{\arraystretch}{1.05}
